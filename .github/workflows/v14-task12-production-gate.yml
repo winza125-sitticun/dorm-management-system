@@ -16,6 +16,10 @@ concurrency:
   group: v14-task12-production-gate
   cancel-in-progress: true
 
+env:
+  V14_SOURCE_ZIP: v14-input/dorm-management-system-master-v14-REVIEW-R2.zip
+  V14_SOURCE_SHA256: 32f89c1f27ad90b4d38515822560646d004519310948099d70812a46264c3830
+
 jobs:
   production-gate:
     name: npm ci + tests + lint + types + build + release
@@ -26,14 +30,15 @@ jobs:
       - name: Checkout gate branch
         uses: actions/checkout@v4
 
-      - name: Require Master V14 R2 ZIP
+      - name: Require and verify Master V14 R2 ZIP
         shell: bash
         run: |
           set -euo pipefail
-          test -f v14-input/dorm-management-system-master-v14-REVIEW-R2.zip || {
-            echo 'Missing v14-input/dorm-management-system-master-v14-REVIEW-R2.zip'
+          test -f "$V14_SOURCE_ZIP" || {
+            echo "Missing $V14_SOURCE_ZIP"
             exit 1
           }
+          echo "$V14_SOURCE_SHA256  $V14_SOURCE_ZIP" | sha256sum --check --strict
 
       - name: Extract Master V14 R2
         shell: bash
@@ -41,7 +46,7 @@ jobs:
           set -euo pipefail
           rm -rf v14-work
           mkdir v14-work
-          unzip -q v14-input/dorm-management-system-master-v14-REVIEW-R2.zip -d v14-work
+          unzip -q "$V14_SOURCE_ZIP" -d v14-work
           test -f v14-work/package.json
           test -f v14-work/package-lock.json
           test -f v14-work/wrangler.master.jsonc
