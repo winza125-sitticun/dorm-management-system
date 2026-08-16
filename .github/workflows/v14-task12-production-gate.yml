@@ -1,0 +1,104 @@
+name: V14 Task 12 Production Gate
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - agent/v14-task12-production-gate
+    paths:
+      - v14-input/dorm-management-system-master-v14-REVIEW-R2.zip
+      - .github/workflows/v14-task12-production-gate.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v14-task12-production-gate
+  cancel-in-progress: true
+
+jobs:
+  production-gate:
+    name: npm ci + tests + lint + types + build + release
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout gate branch
+        uses: actions/checkout@v4
+
+      - name: Require Master V14 R2 ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f v14-input/dorm-management-system-master-v14-REVIEW-R2.zip || {
+            echo 'Missing v14-input/dorm-management-system-master-v14-REVIEW-R2.zip'
+            exit 1
+          }
+
+      - name: Extract Master V14 R2
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf v14-work
+          mkdir v14-work
+          unzip -q v14-input/dorm-management-system-master-v14-REVIEW-R2.zip -d v14-work
+          test -f v14-work/package.json
+          test -f v14-work/package-lock.json
+          test -f v14-work/wrangler.master.jsonc
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: v14-work/package-lock.json
+
+      - name: Fresh dependency install
+        working-directory: v14-work
+        run: npm ci
+
+      - name: Full test suite
+        working-directory: v14-work
+        run: npm test
+
+      - name: TypeScript lint gate
+        working-directory: v14-work
+        run: npm run lint
+
+      - name: Cloudflare types gate
+        working-directory: v14-work
+        run: npm run check:cloudflare-types:master
+
+      - name: Production Pages build
+        working-directory: v14-work
+        run: npm run build:pages
+
+      - name: Generate PREVIEW packages
+        working-directory: v14-work
+        run: npm run packages:generate
+
+      - name: Run guarded release builder
+        working-directory: v14-work
+        run: npm run packages:release
+
+      - name: Record candidate SHA-256
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd v14-work
+          sha256sum release-v14/*.zip | tee TASK12_GITHUB_CANDIDATE_SHA256.txt
+
+      - name: Upload V14 candidate artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: v14-task12-candidate-pending-d1-smoke
+          path: |
+            v14-work/release-v14/**
+            v14-work/TASK12_GITHUB_CANDIDATE_SHA256.txt
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Gate notice
+        shell: bash
+        run: |
+          echo 'Source/release gate passed. These artifacts remain pending the temporary Cloudflare D1 end-to-end smoke restore required by Task 12.'
