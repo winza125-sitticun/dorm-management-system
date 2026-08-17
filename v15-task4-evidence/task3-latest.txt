@@ -1,0 +1,8 @@
+run_id=32082596042
+run_attempt=1
+source_sha=360091361c2a6441da91727526aba348fe89be23
+tests=success
+red=success
+impl=success
+green=success
+build=success
