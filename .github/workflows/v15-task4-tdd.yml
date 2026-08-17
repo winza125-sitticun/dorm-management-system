@@ -13,7 +13,7 @@ permissions:
   actions: read
 
 jobs:
-  task1-red-green:
+  task1-green-task2-red:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -45,8 +45,6 @@ jobs:
           echo 'ea70213d83f87eaacfb9002beee1bc5b46bdc3aea158d3bf94d626ab5c0d53c2  '"$MASTER_ZIP" | sha256sum --check --strict
           mkdir source
           unzip -q "$MASTER_ZIP" -d source
-          test -f source/package-lock.json
-          test -f source/src/theme/brandTheme.ts
 
       - name: Use Node.js 22
         uses: actions/setup-node@v4
@@ -59,65 +57,54 @@ jobs:
         working-directory: source
         run: npm ci
 
-      - name: Apply Task 1 tests only
+      - name: Apply verified Task 1 tests and implementation
         working-directory: source
         shell: bash
         run: |
           set -euo pipefail
           base64 -d ../v15-task4-patches/001-task1-tests.patch.b64 > ../task1-tests.patch
           patch -p1 < ../task1-tests.patch
-          test -f tests/white-label-settings-ui-utils.test.ts
-          test ! -f src/utils/whiteLabelSettings.ts
+          base64 -d ../v15-task4-patches/002-task1-impl.patch.b64 > ../task1-impl.patch
+          patch -p1 < ../task1-impl.patch
+          npx tsx --test tests/white-label-settings-ui-utils.test.ts
 
-      - name: Verify Task 1 RED
+      - name: Apply Task 2 tests only
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          base64 -d ../v15-task4-patches/003-task2-tests.patch.b64 > ../task2-tests.patch
+          patch -p1 < ../task2-tests.patch
+          test -f tests/theme-refresh-runtime.test.ts
+
+      - name: Verify Task 2 RED
         working-directory: source
         shell: bash
         run: |
           set -euo pipefail
           set +e
-          npx tsx --test tests/white-label-settings-ui-utils.test.ts > ../task1-red.log 2>&1
+          npx tsx --test tests/theme-root-runtime.test.ts tests/theme-refresh-runtime.test.ts > ../task2-red.log 2>&1
           rc=$?
           set -e
-          cat ../task1-red.log
+          cat ../task2-red.log
           if [ "$rc" -eq 0 ]; then
-            echo '::error::Task 1 RED unexpectedly passed before production implementation'
+            echo '::error::Task 2 RED unexpectedly passed before ThemeContext implementation'
             exit 1
           fi
-          grep -Eq 'whiteLabelSettings|ERR_MODULE_NOT_FOUND|Cannot find module' ../task1-red.log
+          grep -Eq 'refreshBranding|manual branding refresh|missing refreshBranding' ../task2-red.log
 
-      - name: Apply Task 1 implementation
-        working-directory: source
-        shell: bash
-        run: |
-          set -euo pipefail
-          base64 -d ../v15-task4-patches/002-task1-impl.patch.b64 > ../task1-impl.patch
-          patch -p1 < ../task1-impl.patch
-          test -f src/utils/whiteLabelSettings.ts
-
-      - name: Verify Task 1 GREEN
-        working-directory: source
-        run: npx tsx --test tests/white-label-settings-ui-utils.test.ts
-
-      - name: Task 1 lint and diff gate
-        working-directory: source
-        shell: bash
-        run: |
-          set -euo pipefail
-          npm run lint
-          git diff --check
-
-      - name: Persist Task 1 evidence markers
+      - name: Persist Task 2 RED evidence
         if: success()
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p v15-task4-evidence
-          printf 'status=RED_VERIFIED_GREEN_PASS\nrun_id=%s\nrun_attempt=%s\nsource_sha=%s\nmaster_sha256=%s\n' \
+          printf 'status=RED_VERIFIED\nrun_id=%s\nrun_attempt=%s\nsource_sha=%s\nmaster_sha256=%s\n' \
             "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$GITHUB_SHA" \
             'ea70213d83f87eaacfb9002beee1bc5b46bdc3aea158d3bf94d626ab5c0d53c2' \
-            > v15-task4-evidence/task1-green.txt
+            > v15-task4-evidence/task2-red.txt
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add v15-task4-evidence/task1-green.txt
-          git commit -m 'ci(v15-task4): record Task 1 GREEN evidence'
+          git add v15-task4-evidence/task2-red.txt
+          git commit -m 'ci(v15-task4): record Task 2 RED evidence'
           git push origin HEAD:agent/v15-task1-white-label-contract
