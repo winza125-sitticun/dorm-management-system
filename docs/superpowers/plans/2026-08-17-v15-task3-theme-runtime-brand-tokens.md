@@ -6,7 +6,7 @@
 
 **Architecture:** Keep the immutable V15 Task 2 candidate as the source baseline and apply Task 3 as byte-exact candidate patches rather than editing the stale repository-root application. Split runtime behavior into pure token derivation, a small public-branding client, React context/application, and root boot gating. Source/package gates create one immutable Master candidate; a separate real Pages + D1 smoke uses headless Chromium to verify actual DOM CSS variables for Pro and Demo.
 
-**Tech Stack:** React 18, TypeScript, Vite, Vitest/tsx-based existing test harness, Tailwind/global CSS, Cloudflare Pages Functions + D1, Express/VPS build parity, GitHub Actions, headless Chromium in CI smoke.
+**Tech Stack:** React 18, TypeScript, Vite, existing candidate test harness, Tailwind/global CSS, Cloudflare Pages Functions + D1, Express/VPS build parity, GitHub Actions, headless Chromium in CI smoke.
 
 ## Global Constraints
 
@@ -15,12 +15,14 @@
 - Task 3 adds **no D1 migration** and **no public-branding API fields**.
 - `GET /api/public/branding` remains the only branding boot data source.
 - Public response shape remains exactly `{ dormName, brandColor, contactPhone, logoDataUri, whiteLabelEnabled }`.
-- Public branding boot timeout is exactly `3000 ms`.
+- Public branding boot timeout is exactly `3000 ms` and is not runtime-configurable by application callers.
+- Default dorm/product fallback name is exactly `หอพักของฉัน`.
 - Default brand color is exactly `#1DB954`.
+- Default derived brand tokens are exactly `primary=#1DB954`, `hover=#1AA34A`, `soft=#E4F7EA`, `contrast=#111111`.
 - `--brand-primary-hover` is channel-wise `round(primaryChannel * 0.88)`.
 - `--brand-soft` is channel-wise `round(primaryChannel * 0.12 + 255 * 0.88)`.
 - `--brand-contrast` is either `#FFFFFF` or `#111111`, selected by WCAG relative-luminance contrast ratio; choose the higher ratio and choose `#111111` on an exact tie.
-- Semantic success/warning/danger/info values are constants and never derive from `brandColor`.
+- Semantic tokens are fixed independently of brand: success `#16A34A`, warning `#D97706`, danger `#DC2626`, info `#2563EB`.
 - Demo keeps the setup dorm name but masks `brandColor`, `logoDataUri`, and `contactPhone` and uses default brand tokens.
 - Existing light/dark local-storage and root-class behavior must remain unchanged.
 - Task 3 does not add Settings branding UI, logo upload UI, live preview, bill/PDF/JPG branding, Tenant Portal redesign, LINE Registration redesign, or a broad green/emerald rewrite.
@@ -37,7 +39,7 @@
 Task 3 should produce these focused candidate-source units:
 
 - `src/theme/brandTheme.ts` — pure color normalization, deterministic brand-token derivation, semantic-token constants, and CSS-variable application helper.
-- `src/theme/brandingClient.ts` — exact public-branding response normalization, Demo masking, 3000 ms timeout, and safe fallback result.
+- `src/theme/brandingClient.ts` — exact public-branding response normalization, Demo masking, fixed 3000 ms timeout, and safe fallback result.
 - `src/context/ThemeContext.tsx` — preserve light/dark behavior; bootstrap branding once; expose normalized branding state; apply root tokens centrally.
 - `src/components/BrandingBootScreen.tsx` — neutral unbranded startup surface used only while branding is unresolved.
 - `src/App.tsx` — move ThemeProvider above all surface branching and place one boot gate around Login/Main/Tenant/LINE surfaces.
@@ -73,6 +75,7 @@ The exact candidate patch transport should mirror Task 2: reconstruct the immuta
 - Produces:
   ```ts
   export const DEFAULT_BRAND_COLOR = '#1DB954' as const;
+  export const DEFAULT_DORM_NAME = 'หอพักของฉัน' as const;
 
   export type BrandTokens = {
     primary: string;
@@ -81,12 +84,12 @@ The exact candidate patch transport should mirror Task 2: reconstruct the immuta
     contrast: '#FFFFFF' | '#111111';
   };
 
-  export const SEMANTIC_STATUS_TOKENS: Readonly<{
-    success: string;
-    warning: string;
-    danger: string;
-    info: string;
-  }>;
+  export const SEMANTIC_STATUS_TOKENS = Object.freeze({
+    success: '#16A34A',
+    warning: '#D97706',
+    danger: '#DC2626',
+    info: '#2563EB',
+  });
 
   export function normalizeBrandColor(input: unknown): string;
   export function deriveBrandTokens(input: unknown): BrandTokens;
@@ -113,16 +116,26 @@ The exact candidate patch transport should mirror Task 2: reconstruct the immuta
     contrast: '#111111',
   });
 
+  expect(deriveBrandTokens('#1DB954')).toEqual({
+    primary: '#1DB954',
+    hover: '#1AA34A',
+    soft: '#E4F7EA',
+    contrast: '#111111',
+  });
+
   expect(deriveBrandTokens('#ff0000').primary).toBe('#FF0000');
   expect(deriveBrandTokens(null).primary).toBe('#1DB954');
   expect(deriveBrandTokens('red').primary).toBe('#1DB954');
+  expect(SEMANTIC_STATUS_TOKENS).toEqual({
+    success: '#16A34A', warning: '#D97706', danger: '#DC2626', info: '#2563EB'
+  });
   ```
 
-  Add assertions that two different brand colors leave `SEMANTIC_STATUS_TOKENS` byte-identical.
+  Add an assertion that calling `deriveBrandTokens()` with two different brands leaves `SEMANTIC_STATUS_TOKENS` byte-identical.
 
 - [ ] **Step 2: Run focused test and require RED**
 
-  Run the candidate's focused test command against only `tests/brand-theme-runtime.test.ts` using the existing Task 2 test runner convention.
+  Run the candidate's existing focused-test mechanism against only `tests/brand-theme-runtime.test.ts`.
 
   Expected: FAIL because `src/theme/brandTheme.ts` does not exist.
 
@@ -153,9 +166,18 @@ The exact candidate patch transport should mirror Task 2: reconstruct the immuta
 
   Compare the primary against `#FFFFFF` and `#111111`; return the higher-contrast text color, with `#111111` on a numeric tie.
 
-- [ ] **Step 6: Define independent semantic constants**
+- [ ] **Step 6: Define exact independent semantic constants**
 
-  Use the candidate's current semantic meanings/default palette as constants. Do not derive these constants from `DEFAULT_BRAND_COLOR` and do not alias `success` to `brand-primary`.
+  Use only:
+
+  ```ts
+  success: '#16A34A'
+  warning: '#D97706'
+  danger: '#DC2626'
+  info: '#2563EB'
+  ```
+
+  Do not derive these constants from `DEFAULT_BRAND_COLOR` and do not alias `success` to `brand-primary`.
 
 - [ ] **Step 7: Implement centralized CSS-variable application**
 
@@ -182,7 +204,7 @@ The exact candidate patch transport should mirror Task 2: reconstruct the immuta
 
 ---
 
-### Task 2: Public Branding Client + 3000 ms Fallback
+### Task 2: Public Branding Client + Fixed 3000 ms Fallback
 
 **Files:**
 - Create: `src/theme/brandingClient.ts`
@@ -190,7 +212,7 @@ The exact candidate patch transport should mirror Task 2: reconstruct the immuta
 - Modify only if necessary for shared exported types: no API/server files.
 
 **Interfaces:**
-- Consumes: `DEFAULT_BRAND_COLOR`, `normalizeBrandColor` from Task 1.
+- Consumes: `DEFAULT_BRAND_COLOR`, `DEFAULT_DORM_NAME`, `normalizeBrandColor` from Task 1.
 - Produces:
   ```ts
   export type RuntimeBranding = {
@@ -207,7 +229,6 @@ The exact candidate patch transport should mirror Task 2: reconstruct the immuta
   export function normalizePublicBranding(input: unknown): RuntimeBranding;
   export async function fetchPublicBranding(options?: {
     fetchImpl?: typeof fetch;
-    timeoutMs?: number;
   }): Promise<RuntimeBranding>;
   ```
 - Consumers: ThemeContext and tests.
@@ -245,7 +266,7 @@ The exact candidate patch transport should mirror Task 2: reconstruct the immuta
   }
   ```
 
-  Add fake-fetch tests proving one request only and fallback on non-2xx, rejected promise, malformed JSON/shape, and a never-resolving request bounded by timeout.
+  Add fake-fetch/fake-timer tests proving one request only and fallback on non-2xx, rejected promise, malformed JSON/shape, and a never-resolving request at exactly 3000 ms.
 
 - [ ] **Step 2: Run focused test and require RED**
 
@@ -256,15 +277,15 @@ The exact candidate patch transport should mirror Task 2: reconstruct the immuta
   `normalizePublicBranding()` must read only the five Task 2 public fields. It must not spread the source object into runtime state.
 
   Rules:
-  - `dormName`: trimmed non-empty string, max 120; otherwise use existing candidate fallback dorm/product name.
-  - `brandColor`: `normalizeBrandColor()` only when `whiteLabelEnabled === true`; otherwise default.
+  - `dormName`: trimmed non-empty string, max 120; otherwise exactly `DEFAULT_DORM_NAME` (`หอพักของฉัน`).
+  - `brandColor`: `normalizeBrandColor()` only when `whiteLabelEnabled === true`; otherwise `#1DB954`.
   - `contactPhone`: trimmed string length 1..32 for paid plan, else null.
-  - `logoDataUri`: only a string beginning exactly with `data:image/png;base64,`, `data:image/jpeg;base64,`, or `data:image/webp;base64,`; otherwise null. Do not decode/log it here.
+  - `logoDataUri`: for paid plan only; require one of the exact prefixes `data:image/png;base64,`, `data:image/jpeg;base64,`, `data:image/webp;base64,`; payload must be non-empty standard Base64 characters only, length divisible by 4, and end with at most two `=` padding characters. Otherwise null. Do not decode or log it here.
   - `whiteLabelEnabled`: true only for literal boolean `true`.
 
-- [ ] **Step 4: Implement timeout without retry loops**
+- [ ] **Step 4: Implement fixed timeout without retry loops**
 
-  Use one `AbortController` and one timer of exactly `BRANDING_TIMEOUT_MS=3000` by default. Clear the timer in `finally`. Any fetch/HTTP/parse/timeout failure returns `fallbackBranding()` and does not throw to the application boot path.
+  Use one `AbortController` and one timer of exactly `BRANDING_TIMEOUT_MS=3000`. Clear the timer in `finally`. There is no caller-supplied timeout option. Any fetch/HTTP/parse/timeout failure returns `fallbackBranding()` and does not throw to the application boot path.
 
   `fetchPublicBranding()` must make exactly one normal request per call to `/api/public/branding`, with `Accept: application/json` and no authentication header.
 
@@ -302,11 +323,11 @@ The exact candidate patch transport should mirror Task 2: reconstruct the immuta
 
 - [ ] **Step 1: Capture existing light/dark contract in regression tests**
 
-  Before implementation, add assertions around the candidate's existing storage key (`app_theme`), initial class behavior, and toggle function names. Do not rename the existing public context API merely for Task 3.
+  Before implementation, assert the candidate still uses storage key `app_theme` and preserve the exact existing theme value/toggle API found in `src/context/ThemeContext.tsx`. This is a regression lock: do not rename those existing properties/functions in Task 3.
 
 - [ ] **Step 2: Add RED branding-context source/runtime assertions**
 
-  Assert ThemeContext imports one branding client, initializes loading state true, and has one boot effect scoped to provider lifecycle. Add a testable helper boundary if React DOM test utilities are unavailable rather than adding a broad UI testing dependency.
+  Assert ThemeContext imports one branding client, initializes loading state true, and has one boot effect scoped to provider lifecycle. If the candidate does not include React DOM test utilities, extract the boot state transition into a pure helper and test that helper rather than adding a broad UI-test dependency.
 
 - [ ] **Step 3: Add normalized branding state to provider**
 
@@ -376,7 +397,7 @@ The exact candidate patch transport should mirror Task 2: reconstruct the immuta
 
 - [ ] **Step 4: Move ThemeProvider above all route branching**
 
-  Refactor `src/App.tsx` minimally. If useful, extract the existing branch logic into an internal `AppSurface` component, then export/root-render:
+  Refactor `src/App.tsx` minimally. Extract the existing branch logic into an internal `AppSurface` if that makes the root ordering explicit, then render:
 
   ```tsx
   <ThemeProvider>
@@ -386,7 +407,7 @@ The exact candidate patch transport should mirror Task 2: reconstruct the immuta
   </ThemeProvider>
   ```
 
-  `BrandingBootGate` may be a small local component or focused exported component, but it must read `brandingLoading` from the one root context.
+  `BrandingBootGate` may be local or focused exported code, but it must read `brandingLoading` from the one root context.
 
 - [ ] **Step 5: Preserve AuthProvider semantics**
 
@@ -407,7 +428,7 @@ The exact candidate patch transport should mirror Task 2: reconstruct the immuta
 **Files:**
 - Modify: `src/index.css`
 - Create/extend: `tests/theme-css-contract.test.ts`
-- Modify only narrowly scoped identity/action classes/components if required to demonstrate tokens; list every such file in the Task 5 commit before implementation.
+- Modify only narrowly scoped identity/action classes/components if required to demonstrate tokens; enumerate every additional candidate file in the Task 5 review before applying its patch.
 
 **Interfaces:**
 - Consumes root CSS variables from Task 1/ThemeContext.
@@ -415,28 +436,28 @@ The exact candidate patch transport should mirror Task 2: reconstruct the immuta
 
 - [ ] **Step 1: Write RED CSS contract tests**
 
-  Parse/read `src/index.css` and assert these variables exist in the global root scope:
+  Parse/read `src/index.css` and require these exact root declarations:
 
   ```css
   --brand-primary: #1DB954;
-  --brand-primary-hover: <exact derived default>;
-  --brand-soft: <exact derived default>;
-  --brand-contrast: <exact WCAG-selected value>;
-  --status-success: ...;
-  --status-warning: ...;
-  --status-danger: ...;
-  --status-info: ...;
+  --brand-primary-hover: #1AA34A;
+  --brand-soft: #E4F7EA;
+  --brand-contrast: #111111;
+  --status-success: #16A34A;
+  --status-warning: #D97706;
+  --status-danger: #DC2626;
+  --status-info: #2563EB;
   ```
 
   Assert semantic declarations do not reference any `--brand-*` variable.
 
-- [ ] **Step 2: Add root defaults matching `deriveBrandTokens('#1DB954')` exactly**
+- [ ] **Step 2: Add exact root defaults**
 
-  Compute expected values from Task 1 test fixture and write those literal defaults into CSS. Do not hand-pick visually similar values.
+  Write the eight literal declarations above into the global root scope. The four brand values must match `deriveBrandTokens('#1DB954')` exactly.
 
-- [ ] **Step 3: Add semantic variables using current semantic palette**
+- [ ] **Step 3: Keep semantic tokens independent**
 
-  Preserve existing success/warning/danger/info meanings. Do not recolor paid/success status merely to demonstrate branding.
+  Do not derive or alias status variables through any brand variable. Task 3 does not require broad conversion of existing status components to these new variables.
 
 - [ ] **Step 4: Convert only minimal identity/primary-action proof points**
 
@@ -456,11 +477,11 @@ The exact candidate patch transport should mirror Task 2: reconstruct the immuta
 
 - [ ] **Step 5: Add semantic-isolation regression scan**
 
-  Fail if known semantic status selectors are changed to `--brand-primary`, or if semantic CSS variables reference `--brand-*`.
+  Fail if semantic CSS variables reference `--brand-*`, or if any Task 3 edit intentionally rewires known paid/success/warning/danger/info selectors to `--brand-primary`.
 
-- [ ] **Step 6: Run CSS/runtime tests GREEN and production builds locally/in CI**
+- [ ] **Step 6: Run CSS/runtime tests GREEN and production builds at authoritative CI**
 
-  Require focused tests plus candidate `build:pages` and `build:vps` at the authoritative CI gate.
+  Require focused tests plus candidate `build:pages` and `build:vps` in Task 6/8 gates.
 
 - [ ] **Step 7: Commit Task 5 patches/tests**
 
@@ -499,11 +520,12 @@ The exact candidate patch transport should mirror Task 2: reconstruct the immuta
   - no arbitrary CSS/server HTML injection path,
   - no logging of `logoDataUri`,
   - no `setInterval`/retry loop in branding bootstrap,
+  - literal `BRANDING_TIMEOUT_MS = 3000`,
   - ThemeProvider root coverage anchors present.
 
 - [ ] **Step 5: Run lint/types/build gates**
 
-  From reconstructed candidate after `npm ci`:
+  From reconstructed candidate after `npm ci`, use the candidate's existing scripts/commands and require:
 
   ```text
   focused Task 3 tests
@@ -612,7 +634,7 @@ The exact candidate patch transport should mirror Task 2: reconstruct the immuta
 
 - [ ] **Step 6: Upload pending-D1-smoke artifact**
 
-  Suggested artifact name:
+  Artifact name:
 
   `v15-task3-candidate-pending-d1-smoke`
 
@@ -650,7 +672,7 @@ The exact candidate patch transport should mirror Task 2: reconstruct the immuta
 
 - [ ] **Step 3: Pro API/D1 seed**
 
-  Setup Pro owner/dorm, then set a distinctive paid branding color through the supported settings path or D1 seed that preserves Task 2 security semantics. Use a color with easy deterministic token expectations, for example `#123456`. Seed safe contact/logo values only as needed to prove context consumption; never print the logo payload.
+  Setup Pro owner/dorm, then set a distinctive paid branding color through the supported settings path or a D1 seed that preserves Task 2 security semantics. Use `#123456`. Seed safe contact/logo values only as needed to prove context consumption; never print the logo payload.
 
 - [ ] **Step 4: Run Pro headless Chromium assertions**
 
@@ -665,7 +687,7 @@ The exact candidate patch transport should mirror Task 2: reconstruct the immuta
   --brand-contrast
   ```
 
-  Also assert semantic token values equal the default semantic constants and do not equal/rebind to brand primary solely because the tenant brand is `#123456`.
+  The harness should calculate expected values with an independently implemented copy of the approved formulas, not import the production helper. Also assert semantic variables are exactly `#16A34A`, `#D97706`, `#DC2626`, `#2563EB`.
 
 - [ ] **Step 5: Pro surface coverage browser assertions**
 
@@ -675,13 +697,13 @@ The exact candidate patch transport should mirror Task 2: reconstruct the immuta
 
   Confirm `/api/public/branding` exact allowlist remains unchanged and the browser/runtime state does not contain PromptPay, LINE, Google, subscription/license private metadata, internal logo key, or authentication credentials.
 
-- [ ] **Step 7: Exercise deterministic fallback path**
+- [ ] **Step 7: Exercise deterministic 3000 ms timeout/fallback path**
 
-  In browser automation, intercept/abort `/api/public/branding` for one fresh page load. Assert the neutral boot screen clears and root tokens become exact default `#1DB954` derivatives within a bounded interval slightly above 3000 ms. Also prove the page does not enter an uncontrolled request loop (exactly one intercepted branding request for that provider lifecycle).
+  On one fresh browser context, intercept `/api/public/branding`, count requests, and deliberately hold the route unresolved for more than 3000 ms rather than aborting it immediately. Assert the application's AbortController timeout wins, the neutral boot screen clears, root variables become exactly `#1DB954`, `#1AA34A`, `#E4F7EA`, `#111111`, and only one branding request was initiated for that provider lifecycle.
 
 - [ ] **Step 8: Demo browser/D1 assertions**
 
-  Setup Demo with a dorm name. Seed stale/non-null color/contact/logo directly in D1 only to test defense in depth. Verify public API/runtime masks those paid fields, browser root uses exact default brand tokens, dorm identity remains the setup dorm name, and the app boots successfully.
+  Setup Demo with a dorm name. Seed stale/non-null color/contact/logo directly in D1 only to test defense in depth. Verify public API/runtime masks those paid fields, browser root uses the exact default brand tokens, dorm identity remains the setup dorm name, and the app boots successfully.
 
 - [ ] **Step 9: Minimal existing-system regression**
 
@@ -689,7 +711,7 @@ The exact candidate patch transport should mirror Task 2: reconstruct the immuta
 
 - [ ] **Step 10: Sanitize evidence**
 
-  Evidence JSON may include booleans, HTTP statuses, token CSS values, candidate SHA, plan, and cleanup exit codes. It must not include JWTs, passwords, logo Data URI/base64, PromptPay ID, LINE/Google secrets, OAuth tokens, or temporary private credentials.
+  Evidence JSON may include booleans, HTTP statuses, CSS token values, candidate SHA, plan, request count, timeout result, and cleanup exit codes. It must not include JWTs, passwords, logo Data URI/base64, PromptPay ID, LINE/Google secrets, OAuth tokens, or temporary private credentials.
 
 - [ ] **Step 11: Cleanup all temporary resources with `if: always()`**
 
@@ -697,7 +719,7 @@ The exact candidate patch transport should mirror Task 2: reconstruct the immuta
 
 - [ ] **Step 12: Upload sanitized evidence and assert both plans passed**
 
-  Suggested artifact: `v15-task3-d1-browser-smoke-evidence`.
+  Artifact name: `v15-task3-d1-browser-smoke-evidence`.
 
 - [ ] **Step 13: Write final status only after fresh PASS evidence**
 
@@ -727,10 +749,12 @@ Before declaring Task 3 complete, independently re-read the approved design spec
 - [ ] Timeout is exactly 3000 ms.
 - [ ] Network/API/malformed failure reaches safe fallback and clears boot loading.
 - [ ] Neutral boot surface is not brand-colored.
+- [ ] Default dorm fallback is exactly `หอพักของฉัน`.
 - [ ] Default brand is exactly `#1DB954`.
+- [ ] Default hover/soft/contrast are exactly `#1AA34A`, `#E4F7EA`, `#111111`.
 - [ ] Hover/soft formulas match the approved deterministic channel formulas.
 - [ ] Contrast uses WCAG relative-luminance comparison against white and `#111111`.
-- [ ] Semantic colors are independent constants.
+- [ ] Semantic tokens are exactly success `#16A34A`, warning `#D97706`, danger `#DC2626`, info `#2563EB`, independent from brand.
 - [ ] Demo masks brand color/logo/contact but preserves setup dorm name.
 - [ ] Existing light/dark behavior remains unchanged.
 - [ ] No new D1 migration.
@@ -740,6 +764,6 @@ Before declaring Task 3 complete, independently re-read the approved design spec
 - [ ] Full tests/lint/types/Pages/VPS/package/release gates pass fresh.
 - [ ] Real Pro + Demo Pages/D1 smoke passes from the immutable candidate.
 - [ ] Headless Chromium verifies actual root CSS variables.
-- [ ] Browser fallback intercept proves one request and default token recovery.
+- [ ] Browser-held request proves one request, 3000 ms timeout, and default token recovery.
 - [ ] All four Cloudflare temporary resources clean up with exit 0.
 - [ ] Status document is written only after the above evidence exists.
