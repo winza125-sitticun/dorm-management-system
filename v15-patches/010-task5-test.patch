@@ -1,0 +1,99 @@
+diff --git a/tests/backup-validation.test.ts b/tests/backup-validation.test.ts
+index 7984265..d85b9e1 100644
+--- a/tests/backup-validation.test.ts
++++ b/tests/backup-validation.test.ts
+@@ -1,8 +1,9 @@
+ import test from 'node:test';
+ import assert from 'node:assert/strict';
+-import { BackupDataSchema, BackupValidationError, validateBackupReferences } from '../src/server/validators/backup.ts';
++import { BackupDataSchema, BackupRestoreRequestSchema, BackupValidationError, validateBackupReferences } from '../src/server/validators/backup.ts';
+ import { computeOwnerScope, validateBackupForRestore, verifyRestoreToken } from '../src/server/services/backup.service.ts';
+-import { emptyBackupData, manifestFor, room, bill } from './helpers/backup-fixture.ts';
++import { emptyBackupData, manifestFor, manifestForV6, backupDataV6, room, bill } from './helpers/backup-fixture.ts';
++import { BACKUP_FORMAT_VERSION, BACKUP_LEGACY_SCHEMA_VERSION, BACKUP_SCHEMA_VERSION } from '../src/utils/backupFormat.ts';
+ 
+ const SECRET = '0123456789abcdef0123456789abcdef';
+ 
+@@ -62,3 +63,44 @@ test('server validation rejects corrupt hash, owner scope, and manifest counts',
+   await assert.rejects(() => validateBackupForRestore(db as any, 7, SECRET, { manifest: { ...manifest, ownerScope: 'f'.repeat(64) }, data }), (e: any) => e instanceof BackupValidationError && e.code === 'BACKUP_OWNER_SCOPE_MISMATCH');
+   await assert.rejects(() => validateBackupForRestore(db as any, 7, SECRET, { manifest: { ...manifest, counts: { ...manifest.counts, rooms: 1 } }, data }), (e: any) => e instanceof BackupValidationError && e.code === 'BACKUP_COUNT_MISMATCH');
+ });
++
++
++test('V15 backup contract uses schemaVersion 7 while keeping formatVersion 1', () => {
++  assert.equal(BACKUP_FORMAT_VERSION, 1);
++  assert.equal(BACKUP_LEGACY_SCHEMA_VERSION, 6);
++  assert.equal(BACKUP_SCHEMA_VERSION, 7);
++});
++
++test('v7 strict settings require portable white-label fields and reject logo references', () => {
++  const v7 = emptyBackupData();
++  assert.equal(BackupDataSchema.parse(v7).settings.brandColor, '#1DB954');
++
++  const missingBrand: any = structuredClone(v7);
++  delete missingBrand.settings.brandColor;
++  assert.throws(() => BackupDataSchema.parse(missingBrand));
++
++  const logoLeak: any = structuredClone(v7);
++  logoLeak.settings.brandLogoKey = 'owner/logo.png';
++  assert.throws(() => BackupDataSchema.parse(logoLeak));
++});
++
++test('restore request accepts strict v6 and v7 pairs but rejects schema/data mismatch', async () => {
++  const v7 = emptyBackupData();
++  const v7Manifest = await manifestFor(v7);
++  assert.doesNotThrow(() => BackupRestoreRequestSchema.parse({ manifest: v7Manifest, data: v7 }));
++
++  const v6 = backupDataV6(v7);
++  const v6Manifest = await manifestForV6(v6);
++  assert.doesNotThrow(() => BackupRestoreRequestSchema.parse({ manifest: v6Manifest, data: v6 }));
++  assert.throws(() => BackupRestoreRequestSchema.parse({ manifest: v6Manifest, data: v7 }));
++  assert.throws(() => BackupRestoreRequestSchema.parse({ manifest: v7Manifest, data: v6 }));
++});
++
++test('server restore validation accepts a valid V14 schemaVersion 6 backup', async () => {
++  const db = new ValidationDb();
++  const ownerScope = await computeOwnerScope(db.uid);
++  const v6 = backupDataV6(emptyBackupData());
++  const manifest = await manifestForV6(v6, ownerScope);
++  const result = await validateBackupForRestore(db as any, db.ownerId, SECRET, { manifest, data: v6 });
++  assert.equal(result.valid, true);
++});
+diff --git a/tests/helpers/backup-fixture.ts b/tests/helpers/backup-fixture.ts
+index 31d934f..fe6b55f 100644
+--- a/tests/helpers/backup-fixture.ts
++++ b/tests/helpers/backup-fixture.ts
+@@ -17,6 +17,7 @@ export function emptyBackupData(): BackupDataV1 {
+       dormName: 'หอพักทดสอบ', defaultElecRate: 7, defaultWaterRate: 13,
+       defaultDueDateDay: 5, defaultPenaltyRate: 100,
+       promptpayId: null, promptpayName: null, fontScale: 'medium',
++      brandColor: '#1DB954', contactPhone: '081-234-5678', billFooter: 'ขอบคุณที่ใช้บริการ',
+     },
+   };
+ }
+@@ -49,3 +50,25 @@ export async function manifestFor(data: BackupDataV1, ownerScope = 'a'.repeat(64
+     dataSha256: await sha256Hex(stableStringify(data)),
+   };
+ }
++
++
++export function backupDataV6(data: BackupDataV1 = emptyBackupData()): Record<string, unknown> {
++  const { brandColor: _brandColor, contactPhone: _contactPhone, billFooter: _billFooter, ...settings } = data.settings;
++  return { ...data, settings };
++}
++
++export async function manifestForV6(data: Record<string, unknown>, ownerScope = 'a'.repeat(64)): Promise<Record<string, unknown>> {
++  const typed = data as BackupDataV1;
++  return {
++    format: BACKUP_FORMAT,
++    formatVersion: BACKUP_FORMAT_VERSION,
++    appVersion: '1.1.0',
++    schemaVersion: 6,
++    createdAt: '2026-08-16T00:00:00.000Z',
++    ownerScope,
++    dormName: String((data.settings as Record<string, unknown>).dormName),
++    counts: computeBackupCounts(typed),
++    excluded: ['users', 'integration_secrets'],
++    dataSha256: await sha256Hex(stableStringify(data)),
++  };
++}
