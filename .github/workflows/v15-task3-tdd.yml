@@ -35,7 +35,7 @@ jobs:
           set -euo pipefail
           MASTER_ZIP="$(find candidate -type f -name 'dorm-management-system-master-v15-task2-REVIEW-CI.zip' -print -quit)"
           test -n "$MASTER_ZIP"
-          echo 'd21e9796ee64f95dc3a39c7304b679571e1437c366372a977dbf1628f4bfe05b  '"$MASTER_ZIP" | sha256sum --check --strict
+          echo '5ff63b6cddc1ff0c422f6a4ee443ae847b4440a5e458f0c8e363ffa74c7b4207  '"$MASTER_ZIP" | sha256sum --check --strict
           mkdir source
           unzip -q "$MASTER_ZIP" -d source
           test -f source/package.json
