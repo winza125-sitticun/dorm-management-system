@@ -1,0 +1,110 @@
+name: V15 Task 7 Package TDD Gate
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - agent/v15-task1-white-label-contract
+    paths:
+      - 'v15-patches/015-task7-tests.py'
+      - 'v15-patches/016-task7-impl.py'
+      - '.github/workflows/v15-task7-tdd.yml'
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  package-red-green:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Checkout V15 gate branch
+        uses: actions/checkout@v4
+
+      - name: Download immutable V14 candidate
+        uses: actions/download-artifact@v5
+        with:
+          name: v14-task12-candidate-pending-d1-smoke
+          path: candidate
+          github-token: ${{ github.token }}
+          repository: winza125-sitticun/dorm-management-system
+          run-id: 31980850645
+
+      - name: Extract exact V14 R3-CI source
+        shell: bash
+        run: |
+          set -euo pipefail
+          MASTER_ZIP="$(find candidate -type f -name 'dorm-management-system-master-v14-REVIEW-R3-CI.zip' -print -quit)"
+          test -n "$MASTER_ZIP"
+          echo 'f130f9df0b9cff927b34b8281542b755b85084b4f68fec6d383033969cec53ab  '"$MASTER_ZIP" | sha256sum --check --strict
+          mkdir source
+          unzip -q "$MASTER_ZIP" -d source
+
+      - name: Apply completed V15 Tasks 1-6 production changes
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          patch -p1 < ../v15-patches/002-task1-impl.patch
+          patch -p1 < ../v15-patches/004-task2-impl.patch
+          patch -p1 < ../v15-patches/006-task3-impl.patch
+          patch -p1 < ../v15-patches/008-task4-impl.patch
+          patch -p1 < ../v15-patches/011-task5-impl.patch
+          base64 -d ../v15-patches/013-task6-impl.patch.b64 > ../task6-impl-exact.patch
+          echo '27d13e930660d0aca1f72e446a6addcb6acc3022c4d8474ce90c40e256cda30e  ../task6-impl-exact.patch' | sha256sum --check --strict
+          patch -p1 < ../task6-impl-exact.patch
+          base64 -d ../v15-patches/014-task6-typefix.patch.b64 > ../task6-typefix-exact.patch
+          echo 'e7a35f347de9f6bccf2360f15b0404726a55f37c404631a5b618624b57b41dfa  ../task6-typefix-exact.patch' | sha256sum --check --strict
+          patch -p1 < ../task6-typefix-exact.patch
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: source/package-lock.json
+
+      - name: Install exact dependencies
+        working-directory: source
+        run: npm ci
+
+      - name: Apply Task 7 RED tests
+        working-directory: source
+        run: python3 ../v15-patches/015-task7-tests.py
+
+      - name: Verify Task 7 RED
+        working-directory: source
+        shell: bash
+        run: |
+          set +e
+          node --test tests/package-builder.test.mjs tests/package-parity.test.mjs tests/package-release.test.mjs > ../task7-red.log 2>&1
+          rc=$?
+          set -e
+          cat ../task7-red.log
+          if [ "$rc" -eq 0 ]; then
+            echo '::error::Task 7 RED unexpectedly passed before package metadata update'
+            exit 1
+          fi
+          grep -q 'White-label' ../task7-red.log
+          echo 'Task 7 RED confirmed on missing White-label package metadata.'
+
+      - name: Apply Task 7 package metadata implementation
+        working-directory: source
+        run: python3 ../v15-patches/016-task7-impl.py
+
+      - name: Verify Task 7 GREEN
+        working-directory: source
+        run: node --test tests/package-builder.test.mjs tests/package-parity.test.mjs tests/package-release.test.mjs
+
+      - name: Task 7 lint and static review
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run lint
+          grep -q 'ดูตัวอย่างการตั้งค่าแบรนด์ (การแก้ไข White-label ต้อง Basic ขึ้นไป)' package-plans/demo.json
+          for plan in basic standard pro; do
+            grep -q 'ตั้งค่า White-label: ชื่อหอ สีแบรนด์ เบอร์ติดต่อ และข้อความท้ายบิล' "package-plans/$plan.json"
+          done
+          ! grep -Rqi 'upload.*logo\|อัปโหลด.*โลโก้' package-plans
