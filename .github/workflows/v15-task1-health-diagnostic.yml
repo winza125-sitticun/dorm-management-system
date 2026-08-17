@@ -1,0 +1,187 @@
+name: V15 Task 1 Pages Health Diagnostic
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - agent/v15-task1-white-label-contract
+    paths:
+      - .github/workflows/v15-task1-health-diagnostic.yml
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  SOURCE_GATE_RUN_ID: '31996317195'
+  SOURCE_ARTIFACT_NAME: v15-task1-candidate-pending-d1-smoke
+  PRO_CANDIDATE_ZIP: candidate-artifact/v15-work/release-v15-task1/dorm-management-system-pro-v15-TASK1-CANDIDATE.zip
+  CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+  CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+jobs:
+  diagnose:
+    name: disposable Pro Pages reachability diagnostic
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    environment: "fulfilling-communication / production"
+
+    steps:
+      - name: Checkout gate branch
+        uses: actions/checkout@v4
+
+      - name: Require Cloudflare GitHub Secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${CLOUDFLARE_API_TOKEN:-}" || { echo '::error::Missing CLOUDFLARE_API_TOKEN'; exit 1; }
+          test -n "${CLOUDFLARE_ACCOUNT_ID:-}" || { echo '::error::Missing CLOUDFLARE_ACCOUNT_ID'; exit 1; }
+
+      - name: Download immutable V15 candidate
+        uses: actions/download-artifact@v5
+        with:
+          name: ${{ env.SOURCE_ARTIFACT_NAME }}
+          path: candidate-artifact
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ env.SOURCE_GATE_RUN_ID }}
+
+      - name: Verify and extract Pro package
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f candidate-artifact/MASTER_V15_TASK1_CI_SHA256.txt
+          test -f candidate-artifact/v15-work/V15_TASK1_CANDIDATE_SHA256.txt
+          (cd candidate-artifact && sha256sum --check --strict MASTER_V15_TASK1_CI_SHA256.txt)
+          (cd candidate-artifact && sha256sum --check --strict v15-work/V15_TASK1_CANDIDATE_SHA256.txt)
+          test -f "$PRO_CANDIDATE_ZIP"
+          mkdir pro-work
+          unzip -q "$PRO_CANDIDATE_ZIP" -d pro-work
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install dependencies
+        working-directory: pro-work
+        run: npm ci
+
+      - name: Allocate temporary names
+        shell: bash
+        run: |
+          set -euo pipefail
+          RUN_PART="$(printf '%s' "$GITHUB_RUN_ID" | tr -cd '0-9' | tail -c 12)"
+          ATTEMPT_PART="$(printf '%s' "$GITHUB_RUN_ATTEMPT" | tr -cd '0-9')"
+          echo "PAGES_NAME=v15-health-${RUN_PART}-${ATTEMPT_PART}" >> "$GITHUB_ENV"
+          echo "D1_NAME=v15-health-${RUN_PART}-${ATTEMPT_PART}-db" >> "$GITHUB_ENV"
+
+      - name: Create temporary D1 and render Wrangler config
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd pro-work && npx wrangler d1 create "$D1_NAME" --location apac && npx wrangler d1 info "$D1_NAME" --json > ../d1-info.json)
+          D1_ID="$(python3 - <<'PY'
+          import importlib.util, sys
+          from pathlib import Path
+          p=Path('.github/scripts/v14_task12_d1_smoke.py')
+          s=importlib.util.spec_from_file_location('smoke', p)
+          m=importlib.util.module_from_spec(s); sys.modules[s.name]=m; s.loader.exec_module(m)
+          info=m.parse_wrangler_json(Path('d1-info.json').read_text(encoding='utf-8'))
+          if isinstance(info,list): info=info[0] if info else {}
+          print(info.get('uuid') or info.get('id') or info.get('database_id') or '')
+          PY
+          )"
+          test -n "$D1_ID"
+          export D1_ID
+          python3 - <<'PY'
+          import importlib.util, os, sys
+          from pathlib import Path
+          p=Path('.github/scripts/v14_task12_wrangler_config.py')
+          s=importlib.util.spec_from_file_location('cfg', p)
+          m=importlib.util.module_from_spec(s); sys.modules[s.name]=m; s.loader.exec_module(m)
+          t=Path('pro-work/wrangler.template.jsonc').read_text(encoding='utf-8')
+          r=m.build_wrangler_config(t, os.environ['PAGES_NAME'], os.environ['D1_NAME'], os.environ['D1_ID'])
+          Path('pro-work/wrangler.jsonc').write_text(r, encoding='utf-8')
+          PY
+
+      - name: Create Pages project, secret, migrations, build and deploy
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd pro-work && npx wrangler pages project create "$PAGES_NAME" --production-branch main)
+          JWT_SECRET="$(python3 -c 'import secrets; print(secrets.token_urlsafe(48))')"
+          printf '%s\n' "$JWT_SECRET" | (cd pro-work && npx wrangler pages secret put JWT_SECRET --project-name "$PAGES_NAME")
+          unset JWT_SECRET
+          (cd pro-work && npx wrangler d1 migrations apply DB --remote --config wrangler.jsonc)
+          (cd pro-work && npm run build:pages)
+          DEPLOY_OUTPUT="$(cd pro-work && npx wrangler pages deploy dist --project-name "$PAGES_NAME" --branch main --commit-hash "$GITHUB_SHA" --commit-dirty=true)"
+          printf '%s\n' "$DEPLOY_OUTPUT"
+          PREVIEW_URL="$(printf '%s\n' "$DEPLOY_OUTPUT" | grep -Eo 'https://[A-Za-z0-9.-]+\.pages\.dev' | tail -n1)"
+          test -n "$PREVIEW_URL"
+          echo "PREVIEW_URL=$PREVIEW_URL" >> "$GITHUB_ENV"
+          echo "STABLE_URL=https://${PAGES_NAME}.pages.dev" >> "$GITHUB_ENV"
+
+      - name: Diagnose DNS and health endpoint
+        shell: bash
+        run: |
+          set +e
+          : > health-diagnostic.txt
+          echo "preview=$PREVIEW_URL" | tee -a health-diagnostic.txt
+          echo "stable=$STABLE_URL" | tee -a health-diagnostic.txt
+          PASS=0
+          for attempt in $(seq 1 18); do
+            echo "=== attempt $attempt ===" | tee -a health-diagnostic.txt
+            for label in preview stable; do
+              if [ "$label" = preview ]; then URL="$PREVIEW_URL"; else URL="$STABLE_URL"; fi
+              HOST="$(python3 -c 'import urllib.parse,sys; print(urllib.parse.urlparse(sys.argv[1]).hostname or "")' "$URL")"
+              echo "[$label] host=$HOST" | tee -a health-diagnostic.txt
+              getent ahosts "$HOST" 2>&1 | head -n 4 | sed "s/^/[$label][dns] /" | tee -a health-diagnostic.txt
+              CURL_OUT="$(curl -sS --connect-timeout 5 --max-time 10 -o "/tmp/${label}.body" -w 'http=%{http_code} remote_ip=%{remote_ip} ssl=%{ssl_verify_result} time=%{time_total}' "$URL/api/health" 2>&1)"
+              CURL_RC=$?
+              echo "[$label][curl] rc=$CURL_RC $CURL_OUT" | tee -a health-diagnostic.txt
+              if [ -f "/tmp/${label}.body" ]; then
+                head -c 300 "/tmp/${label}.body" | tr '\n' ' ' | sed "s/^/[$label][body] /" | tee -a health-diagnostic.txt
+                echo | tee -a health-diagnostic.txt
+              fi
+              if [ "$CURL_RC" -eq 0 ] && echo "$CURL_OUT" | grep -q 'http=200'; then PASS=1; fi
+            done
+            if [ "$PASS" -eq 1 ]; then break; fi
+            sleep 5
+          done
+          python3 - <<'PY' | tee -a health-diagnostic.txt
+          import os, urllib.request, urllib.error
+          for label in ('PREVIEW_URL','STABLE_URL'):
+              url=os.environ[label].rstrip('/') + '/api/health'
+              try:
+                  with urllib.request.urlopen(url, timeout=10) as r:
+                      print(label, 'urllib_status=', r.status, 'body=', r.read(300).decode('utf-8','replace'))
+              except Exception as e:
+                  print(label, 'urllib_exception=', type(e).__name__, repr(e))
+          PY
+          test "$PASS" -eq 1
+
+      - name: Cleanup temporary Cloudflare resources
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          FAIL=0
+          if [ -d pro-work ] && [ -n "${PAGES_NAME:-}" ]; then
+            (cd pro-work && npx wrangler pages project delete "$PAGES_NAME" --yes)
+            rc=$?; echo "Pages cleanup exit: $rc"; [ "$rc" -eq 0 ] || FAIL=1
+          fi
+          if [ -d pro-work ] && [ -n "${D1_NAME:-}" ]; then
+            (cd pro-work && npx wrangler d1 delete "$D1_NAME" --skip-confirmation)
+            rc=$?; echo "D1 cleanup exit: $rc"; [ "$rc" -eq 0 ] || FAIL=1
+          fi
+          exit "$FAIL"
+
+      - name: Upload diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v15-task1-health-diagnostic
+          path: health-diagnostic.txt
+          if-no-files-found: warn
+          retention-days: 7
