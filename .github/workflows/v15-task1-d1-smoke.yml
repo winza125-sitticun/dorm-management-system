@@ -1,0 +1,257 @@
+name: V15 Task 1 Cloudflare D1 Smoke
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - agent/v15-task1-white-label-contract
+    paths:
+      - '.github/workflows/v15-task1-d1-smoke.yml'
+      - '.github/scripts/v15_task1_d1_smoke.py'
+      - '.github/scripts/v15_task1_demo_smoke.py'
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: v15-task1-d1-smoke-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  SOURCE_GATE_RUN_ID: '31996317195'
+  SOURCE_ARTIFACT_NAME: v15-task1-candidate-pending-d1-smoke
+  PRO_CANDIDATE_ZIP: candidate-artifact/v15-work/release-v15-task1/dorm-management-system-pro-v15-TASK1-CANDIDATE.zip
+  DEMO_CANDIDATE_ZIP: candidate-artifact/v15-work/release-v15-task1/dorm-management-system-demo-v15-TASK1-CANDIDATE.zip
+  CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+  CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+jobs:
+  d1-smoke:
+    name: Pro v7/v6 + Demo bootstrap smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: "fulfilling-communication / production"
+
+    steps:
+      - name: Checkout V15 gate branch
+        uses: actions/checkout@v4
+
+      - name: Require Cloudflare GitHub Secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${CLOUDFLARE_API_TOKEN:-}" || { echo '::error::Missing CLOUDFLARE_API_TOKEN'; exit 1; }
+          test -n "${CLOUDFLARE_ACCOUNT_ID:-}" || { echo '::error::Missing CLOUDFLARE_ACCOUNT_ID'; exit 1; }
+          echo 'Cloudflare credential presence gate passed.'
+
+      - name: Download immutable V15 Task 1 candidate
+        uses: actions/download-artifact@v5
+        with:
+          name: ${{ env.SOURCE_ARTIFACT_NAME }}
+          path: candidate-artifact
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ env.SOURCE_GATE_RUN_ID }}
+
+      - name: Verify candidate hashes and extract Pro and Demo packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f candidate-artifact/MASTER_V15_TASK1_CI_SHA256.txt
+          test -f candidate-artifact/v15-work/V15_TASK1_CANDIDATE_SHA256.txt
+          (cd candidate-artifact && sha256sum --check --strict MASTER_V15_TASK1_CI_SHA256.txt)
+          (cd candidate-artifact && sha256sum --check --strict v15-work/V15_TASK1_CANDIDATE_SHA256.txt)
+          test -f "$PRO_CANDIDATE_ZIP"
+          test -f "$DEMO_CANDIDATE_ZIP"
+          echo "PRO_CANDIDATE_SHA256=$(sha256sum "$PRO_CANDIDATE_ZIP" | awk '{print $1}')" >> "$GITHUB_ENV"
+          echo "DEMO_CANDIDATE_SHA256=$(sha256sum "$DEMO_CANDIDATE_ZIP" | awk '{print $1}')" >> "$GITHUB_ENV"
+          rm -rf pro-work demo-work
+          mkdir pro-work demo-work
+          unzip -q "$PRO_CANDIDATE_ZIP" -d pro-work
+          unzip -q "$DEMO_CANDIDATE_ZIP" -d demo-work
+          for dir in pro-work demo-work; do
+            test -f "$dir/package.json"
+            test -f "$dir/package-lock.json"
+            test -f "$dir/wrangler.template.jsonc"
+            test -d "$dir/d1-migrations"
+          done
+
+      - name: Verify smoke harness syntax
+        run: python3 -m py_compile .github/scripts/v15_task1_d1_smoke.py .github/scripts/v15_task1_demo_smoke.py .github/scripts/v14_task12_d1_smoke.py .github/scripts/v14_task12_wrangler_config.py
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install Pro and Demo candidate dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd pro-work && npm ci)
+          (cd demo-work && npm ci)
+
+      - name: Allocate unique temporary resource names
+        shell: bash
+        run: |
+          set -euo pipefail
+          RUN_PART="$(printf '%s' "$GITHUB_RUN_ID" | tr -cd '0-9' | tail -c 12)"
+          ATTEMPT_PART="$(printf '%s' "$GITHUB_RUN_ATTEMPT" | tr -cd '0-9')"
+          echo "PRO_PAGES_NAME=v15-t1-pro-${RUN_PART}-${ATTEMPT_PART}" >> "$GITHUB_ENV"
+          echo "PRO_D1_NAME=v15-t1-pro-${RUN_PART}-${ATTEMPT_PART}-db" >> "$GITHUB_ENV"
+          echo "DEMO_PAGES_NAME=v15-t1-demo-${RUN_PART}-${ATTEMPT_PART}" >> "$GITHUB_ENV"
+          echo "DEMO_D1_NAME=v15-t1-demo-${RUN_PART}-${ATTEMPT_PART}-db" >> "$GITHUB_ENV"
+
+      - name: Create temporary Pro and Demo D1 databases
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd pro-work && npx wrangler d1 create "$PRO_D1_NAME" --location apac && npx wrangler d1 info "$PRO_D1_NAME" --json > ../pro-d1-info.json)
+          (cd demo-work && npx wrangler d1 create "$DEMO_D1_NAME" --location apac && npx wrangler d1 info "$DEMO_D1_NAME" --json > ../demo-d1-info.json)
+
+      - name: Render active Wrangler configs
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import importlib.util, json, os, sys
+          from pathlib import Path
+
+          def load(path, name):
+              spec = importlib.util.spec_from_file_location(name, Path(path))
+              mod = importlib.util.module_from_spec(spec)
+              sys.modules[name] = mod
+              spec.loader.exec_module(mod)
+              return mod
+
+          smoke = load('.github/scripts/v14_task12_d1_smoke.py', 'smoke_helpers')
+          cfg = load('.github/scripts/v14_task12_wrangler_config.py', 'cfg_helper')
+
+          for prefix, directory, info_path in [
+              ('PRO', Path('pro-work'), Path('pro-d1-info.json')),
+              ('DEMO', Path('demo-work'), Path('demo-d1-info.json')),
+          ]:
+              info = smoke.parse_wrangler_json(info_path.read_text(encoding='utf-8'))
+              if isinstance(info, list): info = info[0] if info else {}
+              if not isinstance(info, dict): raise SystemExit(f'{prefix} D1 info invalid')
+              d1_id = info.get('uuid') or info.get('id') or info.get('database_id')
+              if not d1_id: raise SystemExit(f'{prefix} D1 UUID missing')
+              rendered = cfg.build_wrangler_config(
+                  (directory / 'wrangler.template.jsonc').read_text(encoding='utf-8'),
+                  os.environ[f'{prefix}_PAGES_NAME'],
+                  os.environ[f'{prefix}_D1_NAME'],
+                  str(d1_id),
+              )
+              (directory / 'wrangler.jsonc').write_text(rendered, encoding='utf-8')
+          PY
+          for dir in pro-work demo-work; do
+            grep -q '"binding": "DB"' "$dir/wrangler.jsonc"
+            ! grep -q 'REPLACE_WITH_YOUR' "$dir/wrangler.jsonc"
+            ! grep -q '00000000-0000-0000-0000-000000000000' "$dir/wrangler.jsonc"
+          done
+
+      - name: Create temporary Pro and Demo Pages projects
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd pro-work && npx wrangler pages project create "$PRO_PAGES_NAME" --production-branch main)
+          (cd demo-work && npx wrangler pages project create "$DEMO_PAGES_NAME" --production-branch main)
+
+      - name: Set temporary JWT secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          PRO_JWT="$(python3 -c 'import secrets; print(secrets.token_urlsafe(48))')"
+          DEMO_JWT="$(python3 -c 'import secrets; print(secrets.token_urlsafe(48))')"
+          printf '%s\n' "$PRO_JWT" | (cd pro-work && npx wrangler pages secret put JWT_SECRET --project-name "$PRO_PAGES_NAME")
+          printf '%s\n' "$DEMO_JWT" | (cd demo-work && npx wrangler pages secret put JWT_SECRET --project-name "$DEMO_PAGES_NAME")
+          unset PRO_JWT DEMO_JWT
+
+      - name: Apply remote D1 migrations
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd pro-work && npx wrangler d1 migrations apply DB --remote --config wrangler.jsonc)
+          (cd demo-work && npx wrangler d1 migrations apply DB --remote --config wrangler.jsonc)
+
+      - name: Build Pro and Demo Pages bundles
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd pro-work && npm run build:pages)
+          (cd demo-work && npm run build:pages)
+
+      - name: Deploy Pro and Demo candidates
+        shell: bash
+        run: |
+          set -euo pipefail
+          PRO_OUT="$(cd pro-work && npx wrangler pages deploy dist --project-name "$PRO_PAGES_NAME" --branch main --commit-hash "$GITHUB_SHA" --commit-dirty=true)"
+          printf '%s\n' "$PRO_OUT"
+          PRO_URL="$(printf '%s\n' "$PRO_OUT" | grep -Eo 'https://[A-Za-z0-9.-]+\.pages\.dev' | tail -n1)"
+          test -n "$PRO_URL"
+          echo "PRO_BASE_URL=$PRO_URL" >> "$GITHUB_ENV"
+
+          DEMO_OUT="$(cd demo-work && npx wrangler pages deploy dist --project-name "$DEMO_PAGES_NAME" --branch main --commit-hash "$GITHUB_SHA" --commit-dirty=true)"
+          printf '%s\n' "$DEMO_OUT"
+          DEMO_URL="$(printf '%s\n' "$DEMO_OUT" | grep -Eo 'https://[A-Za-z0-9.-]+\.pages\.dev' | tail -n1)"
+          test -n "$DEMO_URL"
+          echo "DEMO_BASE_URL=$DEMO_URL" >> "$GITHUB_ENV"
+
+      - name: Run Pro v7 and v6 compatibility D1 smoke
+        env:
+          SMOKE_WORKDIR: ${{ github.workspace }}/pro-work
+          SMOKE_BASE_URL: ${{ env.PRO_BASE_URL }}
+          SMOKE_PAGES_NAME: ${{ env.PRO_PAGES_NAME }}
+          SMOKE_D1_NAME: ${{ env.PRO_D1_NAME }}
+          SMOKE_CANDIDATE_SHA256: ${{ env.PRO_CANDIDATE_SHA256 }}
+          SMOKE_EVIDENCE_PATH: ${{ github.workspace }}/v15-task1-pro-d1-smoke-evidence.json
+        run: python3 .github/scripts/v15_task1_d1_smoke.py
+
+      - name: Run Demo first-setup D1 smoke
+        env:
+          SMOKE_BASE_URL: ${{ env.DEMO_BASE_URL }}
+          SMOKE_PAGES_NAME: ${{ env.DEMO_PAGES_NAME }}
+          SMOKE_D1_NAME: ${{ env.DEMO_D1_NAME }}
+          SMOKE_CANDIDATE_SHA256: ${{ env.DEMO_CANDIDATE_SHA256 }}
+          SMOKE_EVIDENCE_PATH: ${{ github.workspace }}/v15-task1-demo-d1-smoke-evidence.json
+        run: python3 .github/scripts/v15_task1_demo_smoke.py
+
+      - name: Inspect sanitized smoke evidence
+        if: always()
+        shell: bash
+        run: |
+          for f in v15-task1-pro-d1-smoke-evidence.json v15-task1-demo-d1-smoke-evidence.json; do
+            echo "===== $f ====="
+            if [ -f "$f" ]; then cat "$f"; else echo 'evidence not produced'; fi
+          done
+
+      - name: Cleanup temporary Cloudflare resources
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          FAIL=0
+          for item in "pro-work:$PRO_PAGES_NAME:$PRO_D1_NAME" "demo-work:$DEMO_PAGES_NAME:$DEMO_D1_NAME"; do
+            IFS=: read -r dir pages d1 <<< "$item"
+            if [ -d "$dir" ] && [ -n "$pages" ]; then
+              (cd "$dir" && npx wrangler pages project delete "$pages" --yes)
+              rc=$?; echo "$pages cleanup exit: $rc"; [ "$rc" -eq 0 ] || FAIL=1
+            fi
+            if [ -d "$dir" ] && [ -n "$d1" ]; then
+              (cd "$dir" && npx wrangler d1 delete "$d1" --skip-confirmation)
+              rc=$?; echo "$d1 cleanup exit: $rc"; [ "$rc" -eq 0 ] || FAIL=1
+            fi
+          done
+          exit "$FAIL"
+
+      - name: Upload sanitized V15 Task 1 D1 smoke evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v15-task1-d1-smoke-evidence
+          path: |
+            v15-task1-pro-d1-smoke-evidence.json
+            v15-task1-demo-d1-smoke-evidence.json
+          if-no-files-found: warn
+          retention-days: 14
