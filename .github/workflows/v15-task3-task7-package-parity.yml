@@ -83,7 +83,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git hash-object ../v15-task3-patches/003-task7-package-parity.patch.gz.b64)" = c9575d39ff459c0ed299361465b50c92025ef20e
+          test "$(git hash-object ../v15-task3-patches/003-task7-package-parity.patch.gz.b64)" = bd9f693cbe0c6cbac56147ca5d7691c341783907
           base64 -d ../v15-task3-patches/003-task7-package-parity.patch.gz.b64 | gzip -d > ../task7-package.patch
           patch -p1 < ../task7-package.patch
           node --test tests/v15-task3-package-parity.test.mjs
