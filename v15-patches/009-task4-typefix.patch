@@ -1,0 +1,6 @@
+diff --git a/functions/api/[[path]].ts b/functions/api/[[path]].ts
+--- a/functions/api/[[path]].ts
++++ b/functions/api/[[path]].ts
+@@
+-        let whiteLabelPatch;
++        let whiteLabelPatch: ReturnType<typeof normalizeWhiteLabelPatch>;
