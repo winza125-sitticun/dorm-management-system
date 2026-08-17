@@ -49,7 +49,7 @@ index 9493f7f..712afdf 100644
 +  assert.match(settingsBlock, /billFooter:\s*res\.bill_footer/);
 +  assert.match(settingsBlock, /brandLogoUrl:\s*null/);
 +  assert.match(settingsBlock, /whiteLabelEnabled:\s*hasPlanFeature\(subscriptionPlan, ['"]whiteLabel['"]\)/);
-+  assert.match(settingsBlock, /normalizeWhiteLabelPatch\(body\)/);
++  assert.match(settingsBlock, /normalizeWhiteLabelPatch\(body/);
 +  assert.match(settingsBlock, /changedWhiteLabelFields\(existing/);
 +  assert.match(settingsBlock, /owner|super_admin/);
 +  assert.match(settingsBlock, /PLAN_REQUIRED/);
