@@ -20,14 +20,20 @@ jobs:
       - name: Checkout Task 3 branch
         uses: actions/checkout@v4
 
-      - name: Download immutable Task 2 candidate
-        uses: actions/download-artifact@v5
-        with:
-          name: v15-task2-candidate-pending-d1-smoke
-          path: candidate
-          github-token: ${{ github.token }}
-          repository: winza125-sitticun/dorm-management-system
-          run-id: 32021078155
+      - name: Download immutable Task 2 candidate with REST retry
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p candidate
+          curl --fail --location --retry 8 --retry-all-errors --retry-delay 3 \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/winza125-sitticun/dorm-management-system/actions/artifacts/9285398323/zip" \
+            -o candidate-artifact.zip
+          unzip -q candidate-artifact.zip -d candidate
 
       - name: Extract exact Task 2 Master
         shell: bash
@@ -68,9 +74,7 @@ jobs:
 
       - name: Generate preview packages and run builder tests
         working-directory: source
-        shell: bash
         run: |
-          set -euo pipefail
           npm run packages:generate
           npm run test:builder
 
@@ -106,15 +110,11 @@ jobs:
 
       - name: Final One Master review
         working-directory: source
-        shell: bash
         run: |
-          set -euo pipefail
           npm run lint
           npm run check:cloudflare-types:master
           npm run build:pages
           npm run build:vps
           test ! -e d1-migrations/0007_add_theme_runtime.sql
-          for plan in demo basic standard pro; do
-            test -f "release-v14/dorm-management-system-${plan}-v14-CUSTOMER-READY.zip"
-          done
+          for plan in demo basic standard pro; do test -f "release-v14/dorm-management-system-${plan}-v14-CUSTOMER-READY.zip"; done
           git diff --check
