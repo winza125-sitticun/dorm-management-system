@@ -1,0 +1,161 @@
+diff --git a/functions/api/[[path]].ts b/functions/api/[[path]].ts
+index bc3b42e..c087ef8 100644
+--- a/functions/api/[[path]].ts
++++ b/functions/api/[[path]].ts
+@@ -1569,7 +1569,7 @@ export const onRequest: PagesFunction<Env> = async (context) => {
+         if (!tokenCheck.ok) throw new BackupValidationError('RESTORE_TOKEN_INVALID', 400, 'Restore Token ไม่ถูกต้องหรือหมดอายุ');
+ 
+         const currentState = await loadRestoreCurrentState(env.DB, ownerId);
+-        const prepared = prepareRestoreData(body.data as BackupDataV1, currentState, ownerId);
++        const prepared = prepareRestoreData(body.data as BackupDataV1, currentState, ownerId, manifest.schemaVersion);
+         const restoreResult = await restoreBusinessBackup(env.DB, ownerId, prepared);
+         await verifyRestoredBackup(env.DB, ownerId, prepared);
+         await logAuditActionStrict(env.DB, {
+diff --git a/src/server/services/backup.service.ts b/src/server/services/backup.service.ts
+index ecf87ef..53e284b 100644
+--- a/src/server/services/backup.service.ts
++++ b/src/server/services/backup.service.ts
+@@ -51,6 +51,10 @@ export interface CurrentIntegrationState {
+     subscriptionPlan?: string | null;
+     subscriptionStatus?: string | null;
+     subscriptionExpiresAt?: string | null;
++    brandColor?: string | null;
++    contactPhone?: string | null;
++    billFooter?: string | null;
++    brandLogoKey?: string | null;
+   };
+ }
+@@ -143,6 +147,9 @@ function safeSettings(row: D1Row): BackupSafeSettingsV1 {
+     promptpayId: row.promptpay_id == null ? null : String(row.promptpay_id),
+     promptpayName: row.promptpay_name == null ? null : String(row.promptpay_name),
+     fontScale: row.font_scale === 'small' || row.font_scale === 'large' ? row.font_scale : 'medium',
++    brandColor: row.brand_color == null ? null : String(row.brand_color),
++    contactPhone: row.contact_phone == null ? null : String(row.contact_phone),
++    billFooter: row.bill_footer == null ? null : String(row.bill_footer),
+   };
+ }
+@@ -189,7 +196,8 @@ export async function exportBusinessBackup(
+   ]);
+ 
+   const settingsRaw = await firstRow(db, `SELECT dorm_name, default_elec_rate, default_water_rate,
+-    default_due_date_day, default_penalty_rate, promptpay_id, promptpay_name, font_scale
++    default_due_date_day, default_penalty_rate, promptpay_id, promptpay_name, font_scale,
++    brand_color, contact_phone, bill_footer
+     FROM settings WHERE user_id = ? LIMIT 1`, ownerId);
+   if (!settingsRaw) throw new Error('BACKUP_SETTINGS_NOT_FOUND');
+@@ -232,7 +240,8 @@ export async function snapshotCurrentIntegrationState(
+     line_status, line_notify_token FROM rooms WHERE user_id = ? ORDER BY id`, ownerId);
+   const settings = await firstRow(db, `SELECT line_channel_access_token, line_channel_secret,
+     line_bot_enabled, google_spreadsheet_id, subscription_plan, subscription_status,
+-    subscription_expires_at FROM settings WHERE user_id = ? LIMIT 1`, ownerId);
++    subscription_expires_at, brand_color, contact_phone, bill_footer, brand_logo_key
++    FROM settings WHERE user_id = ? LIMIT 1`, ownerId);
+@@ -251,6 +260,10 @@ export async function snapshotCurrentIntegrationState(
+       subscriptionPlan: settings?.subscription_plan as string | null | undefined,
+       subscriptionStatus: settings?.subscription_status as string | null | undefined,
+       subscriptionExpiresAt: settings?.subscription_expires_at as string | null | undefined,
++      brandColor: settings?.brand_color as string | null | undefined,
++      contactPhone: settings?.contact_phone as string | null | undefined,
++      billFooter: settings?.bill_footer as string | null | undefined,
++      brandLogoKey: settings?.brand_logo_key as string | null | undefined,
+     },
+   };
+ }
+diff --git a/src/server/services/restore.service.ts b/src/server/services/restore.service.ts
+index 3325f71..ed8ef0d 100644
+--- a/src/server/services/restore.service.ts
++++ b/src/server/services/restore.service.ts
+@@ -4,7 +4,14 @@ import {
+   type CurrentIntegrationState,
+   type D1DatabaseLike as BackupD1DatabaseLike,
+ } from './backup.service.ts';
+-import { sha256Hex, stableStringify, type BackupDataV1 } from '../../utils/backupFormat.ts';
++import {
++  BACKUP_LEGACY_SCHEMA_VERSION,
++  BACKUP_SCHEMA_VERSION,
++  sha256Hex,
++  stableStringify,
++  type BackupDataV1,
++  type BackupSchemaVersion,
++} from '../../utils/backupFormat.ts';
+@@ -79,20 +86,38 @@ function validDeletedBy(value: unknown, state: RestoreCurrentState, ownerId: num
+   return validActor(value, state, ownerId);
+ }
+ 
+-export function prepareRestoreData(data: BackupDataV1, currentState: RestoreCurrentState, ownerId: number): PreparedRestoreData {
++export function prepareRestoreData(
++  data: BackupDataV1 | Record<string, any>,
++  currentState: RestoreCurrentState,
++  ownerId: number,
++  schemaVersion: BackupSchemaVersion,
++): PreparedRestoreData {
++  if (schemaVersion !== BACKUP_LEGACY_SCHEMA_VERSION && schemaVersion !== BACKUP_SCHEMA_VERSION) {
++    throw new Error(`BACKUP_SCHEMA_VERSION_UNSUPPORTED:${schemaVersion}`);
++  }
++  const sourceSettings = { ...(data.settings as Record<string, unknown>) };
++  const restoredSettings = schemaVersion === BACKUP_LEGACY_SCHEMA_VERSION
++    ? {
++        ...sourceSettings,
++        brandColor: currentState.integrations.settings.brandColor ?? null,
++        contactPhone: currentState.integrations.settings.contactPhone ?? null,
++        billFooter: currentState.integrations.settings.billFooter ?? null,
++      }
++    : sourceSettings;
++  const normalizedInput = { ...data, settings: restoredSettings } as BackupDataV1;
+   const sortById = (rows: Record<string, unknown>[]) => [...rows].sort((a: any, b: any) => Number(a.id) - Number(b.id));
+   const normalizedData = {
+-    ...data,
+-    rooms: sortById(data.rooms),
+-    bills: sortById(data.bills),
+-    recurringChargeTemplates: sortById(data.recurringChargeTemplates),
+-    roomRecurringCharges: sortById(data.roomRecurringCharges),
+-    billChargeItems: sortById(data.billChargeItems),
+-    maintenanceTickets: sortById(data.maintenanceTickets),
+-    housekeepingTasks: sortById(data.housekeepingTasks),
+-    leaseContracts: sortById(data.leaseContracts),
+-    announcements: sortById(data.announcements),
+-    notes: sortById(data.notes),
++    ...normalizedInput,
++    rooms: sortById(normalizedInput.rooms),
++    bills: sortById(normalizedInput.bills),
++    recurringChargeTemplates: sortById(normalizedInput.recurringChargeTemplates),
++    roomRecurringCharges: sortById(normalizedInput.roomRecurringCharges),
++    billChargeItems: sortById(normalizedInput.billChargeItems),
++    maintenanceTickets: sortById(normalizedInput.maintenanceTickets),
++    housekeepingTasks: sortById(normalizedInput.housekeepingTasks),
++    leaseContracts: sortById(normalizedInput.leaseContracts),
++    announcements: sortById(normalizedInput.announcements),
++    notes: sortById(normalizedInput.notes),
+   };
+@@ -122,7 +147,12 @@ export function prepareRestoreData(data: BackupDataV1, currentState: RestoreCurr
+       id: Number(room.id), lineUserId: room.lineUserId, lineDisplayName: room.lineDisplayName,
+       linePictureUrl: room.linePictureUrl, lineStatus: room.lineStatus, lineNotifyToken: room.lineNotifyToken,
+     })),
+-    settings: { ...currentState.integrations.settings },
++    settings: {
++      ...currentState.integrations.settings,
++      brandColor: restoredSettings.brandColor as string | null | undefined,
++      contactPhone: restoredSettings.contactPhone as string | null | undefined,
++      billFooter: restoredSettings.billFooter as string | null | undefined,
++    },
+   };
+@@ -136,10 +166,10 @@ export function prepareRestoreData(data: BackupDataV1, currentState: RestoreCurr
+     leaseContracts: leaseContracts.map(({ userId, ...row }) => row),
+     announcements: announcements.map(({ userId, ...row }) => row),
+     notes: notes.map(({ userId, ...row }) => row),
+-    settings: { ...data.settings },
++    settings: { ...restoredSettings } as BackupDataV1['settings'],
+   };
+ 
+-  return { rooms, bills, recurringChargeTemplates, roomRecurringCharges, billChargeItems, maintenanceTickets, housekeepingTasks, leaseContracts, announcements, notes, settings: { ...data.settings }, backupData, expectedIntegrations };
++  return { rooms, bills, recurringChargeTemplates, roomRecurringCharges, billChargeItems, maintenanceTickets, housekeepingTasks, leaseContracts, announcements, notes, settings: { ...restoredSettings }, backupData, expectedIntegrations };
+ }
+@@ -200,7 +230,7 @@ export async function restoreBusinessBackup(db: RestoreD1DatabaseLike, ownerId:
+       }
+     }
+     const s: any = preparedData.settings;
+-    const settingsStmt = db.prepare(`UPDATE settings SET dorm_name=?,default_elec_rate=?,default_water_rate=?,default_due_date_day=?,default_penalty_rate=?,promptpay_id=?,promptpay_name=?,font_scale=?,updated_at=CURRENT_TIMESTAMP WHERE user_id=?`).bind(s.dormName,s.defaultElecRate,s.defaultWaterRate,s.defaultDueDateDay,s.defaultPenaltyRate,s.promptpayId,s.promptpayName,s.fontScale,ownerId);
++    const settingsStmt = db.prepare(`UPDATE settings SET dorm_name=?,default_elec_rate=?,default_water_rate=?,default_due_date_day=?,default_penalty_rate=?,promptpay_id=?,promptpay_name=?,font_scale=?,brand_color=?,contact_phone=?,bill_footer=?,updated_at=CURRENT_TIMESTAMP WHERE user_id=?`).bind(s.dormName,s.defaultElecRate,s.defaultWaterRate,s.defaultDueDateDay,s.defaultPenaltyRate,s.promptpayId,s.promptpayName,s.fontScale,s.brandColor,s.contactPhone,s.billFooter,ownerId);
+     ensureBatchSuccess(await db.batch([settingsStmt]), 'SETTINGS');
+     return { preRestoreDataSha256 };
+   } catch (error) {
