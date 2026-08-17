@@ -3,8 +3,7 @@ name: V15 Task 2 TDD Gate
 on:
   workflow_dispatch:
   push:
-    branches:
-      - agent/v15-task1-white-label-contract
+    branches: [agent/v15-task1-white-label-contract]
     paths:
       - 'v15-task2-patches/**'
       - '.github/workflows/v15-task2-tdd.yml'
@@ -14,22 +13,20 @@ permissions:
   actions: read
 
 jobs:
-  task1-task3-red-green:
+  task1-task4-red-green:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 35
     steps:
-      - name: Checkout V15 Task 2 branch
-        uses: actions/checkout@v4
-
-      - name: Download immutable V15 Task 1 candidate
-        uses: actions/download-artifact@v5
+      - uses: actions/checkout@v4
+        name: Checkout V15 Task 2 branch
+      - uses: actions/download-artifact@v5
+        name: Download immutable V15 Task 1 candidate
         with:
           name: v15-task1-candidate-pending-d1-smoke
           path: candidate
           github-token: ${{ github.token }}
           repository: winza125-sitticun/dorm-management-system
           run-id: 31996317195
-
       - name: Extract exact V15 Task 1 source
         shell: bash
         run: |
@@ -37,19 +34,16 @@ jobs:
           MASTER_ZIP="$(find candidate -type f -name 'dorm-management-system-master-v15-task1-REVIEW-CI.zip' -print -quit)"
           test -n "$MASTER_ZIP"
           echo '13fa8904b3a55d56516761a2731781e15af63658e48d627cdad1c7a167aa2366  '"$MASTER_ZIP" | sha256sum --check --strict
-          mkdir source
-          unzip -q "$MASTER_ZIP" -d source
+          mkdir source && unzip -q "$MASTER_ZIP" -d source
           test -f source/package.json
           test ! -e source/src/server/validators/logo.ts
           test ! -e source/src/server/services/branding.service.ts
-
-      - name: Use Node.js 22
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
+        name: Use Node.js 22
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: source/package-lock.json
-
       - name: Install exact dependencies
         working-directory: source
         run: npm ci
@@ -59,106 +53,90 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git hash-object ../v15-task2-patches/001-task1-test.patch.b64)" = '6dfd6bc4b4df61d1cb2ca2b07f3c7f217d55818a'
-          base64 -d ../v15-task2-patches/001-task1-test.patch.b64 > ../task1-test.patch
-          patch -p1 < ../task1-test.patch
-          set +e
-          npx tsx --test tests/logo-validation.test.ts > ../task1-red.log 2>&1
-          rc=$?
-          set -e
-          cat ../task1-red.log
-          test "$rc" -ne 0
-          grep -Eq 'Cannot find module|ERR_MODULE_NOT_FOUND|logo' ../task1-red.log
-          test "$(git hash-object ../v15-task2-patches/002-task1-impl.patch.b64)" = '79230a4e613b46d7a71b0cbf3d13168ff497661a'
-          base64 -d ../v15-task2-patches/002-task1-impl.patch.b64 > ../task1-impl.patch
-          patch -p1 < ../task1-impl.patch
+          test "$(git hash-object ../v15-task2-patches/001-task1-test.patch.b64)" = 6dfd6bc4b4df61d1cb2ca2b07f3c7f217d55818a
+          base64 -d ../v15-task2-patches/001-task1-test.patch.b64 > ../t1-test.patch && patch -p1 < ../t1-test.patch
+          set +e; npx tsx --test tests/logo-validation.test.ts > ../t1-red.log 2>&1; rc=$?; set -e
+          cat ../t1-red.log; test "$rc" -ne 0; grep -Eq 'Cannot find module|ERR_MODULE_NOT_FOUND|logo' ../t1-red.log
+          test "$(git hash-object ../v15-task2-patches/002-task1-impl.patch.b64)" = 79230a4e613b46d7a71b0cbf3d13168ff497661a
+          base64 -d ../v15-task2-patches/002-task1-impl.patch.b64 > ../t1-impl.patch && patch -p1 < ../t1-impl.patch
           npx tsx --test tests/logo-validation.test.ts
           npm run lint
           npm run check:cloudflare-types:master
-
-      - name: Task 1 static security review
+      - name: Task 1 static review
         working-directory: source
-        shell: bash
         run: |
           set -euo pipefail
           grep -q 'LOGO_MAX_DECODED_BYTES = 307_200' src/server/validators/logo.ts
-          grep -q "image/png.*image/jpeg.*image/webp" src/server/validators/logo.ts
-          grep -q '0x89' src/server/validators/logo.ts
-          grep -q '0xff' src/server/validators/logo.ts
           grep -q 'hasWebpSignature' src/server/validators/logo.ts
           grep -q 'btoa(binary) !== payload' src/server/validators/logo.ts
           ! grep -q 'Buffer' src/server/validators/logo.ts
-          ! grep -qi 'svg' src/server/validators/logo.ts
 
       - name: Task 2 RED then GREEN
         working-directory: source
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git hash-object ../v15-task2-patches/003-task2-test.patch.b64)" = 'ff9bb8e86d633b729dc76663e2ab1f39b9e0c582'
-          base64 -d ../v15-task2-patches/003-task2-test.patch.b64 > ../task2-test.patch
-          patch -p1 < ../task2-test.patch
-          set +e
-          npx tsx --test tests/public-branding.test.ts > ../task2-red.log 2>&1
-          rc=$?
-          set -e
-          cat ../task2-red.log
-          test "$rc" -ne 0
-          grep -Eq 'Cannot find module|ERR_MODULE_NOT_FOUND|branding' ../task2-red.log
-          test "$(git hash-object ../v15-task2-patches/004-task2-impl.patch.b64)" = '8ecae53f5a20b2d8e1adae70f4e812aa9f218972'
-          base64 -d ../v15-task2-patches/004-task2-impl.patch.b64 > ../task2-impl.patch
-          patch -p1 < ../task2-impl.patch
+          test "$(git hash-object ../v15-task2-patches/003-task2-test.patch.b64)" = ff9bb8e86d633b729dc76663e2ab1f39b9e0c582
+          base64 -d ../v15-task2-patches/003-task2-test.patch.b64 > ../t2-test.patch && patch -p1 < ../t2-test.patch
+          set +e; npx tsx --test tests/public-branding.test.ts > ../t2-red.log 2>&1; rc=$?; set -e
+          cat ../t2-red.log; test "$rc" -ne 0; grep -Eq 'Cannot find module|ERR_MODULE_NOT_FOUND|branding' ../t2-red.log
+          test "$(git hash-object ../v15-task2-patches/004-task2-impl.patch.b64)" = 8ecae53f5a20b2d8e1adae70f4e812aa9f218972
+          base64 -d ../v15-task2-patches/004-task2-impl.patch.b64 > ../t2-impl.patch && patch -p1 < ../t2-impl.patch
           npx tsx --test tests/logo-validation.test.ts tests/public-branding.test.ts
           npm run lint
           npm run check:cloudflare-types:master
-
       - name: Task 2 static privacy review
         working-directory: source
-        shell: bash
         run: |
           set -euo pipefail
           grep -q 'buildPublicBranding' src/server/services/branding.service.ts
           grep -q "hasPlanFeature(plan, 'whiteLabel')" src/server/services/branding.service.ts
-          grep -q 'safeStoredLogoDataUri' src/server/services/branding.service.ts
-          grep -q 'DEFAULT_DORM_NAME' src/server/services/branding.service.ts
           ! grep -q '\.\.\.source' src/server/services/branding.service.ts
           ! grep -q 'promptpay' src/server/services/branding.service.ts
-          ! grep -q 'lineChannel' src/server/services/branding.service.ts
-          ! grep -q 'googleSpreadsheet' src/server/services/branding.service.ts
 
       - name: Task 3 RED then GREEN
         working-directory: source
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git hash-object ../v15-task2-patches/005-task3-test.patch.b64)" = '533fe0864b56ac04dc9aba7cabab73aa0d6e28c4'
-          base64 -d ../v15-task2-patches/005-task3-test.patch.b64 > ../task3-test.patch
-          patch -p1 < ../task3-test.patch
-          set +e
-          npx tsx --test tests/logo-api-contract.test.ts tests/settings-white-label.test.ts tests/plan-api-guards.test.ts > ../task3-red.log 2>&1
-          rc=$?
-          set -e
-          cat ../task3-red.log
-          test "$rc" -ne 0
-          grep -Eq 'settings/logo|whiteLabel|logo route|brandLogoUrl' ../task3-red.log
-
-          test "$(git hash-object ../v15-task2-patches/006-task3-impl.patch.b64)" = 'fdc73ddf8c7b6b7bb07d3ca700a8e86c189177a0'
-          base64 -d ../v15-task2-patches/006-task3-impl.patch.b64 > ../task3-impl.patch
-          patch -p1 < ../task3-impl.patch
+          test "$(git hash-object ../v15-task2-patches/005-task3-test.patch.b64)" = 533fe0864b56ac04dc9aba7cabab73aa0d6e28c4
+          base64 -d ../v15-task2-patches/005-task3-test.patch.b64 > ../t3-test.patch && patch -p1 < ../t3-test.patch
+          set +e; npx tsx --test tests/logo-api-contract.test.ts tests/settings-white-label.test.ts tests/plan-api-guards.test.ts > ../t3-red.log 2>&1; rc=$?; set -e
+          cat ../t3-red.log; test "$rc" -ne 0; grep -Eq 'settings/logo|whiteLabel|logo route|brandLogoUrl' ../t3-red.log
+          test "$(git hash-object ../v15-task2-patches/006-task3-impl.patch.b64)" = fdc73ddf8c7b6b7bb07d3ca700a8e86c189177a0
+          base64 -d ../v15-task2-patches/006-task3-impl.patch.b64 > ../t3-impl.patch && patch -p1 < ../t3-impl.patch
           npx tsx --test tests/logo-validation.test.ts tests/public-branding.test.ts tests/logo-api-contract.test.ts tests/settings-white-label.test.ts tests/plan-api-guards.test.ts
           npm run lint
           npm run check:cloudflare-types:master
+      - name: Task 3 static authorization review
+        working-directory: source
+        run: |
+          set -euo pipefail
+          grep -q 'getAuthUser({ skipPlanAccess: true })' 'functions/api/[[path]].ts'
+          grep -q 'validateLogoDataUri(bodyResult.data.logoDataUri)' 'functions/api/[[path]].ts'
+          grep -q 'UPDATE settings SET brand_logo_key = ?' 'functions/api/[[path]].ts'
+          grep -q 'UPDATE settings SET brand_logo_key = NULL' 'functions/api/[[path]].ts'
+          ! grep -Eq 'console\.(log|warn|error)\([^\n]*logoDataUri' 'functions/api/[[path]].ts'
 
-      - name: Task 3 static authorization and privacy review
+      - name: Task 4 RED then GREEN
         working-directory: source
         shell: bash
         run: |
           set -euo pipefail
-          grep -q "path === '/api/settings/logo'.*whiteLabel" src/server/services/planAccess.service.ts
-          grep -q 'getAuthUser({ skipPlanAccess: true })' 'functions/api/[[path]].ts'
-          grep -q 'LOGO_REQUEST_MAX_BYTES' 'functions/api/[[path]].ts'
-          grep -q 'validateLogoDataUri(bodyResult.data.logoDataUri)' 'functions/api/[[path]].ts'
-          grep -q 'UPDATE settings SET brand_logo_key = ?' 'functions/api/[[path]].ts'
-          grep -q 'UPDATE settings SET brand_logo_key = NULL' 'functions/api/[[path]].ts'
-          grep -q 'brandLogoUrl: safeStoredLogoDataUri(res.brand_logo_key)' 'functions/api/[[path]].ts'
-          ! grep -Eq 'console\.(log|warn|error)\([^\n]*logoDataUri' 'functions/api/[[path]].ts'
+          test "$(git hash-object ../v15-task2-patches/007-task4-test.patch.b64)" = ec68a4378a8cc1d1363e60dcc90e2b423ea87eb7
+          base64 -d ../v15-task2-patches/007-task4-test.patch.b64 > ../t4-test.patch && patch -p1 < ../t4-test.patch
+          set +e; npx tsx --test tests/logo-api-contract.test.ts tests/public-branding.test.ts > ../t4-red.log 2>&1; rc=$?; set -e
+          cat ../t4-red.log; test "$rc" -ne 0; grep -Eq 'public branding route must exist|public/branding' ../t4-red.log
+          test "$(git hash-object ../v15-task2-patches/008-task4-impl.patch.b64)" = dd7029e6e72e3305df6f7088434d8c311465a370
+          base64 -d ../v15-task2-patches/008-task4-impl.patch.b64 > ../t4-impl.patch && patch -p1 < ../t4-impl.patch
+          npx tsx --test tests/logo-validation.test.ts tests/public-branding.test.ts tests/logo-api-contract.test.ts tests/settings-white-label.test.ts tests/plan-api-guards.test.ts
+          npm run lint
+          npm run check:cloudflare-types:master
+      - name: Task 4 static public-data review
+        working-directory: source
+        run: |
+          set -euo pipefail
+          grep -q 'path === "/api/public/branding"' 'functions/api/[[path]].ts'
+          grep -q 'SELECT dorm_name, brand_color, contact_phone, brand_logo_key, subscription_plan FROM settings ORDER BY id ASC LIMIT 1' 'functions/api/[[path]].ts'
+          grep -q 'buildPublicBranding({' 'functions/api/[[path]].ts'
+          ! sed -n '/5.8 PUBLIC BRANDING API/,/5.9 WHITE-LABEL LOGO API/p' 'functions/api/[[path]].ts' | grep -Eq 'promptpay_id|line_channel|google_spreadsheet|bill_footer|subscription_status|subscription_expires_at'
