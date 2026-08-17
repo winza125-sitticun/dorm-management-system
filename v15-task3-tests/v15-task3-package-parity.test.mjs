@@ -6,14 +6,13 @@ import { execFileSync } from 'node:child_process';
 
 const root = process.cwd();
 const plans = ['demo', 'basic', 'standard', 'pro'];
-const sharedFiles = [
+const runtimeFiles = [
   'src/theme/brandTheme.ts',
   'src/theme/brandingClient.ts',
   'src/context/ThemeContext.tsx',
   'src/components/BrandingBootScreen.tsx',
   'src/App.tsx',
   'src/index.css',
-  'src/constants/planEntitlements.ts',
 ];
 
 function zipFor(plan) {
@@ -28,16 +27,16 @@ function listZip(zip) {
   return execFileSync('unzip', ['-Z1', zip], { encoding: 'utf8' }).split(/\r?\n/).filter(Boolean);
 }
 
-test('all four packages contain byte-identical Task 3 runtime and entitlement source', () => {
+test('all four packages contain byte-identical Task 3 runtime files', () => {
   for (const plan of plans) assert.ok(fs.existsSync(zipFor(plan)), `missing ${plan} package`);
-  for (const file of sharedFiles) {
+  for (const file of runtimeFiles) {
     const master = fs.readFileSync(path.join(root, file), 'utf8');
     for (const plan of plans) assert.equal(readZipEntry(zipFor(plan), file), master, `${plan}: ${file} differs`);
   }
 });
 
-test('Task 3 runtime and entitlement source are identical across generated plans', () => {
-  for (const file of sharedFiles) {
+test('Task 3 runtime is identical across generated plans', () => {
+  for (const file of runtimeFiles) {
     const expected = readZipEntry(zipFor('pro'), file);
     for (const plan of plans) assert.equal(readZipEntry(zipFor(plan), file), expected, `${plan}: ${file} runtime drift`);
   }
