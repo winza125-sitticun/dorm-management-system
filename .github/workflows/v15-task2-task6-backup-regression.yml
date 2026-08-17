@@ -1,0 +1,157 @@
+name: V15 Task 2 Task 6 Backup Regression
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [agent/v15-task1-white-label-contract]
+    paths:
+      - 'v15-task2-patches/011-task6-test.patch.gz.b64'
+      - '.github/workflows/v15-task2-task6-backup-regression.yml'
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  backup-logo-non-portability:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout Task 2 branch
+        uses: actions/checkout@v4
+
+      - name: Download immutable Task 1 candidate
+        uses: actions/download-artifact@v5
+        with:
+          name: v15-task1-candidate-pending-d1-smoke
+          path: candidate
+          github-token: ${{ github.token }}
+          repository: winza125-sitticun/dorm-management-system
+          run-id: 31996317195
+
+      - name: Extract exact source
+        shell: bash
+        run: |
+          set -euo pipefail
+          MASTER_ZIP="$(find candidate -type f -name 'dorm-management-system-master-v15-task1-REVIEW-CI.zip' -print -quit)"
+          test -n "$MASTER_ZIP"
+          echo '13fa8904b3a55d56516761a2731781e15af63658e48d627cdad1c7a167aa2366  '"$MASTER_ZIP" | sha256sum --check --strict
+          mkdir source && unzip -q "$MASTER_ZIP" -d source
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: source/package-lock.json
+
+      - name: Install exact dependencies
+        working-directory: source
+        run: npm ci
+
+      - name: Rebuild verified Task 1-5 source
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          apply_plain() {
+            local file="$1" expected="$2" out="$3"
+            test "$(git hash-object "../$file")" = "$expected"
+            base64 -d "../$file" > "../$out"
+            patch -p1 < "../$out"
+          }
+          apply_gz() {
+            local file="$1" expected="$2" out="$3"
+            test "$(git hash-object "../$file")" = "$expected"
+            base64 -d "../$file" | gzip -d > "../$out"
+            patch -p1 < "../$out"
+          }
+          apply_plain v15-task2-patches/001-task1-test.patch.b64 6dfd6bc4b4df61d1cb2ca2b07f3c7f217d55818a t1-test.patch
+          apply_plain v15-task2-patches/002-task1-impl.patch.b64 79230a4e613b46d7a71b0cbf3d13168ff497661a t1-impl.patch
+          apply_plain v15-task2-patches/003-task2-test.patch.b64 ff9bb8e86d633b729dc76663e2ab1f39b9e0c582 t2-test.patch
+          apply_plain v15-task2-patches/004-task2-impl.patch.b64 8ecae53f5a20b2d8e1adae70f4e812aa9f218972 t2-impl.patch
+          apply_plain v15-task2-patches/005-task3-test.patch.b64 533fe0864b56ac04dc9aba7cabab73aa0d6e28c4 t3-test.patch
+          apply_plain v15-task2-patches/006-task3-impl.patch.b64 fdc73ddf8c7b6b7bb07d3ca700a8e86c189177a0 t3-impl.patch
+          apply_plain v15-task2-patches/007-task4-test.patch.b64 ec68a4378a8cc1d1363e60dcc90e2b423ea87eb7 t4-test.patch
+          apply_plain v15-task2-patches/008-task4-impl.patch.b64 dd7029e6e72e3305df6f7088434d8c311465a370 t4-impl.patch
+          apply_gz v15-task2-patches/009-task5-test.patch.gz.b64 34dcf755c3ce9e6147ee4a0a312b7be57ee644dd t5-test.patch
+          apply_gz v15-task2-patches/010-task5-impl.patch.gz.b64 82d098eeb1c37480f98d441f7f491f597116df23 t5-impl.patch
+          npx tsx --test tests/logo-validation.test.ts tests/public-branding.test.ts tests/logo-api-contract.test.ts tests/settings-white-label.test.ts tests/plan-api-guards.test.ts
+
+      - name: Apply Task 6 regression assertions
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object ../v15-task2-patches/011-task6-test.patch.gz.b64)" = 3f9e32de377d98d2d5a9ed9db571cc95d0e71ba0
+          base64 -d ../v15-task2-patches/011-task6-test.patch.gz.b64 | gzip -d > ../task6-test.patch
+          patch -p1 < ../task6-test.patch
+          npm run test:backup
+
+      - name: Prove export regression test sensitivity
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp src/server/services/backup.service.ts ../backup.service.clean.ts
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('src/server/services/backup.service.ts')
+          s=p.read_text()
+          needle="    billFooter: row.bill_footer == null ? null : String(row.bill_footer),\n"
+          assert needle in s
+          s=s.replace(needle, needle + "    brandLogoKey: row.brand_logo_key == null ? null : String(row.brand_logo_key),\n", 1)
+          p.write_text(s)
+          PY
+          set +e
+          npx tsx --test tests/backup-export.test.ts > ../task6-export-sensitivity.log 2>&1
+          rc=$?
+          set -e
+          cat ../task6-export-sensitivity.log
+          if [ "$rc" -eq 0 ]; then
+            echo '::error::Logo export regression assertions did not detect an intentional leak'
+            exit 1
+          fi
+          grep -Eq 'logo payload must remain non-portable|logo field must not be exported|forbidden backup field|brandLogoKey' ../task6-export-sensitivity.log
+          mv ../backup.service.clean.ts src/server/services/backup.service.ts
+
+      - name: Prove restore regression test sensitivity
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp src/server/services/restore.service.ts ../restore.service.clean.ts
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('src/server/services/restore.service.ts')
+          s=p.read_text()
+          old="UPDATE settings SET dorm_name=?,default_elec_rate=?,default_water_rate=?,default_due_date_day=?,default_penalty_rate=?,promptpay_id=?,promptpay_name=?,font_scale=?,brand_color=?,contact_phone=?,bill_footer=?,updated_at=CURRENT_TIMESTAMP WHERE user_id=?`).bind(s.dormName,s.defaultElecRate,s.defaultWaterRate,s.defaultDueDateDay,s.defaultPenaltyRate,s.promptpayId,s.promptpayName,s.fontScale,s.brandColor,s.contactPhone,s.billFooter,ownerId)"
+          new="UPDATE settings SET dorm_name=?,default_elec_rate=?,default_water_rate=?,default_due_date_day=?,default_penalty_rate=?,promptpay_id=?,promptpay_name=?,font_scale=?,brand_color=?,contact_phone=?,bill_footer=?,brand_logo_key=?,updated_at=CURRENT_TIMESTAMP WHERE user_id=?`).bind(s.dormName,s.defaultElecRate,s.defaultWaterRate,s.defaultDueDateDay,s.defaultPenaltyRate,s.promptpayId,s.promptpayName,s.fontScale,s.brandColor,s.contactPhone,s.billFooter,null,ownerId)"
+          assert old in s
+          p.write_text(s.replace(old,new,1))
+          PY
+          set +e
+          npx tsx --test tests/backup-restore.test.ts > ../task6-restore-sensitivity.log 2>&1
+          rc=$?
+          set -e
+          cat ../task6-restore-sensitivity.log
+          if [ "$rc" -eq 0 ]; then
+            echo '::error::Logo restore regression assertions did not detect an intentional wipe'
+            exit 1
+          fi
+          grep -Eq 'data:image/png;base64|brand_logo_key|Expected values to be strictly equal' ../task6-restore-sensitivity.log
+          mv ../restore.service.clean.ts src/server/services/restore.service.ts
+
+      - name: Final Task 6 GREEN and static contract review
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run test:backup
+          npm run lint
+          grep -q 'BACKUP_SCHEMA_VERSION = 7' src/utils/backupFormat.ts
+          ! grep -q 'brandLogoKey' <(sed -n '/function safeSettings/,/^}/p' src/server/services/backup.service.ts)
+          ! grep -q 'brand_logo_key' <(sed -n '/const settingsRaw = await firstRow/,/if (!settingsRaw)/p' src/server/services/backup.service.ts)
+          grep -q 'brandLogoKey: settings?.brand_logo_key' src/server/services/backup.service.ts
+          ! grep -q 'brand_logo_key=?' src/server/services/restore.service.ts
+          git diff --check
