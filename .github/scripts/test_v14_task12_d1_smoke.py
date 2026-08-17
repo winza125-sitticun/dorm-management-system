@@ -32,6 +32,17 @@ class SmokeHelpersTest(unittest.TestCase):
         self.assertNotIn("REPLACE_WITH_YOUR", rendered)
         self.assertNotIn("00000000-0000-0000-0000-000000000000", rendered)
 
+    def test_build_wrangler_config_handles_actual_d1_name_placeholder(self):
+        template = '{"name":"REPLACE_WITH_YOUR_PAGES_PROJECT","d1_databases":[{"binding":"DB","database_name":"REPLACE_WITH_YOUR_D1_DATABASE_NAME","database_id":"00000000-0000-0000-0000-000000000000"}]}'
+        rendered = smoke.build_wrangler_config(
+            template,
+            "pages-test",
+            "db-test",
+            "11111111-1111-1111-1111-111111111111",
+        )
+        self.assertIn('"database_name":"db-test"', rendered)
+        self.assertNotIn("_NAME", rendered)
+
     def test_parse_wrangler_json_accepts_prefixed_output(self):
         payload = [{"results": [{"id": 1}], "success": True}]
         parsed = smoke.parse_wrangler_json("wrangler info line\n" + json.dumps(payload))
