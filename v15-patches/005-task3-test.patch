@@ -1,0 +1,70 @@
+diff --git a/tests/settings-white-label.test.ts b/tests/settings-white-label.test.ts
+index f1c98aa..9493f7f 100644
+--- a/tests/settings-white-label.test.ts
++++ b/tests/settings-white-label.test.ts
+@@ -24,3 +24,65 @@ test('Settings exposes only the public white-label projection', () => {
+   assert.equal(settings.whiteLabelEnabled, true);
+   assert.equal('brandLogoKey' in settings, false);
+ });
++
++import { changedWhiteLabelFields, normalizeWhiteLabelPatch } from '../src/server/validators/settings.ts';
++
++test('normalizes white-label values canonically', () => {
++  assert.deepEqual(normalizeWhiteLabelPatch({
++    dormName: '  My Dorm  ',
++    brandColor: '#1db954',
++    contactPhone: ' 081-234-5678 ',
++    billFooter: '  Thank you  ',
++  }), {
++    dormName: 'My Dorm',
++    brandColor: '#1DB954',
++    contactPhone: '081-234-5678',
++    billFooter: 'Thank you',
++  });
++});
++
++test('empty optional white-label strings normalize to null', () => {
++  assert.deepEqual(normalizeWhiteLabelPatch({ brandColor: '', contactPhone: '  ', billFooter: '' }), {
++    brandColor: null,
++    contactPhone: null,
++    billFooter: null,
++  });
++});
++
++for (const value of ['red', '#12345', '#1234567', '#GGGGGG']) {
++  test(`rejects invalid brandColor ${value}`, () => {
++    assert.throws(() => normalizeWhiteLabelPatch({ brandColor: value }), /brandColor/i);
++  });
++}
++
++test('rejects server-managed logo fields and unknown white-label-shaped fields', () => {
++  assert.throws(() => normalizeWhiteLabelPatch({ brandLogoKey: 'x' }), /brandLogoKey/i);
++  assert.throws(() => normalizeWhiteLabelPatch({ brandLogoUrl: 'https://x' }), /brandLogoUrl/i);
++  assert.throws(() => normalizeWhiteLabelPatch({ brandTheme: 'x' }), /brandTheme/i);
++});
++
++test('enforces white-label length character and plain-text limits', () => {
++  assert.throws(() => normalizeWhiteLabelPatch({ dormName: '' }), /dormName/i);
++  assert.throws(() => normalizeWhiteLabelPatch({ dormName: 'x'.repeat(121) }), /dormName/i);
++  assert.throws(() => normalizeWhiteLabelPatch({ dormName: '<b>Dorm</b>' }), /dormName/i);
++  assert.throws(() => normalizeWhiteLabelPatch({ contactPhone: 'x123' }), /contactPhone/i);
++  assert.throws(() => normalizeWhiteLabelPatch({ contactPhone: '1'.repeat(33) }), /contactPhone/i);
++  assert.throws(() => normalizeWhiteLabelPatch({ billFooter: 'x'.repeat(501) }), /billFooter/i);
++  assert.throws(() => normalizeWhiteLabelPatch({ billFooter: '<b>Thanks</b>' }), /billFooter/i);
++});
++
++test('diff ignores unchanged normalized values and reports actual changes', () => {
++  const current = {
++    dorm_name: 'My Dorm',
++    brand_color: '#1DB954',
++    contact_phone: '081-234-5678',
++    bill_footer: null,
++  };
++  assert.deepEqual(changedWhiteLabelFields(current, normalizeWhiteLabelPatch({
++    dormName: '  My Dorm ',
++    brandColor: '#1db954',
++    contactPhone: ' 081-234-5678 ',
++    billFooter: '',
++  })), []);
++  assert.deepEqual(changedWhiteLabelFields(current, normalizeWhiteLabelPatch({ brandColor: '#112233' })), ['brandColor']);
++});
