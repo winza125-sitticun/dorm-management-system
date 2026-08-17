@@ -8,52 +8,27 @@ on:
       - '.github/workflows/v15-task2-evidence-field-fix.yml'
 
 permissions:
-  contents: write
+  contents: read
   actions: write
 
 jobs:
-  enrich-and-rerun:
+  rerun-enriched-evidence:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 5
     steps:
-      - name: Checkout branch
+      - name: Verify branch script contains explicit secret leak evidence
         uses: actions/checkout@v4
         with:
           ref: agent/v15-task1-white-label-contract
 
-      - name: Add explicit secret leak evidence field
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          from pathlib import Path
-          p = Path('.github/scripts/v15_task2_d1_smoke.py')
-          s = p.read_text(encoding='utf-8')
-          old = "'publicBranding': {'unauthenticated': True, 'explicitSafeFields': True, 'demoMaskAfterDowngrade': True},"
-          new = "'publicBranding': {'unauthenticated': True, 'explicitSafeFields': True, 'secretLeakCheck': True, 'demoMaskAfterDowngrade': True},"
-          if old not in s:
-              raise SystemExit('expected evidence line not found')
-          p.write_text(s.replace(old, new, 1), encoding='utf-8')
-          PY
-          grep -Fq "'secretLeakCheck': True" .github/scripts/v15_task2_d1_smoke.py
-          python3 -m py_compile .github/scripts/v15_task2_d1_smoke.py
-
-      - name: Commit evidence-only change
-        shell: bash
-        run: |
-          set -euo pipefail
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add .github/scripts/v15_task2_d1_smoke.py
-          git commit -m 'test(v15-task2): record public secret leak smoke evidence'
-          git push origin HEAD:agent/v15-task1-white-label-contract
-
-      - name: Dispatch full Task 2 D1 smoke again
+      - name: Verify evidence field and dispatch full D1 smoke
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
+          grep -Fq "'secretLeakCheck': True" .github/scripts/v15_task2_d1_smoke.py
+          python3 -m py_compile .github/scripts/v15_task2_d1_smoke.py
           curl --fail-with-body -L \
             -X POST \
             -H "Accept: application/vnd.github+json" \
