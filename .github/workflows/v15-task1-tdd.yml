@@ -180,6 +180,9 @@ jobs:
           base64 -d ../v15-patches/013-task6-impl.patch.b64 > ../task6-impl-exact.patch
           echo '27d13e930660d0aca1f72e446a6addcb6acc3022c4d8474ce90c40e256cda30e  ../task6-impl-exact.patch' | sha256sum --check --strict
           patch -p1 < ../task6-impl-exact.patch
+          base64 -d ../v15-patches/014-task6-typefix.patch.b64 > ../task6-typefix-exact.patch
+          echo 'e7a35f347de9f6bccf2360f15b0404726a55f37c404631a5b618624b57b41dfa  ../task6-typefix-exact.patch' | sha256sum --check --strict
+          patch -p1 < ../task6-typefix-exact.patch
           npx tsx --test tests/backup-export.test.ts tests/backup-validation.test.ts tests/backup-restore.test.ts tests/backup-restore-api.test.ts
           npm run lint
 
