@@ -111,7 +111,6 @@ jobs:
           cat ../task4-red.log
           test "$rc" -ne 0
           patch -p1 < ../v15-patches/008-task4-impl.patch
-          patch -p1 < ../v15-patches/009-task4-typefix.patch
           npx tsx --test tests/settings-white-label.test.ts tests/plan-api-guards.test.ts
           npm run lint
 
