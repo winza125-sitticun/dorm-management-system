@@ -1,0 +1,100 @@
+diff --git a/src/server/validators/settings.ts b/src/server/validators/settings.ts
+new file mode 100644
+index 0000000..82d3603
+--- /dev/null
++++ b/src/server/validators/settings.ts
+@@ -0,0 +1,94 @@
++export interface NormalizedWhiteLabelSettings {
++  dormName?: string;
++  brandColor?: string | null;
++  contactPhone?: string | null;
++  billFooter?: string | null;
++}
++
++const COLOR_RE = /^#[0-9A-Fa-f]{6}$/;
++const PHONE_RE = /^[0-9 +\-().]*$/;
++const HTML_RE = /<[^>]*>/;
++const WRITE_FIELDS = new Set(['dormName', 'brandColor', 'contactPhone', 'billFooter']);
++const READ_ONLY_FIELDS = new Set(['brandLogoKey', 'brandLogoUrl']);
++const DB_KEY: Record<keyof NormalizedWhiteLabelSettings, string> = {
++  dormName: 'dorm_name',
++  brandColor: 'brand_color',
++  contactPhone: 'contact_phone',
++  billFooter: 'bill_footer',
++};
++
++function fail(field: string, message: string): never {
++  throw new Error(`${field}: ${message}`);
++}
++
++function normalizeDormName(value: unknown): string {
++  if (typeof value !== 'string') fail('dormName', 'must be a string');
++  const normalized = value.trim();
++  if (normalized.length < 1 || normalized.length > 120) fail('dormName', 'length must be 1..120');
++  if (HTML_RE.test(normalized)) fail('dormName', 'plain text only');
++  return normalized;
++}
++
++function normalizeBrandColor(value: unknown): string | null {
++  if (value === null) return null;
++  if (typeof value !== 'string') fail('brandColor', 'must be a string or null');
++  const normalized = value.trim();
++  if (!normalized) return null;
++  if (!COLOR_RE.test(normalized)) fail('brandColor', 'must be #RRGGBB');
++  return normalized.toUpperCase();
++}
++
++function normalizeContactPhone(value: unknown): string | null {
++  if (value === null) return null;
++  if (typeof value !== 'string') fail('contactPhone', 'must be a string or null');
++  const normalized = value.trim();
++  if (!normalized) return null;
++  if (normalized.length > 32) fail('contactPhone', 'length must be <= 32');
++  if (!PHONE_RE.test(normalized)) fail('contactPhone', 'contains unsupported characters');
++  return normalized;
++}
++
++function normalizeBillFooter(value: unknown): string | null {
++  if (value === null) return null;
++  if (typeof value !== 'string') fail('billFooter', 'must be a string or null');
++  const normalized = value.trim();
++  if (!normalized) return null;
++  if (normalized.length > 500) fail('billFooter', 'length must be <= 500');
++  if (HTML_RE.test(normalized)) fail('billFooter', 'plain text only');
++  return normalized;
++}
++
++function isWhiteLabelShapedKey(key: string): boolean {
++  return key === 'dormName' || key.startsWith('brand') || key.startsWith('contact') || key.startsWith('billFooter');
++}
++
++export function normalizeWhiteLabelPatch(input: Record<string, unknown>): NormalizedWhiteLabelSettings {
++  for (const key of Object.keys(input)) {
++    if (READ_ONLY_FIELDS.has(key)) fail(key, 'read-only server-managed field');
++    if (isWhiteLabelShapedKey(key) && !WRITE_FIELDS.has(key)) fail(key, 'unknown white-label field');
++  }
++
++  const output: NormalizedWhiteLabelSettings = {};
++  if ('dormName' in input) output.dormName = normalizeDormName(input.dormName);
++  if ('brandColor' in input) output.brandColor = normalizeBrandColor(input.brandColor);
++  if ('contactPhone' in input) output.contactPhone = normalizeContactPhone(input.contactPhone);
++  if ('billFooter' in input) output.billFooter = normalizeBillFooter(input.billFooter);
++  return output;
++}
++
++function normalizeCurrentValue(key: keyof NormalizedWhiteLabelSettings, value: unknown): unknown {
++  if (key === 'dormName') return value == null ? undefined : normalizeDormName(String(value));
++  if (key === 'brandColor') return normalizeBrandColor(value == null ? null : String(value));
++  if (key === 'contactPhone') return normalizeContactPhone(value == null ? null : String(value));
++  return normalizeBillFooter(value == null ? null : String(value));
++}
++
++export function changedWhiteLabelFields(
++  current: Record<string, unknown>,
++  patch: NormalizedWhiteLabelSettings,
++): Array<keyof NormalizedWhiteLabelSettings> {
++  return (Object.keys(patch) as Array<keyof NormalizedWhiteLabelSettings>).filter((key) => {
++    const currentValue = current[key] ?? current[DB_KEY[key]];
++    return patch[key] !== normalizeCurrentValue(key, currentValue);
++  });
++}
