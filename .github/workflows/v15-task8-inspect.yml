@@ -1,0 +1,48 @@
+name: V15 Task 8 Inspect Candidate Contract
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - agent/v15-task1-white-label-contract
+    paths:
+      - '.github/workflows/v15-task8-inspect.yml'
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v5
+        with:
+          name: v15-task1-candidate-pending-d1-smoke
+          path: candidate
+          github-token: ${{ github.token }}
+          repository: winza125-sitticun/dorm-management-system
+          run-id: 31996317195
+      - name: Inspect settings and setup contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          MASTER="$(find candidate -type f -name 'dorm-management-system-master-v15-task1-REVIEW-CI.zip' -print -quit)"
+          mkdir source
+          unzip -q "$MASTER" -d source
+          echo '=== SettingsSchema locations ==='
+          grep -Rni -m 5 'SettingsSchema' source/src source/functions || true
+          echo '=== SettingsSchema context ==='
+          FILE="$(grep -Rl -m1 'SettingsSchema' source/src source/functions | head -n1)"
+          grep -n -A35 -B5 'SettingsSchema' "$FILE" | head -n 100
+          echo '=== Setup schema context ==='
+          grep -Rni -A25 -B5 'Setup.*Schema\|SetupSchema' source/src source/functions | head -n 120 || true
+          echo '=== Pro/Demo wrangler templates ==='
+          for plan in pro demo; do
+            ZIP="$(find candidate -type f -name "dorm-management-system-${plan}-v15-TASK1-CANDIDATE.zip" -print -quit)"
+            mkdir "pkg-$plan"
+            unzip -q "$ZIP" -d "pkg-$plan"
+            cat "pkg-$plan/wrangler.template.jsonc"
+          done
