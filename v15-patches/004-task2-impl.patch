@@ -1,0 +1,26 @@
+diff --git a/d1-migrations/0006_add_white_label_settings.sql b/d1-migrations/0006_add_white_label_settings.sql
+new file mode 100644
+index 0000000..54144af
+--- /dev/null
++++ b/d1-migrations/0006_add_white_label_settings.sql
+@@ -0,0 +1,4 @@
++ALTER TABLE settings ADD COLUMN brand_logo_key TEXT;
++ALTER TABLE settings ADD COLUMN brand_color TEXT;
++ALTER TABLE settings ADD COLUMN contact_phone TEXT;
++ALTER TABLE settings ADD COLUMN bill_footer TEXT;
+diff --git a/src/types.ts b/src/types.ts
+index b05c567..6de445b 100644
+--- a/src/types.ts
++++ b/src/types.ts
+@@ -105,6 +105,11 @@ export interface Settings {
+     subscriptionStatus?: string;
+     subscriptionExpiresAt?: string | null;
+     fontScale?: 'small' | 'medium' | 'large';
++    brandColor?: string | null;
++    contactPhone?: string | null;
++    billFooter?: string | null;
++    brandLogoUrl?: string | null;
++    whiteLabelEnabled?: boolean;
+   }
+ 
+ export interface UserProfile {
