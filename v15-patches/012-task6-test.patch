@@ -1,0 +1,200 @@
+diff --git a/tests/backup-export.test.ts b/tests/backup-export.test.ts
+index 974a4e8..353a21a 100644
+--- a/tests/backup-export.test.ts
++++ b/tests/backup-export.test.ts
+@@ -28,6 +28,8 @@ class FakeD1 {
+       dorm_name: 'หอพักทดสอบ', default_elec_rate: 7, default_water_rate: 13,
+       default_due_date_day: 5, default_penalty_rate: 100,
+       promptpay_id: '0812345678', promptpay_name: 'Owner', font_scale: 'medium',
++      brand_color: '#1DB954', contact_phone: '081-234-5678', bill_footer: 'Thank you',
++      brand_logo_key: 'private/non-portable-key',
+       line_channel_secret: 'MUST_NOT_EXPORT', subscription_plan: 'pro',
+     };
+     return null;
+@@ -63,7 +65,11 @@ test('exportBusinessBackup exports safe owner-scoped business data and manifest'
+   const db = new FakeD1();
+   const result = await exportBusinessBackup(db as any, 7, '1.1.0');
+   assert.equal(result.manifest.format, 'dorm-backup');
+-  assert.equal(result.manifest.schemaVersion, 6);
++  assert.equal(result.manifest.schemaVersion, 7);
++  assert.equal(result.data.settings.brandColor, '#1DB954');
++  assert.equal(result.data.settings.contactPhone, '081-234-5678');
++  assert.equal(result.data.settings.billFooter, 'Thank you');
++  assert.equal('brandLogoKey' in result.data.settings, false);
+   assert.equal(result.manifest.counts.rooms, result.data.rooms.length);
+   assert.equal(result.manifest.dataSha256, await sha256Hex(stableStringify(result.data)));
+   assert.equal(result.manifest.ownerScope.length, 64);
+@@ -95,6 +101,10 @@ test('snapshotCurrentIntegrationState preserves room LINE linkage and integratio
+   });
+   assert.equal((snapshot.settings as any).lineChannelSecret, 'MUST_NOT_EXPORT');
+   assert.equal((snapshot.settings as any).subscriptionPlan, 'pro');
++  assert.equal((snapshot.settings as any).brandColor, '#1DB954');
++  assert.equal((snapshot.settings as any).contactPhone, '081-234-5678');
++  assert.equal((snapshot.settings as any).billFooter, 'Thank you');
++  assert.equal((snapshot.settings as any).brandLogoKey, 'private/non-portable-key');
+ });
+ 
+ 
+@@ -110,7 +120,7 @@ test('export queries use explicit columns and never SELECT *', async () => {
+ test('backup payload contains no integration or subscription state anywhere', async () => {
+   const result = await exportBusinessBackup(new FakeD1() as any, 7, '1.1.0');
+   const serialized = JSON.stringify(result.data);
+-  for (const forbidden of ['lineUserId', 'lineChannelSecret', 'lineChannelAccessToken', 'googleSpreadsheetId', 'subscriptionPlan', 'subscriptionStatus', 'subscriptionExpiresAt']) {
++  for (const forbidden of ['lineUserId', 'lineChannelSecret', 'lineChannelAccessToken', 'googleSpreadsheetId', 'subscriptionPlan', 'subscriptionStatus', 'subscriptionExpiresAt', 'brandLogoKey']) {
+     assert.equal(serialized.includes(forbidden), false, `forbidden backup field: ${forbidden}`);
+   }
+ });
+diff --git a/tests/backup-restore-api.test.ts b/tests/backup-restore-api.test.ts
+index 3e090cb..9cf3a34 100644
+--- a/tests/backup-restore-api.test.ts
++++ b/tests/backup-restore-api.test.ts
+@@ -45,3 +45,11 @@ test('plan API guards make Demo export-only and paid plans restore-capable', asy
+   assert.equal(hasPlanFeature('demo', 'backupExport'), true); assert.equal(hasPlanFeature('demo', 'backupRestore'), false);
+   for (const plan of ['basic','standard','pro'] as const) assert.equal(hasPlanFeature(plan, 'backupRestore'), true);
+ });
++
++
++test('Cloudflare restore passes validated manifest schemaVersion into restore preparation', () => {
++  const source = readFileSync(new URL('../functions/api/[[path]].ts', import.meta.url), 'utf8');
++  const start = source.indexOf("path === '/api/admin/backup/restore'");
++  const block = source.slice(start, start + 12000);
++  assert.match(block, /prepareRestoreData\(body\.data[^;]*manifest\.schemaVersion\)/s);
++});
+diff --git a/tests/backup-restore.test.ts b/tests/backup-restore.test.ts
+index f719d1c..f153e6f 100644
+--- a/tests/backup-restore.test.ts
++++ b/tests/backup-restore.test.ts
+@@ -1,9 +1,9 @@
+ import test from 'node:test';
+ import assert from 'node:assert/strict';
+ import { readFileSync } from 'node:fs';
+-import { prepareRestoreData, RESTORE_BATCH_SIZE, RESTORE_DELETE_ORDER, RESTORE_INSERT_ORDER } from '../src/server/services/restore.service.ts';
++import { prepareRestoreData, restoreBusinessBackup, RESTORE_BATCH_SIZE, RESTORE_DELETE_ORDER, RESTORE_INSERT_ORDER } from '../src/server/services/restore.service.ts';
+ import { canStartRestore } from '../src/utils/backupRestoreUi.ts';
+-import { emptyBackupData, room } from './helpers/backup-fixture.ts';
++import { backupDataV6, emptyBackupData, room } from './helpers/backup-fixture.ts';
+ 
+ test('restore state machine requires validation, confirmation, and exact RESTORE text', () => {
+   assert.equal(canStartRestore({ validated: true, confirmed: true, typed: 'RESTORE', allowed: true, busy: false }), true);
+@@ -19,7 +19,7 @@ test('restore prepares current ownership, preserves LINE linkage, and remaps mis
+     integrations: { rooms: [{ id: 1, lineUserId: 'U1', lineDisplayName: 'Tenant', linePictureUrl: 'pic', lineStatus: 'linked', lineNotifyToken: 'token' }], settings: { lineChannelSecret: 'keep', googleSpreadsheetId: 'sheet', subscriptionPlan: 'pro' } },
+     existingUserIds: new Set([7, 8]), childUserIds: new Set([8]),
+   };
+-  const prepared = prepareRestoreData(data, current as any, 7);
++  const prepared = prepareRestoreData(data, current as any, 7, 7);
+   assert.equal(prepared.rooms[0].userId, 7); assert.equal(prepared.rooms[0].lineUserId, 'U1');
+   assert.equal(prepared.rooms[1].lineUserId, null); assert.equal(prepared.rooms[1].lineStatus, 'unlinked');
+   assert.equal(prepared.notes[0].createdBy, 7); assert.equal(prepared.housekeepingTasks[0].assignedUserId, null); assert.equal(prepared.housekeepingTasks[0].createdBy, 7);
+@@ -32,7 +32,7 @@ test('restore prepares current ownership, preserves LINE linkage, and remaps mis
+ test('restore normalizes backup row order to the D1 export order before post-restore verification', () => {
+   const data = emptyBackupData(); data.rooms = [room(2, '102'), room(1, '101')];
+   const current = { integrations: { rooms: [], settings: {} }, existingUserIds: new Set([7]), childUserIds: new Set<number>() };
+-  const prepared = prepareRestoreData(data, current as any, 7);
++  const prepared = prepareRestoreData(data, current as any, 7, 7);
+   assert.deepEqual(prepared.backupData.rooms.map((x: any) => x.id), [1, 2]);
+   assert.deepEqual(prepared.expectedIntegrations.rooms.map((x: any) => x.id), [1, 2]);
+ });
+@@ -60,3 +60,103 @@ test('App wires restore refresh into SettingsView, not an unrelated tab', () => {
+   const block = app.slice(start, end);
+   assert.match(block, /<SettingsView[\s\S]*onRestoreSuccess=\{triggerRefreshData\}/);
+ });
++
++
++type RestoreRow = Record<string, unknown>;
++
++class RestoreFakeStatement {
++  public args: unknown[] = [];
++  constructor(public db: RestoreFakeD1, public sql: string) {}
++  bind(...args: unknown[]) { this.args = args; return this; }
++  async first<T = RestoreRow>(): Promise<T | null> { return this.db.first(this.sql, this.args) as T | null; }
++  async all<T = RestoreRow>(): Promise<{ results: T[] }> { return { results: this.db.all(this.sql, this.args) as T[] }; }
++  async run(): Promise<{ success: boolean }> { this.db.apply(this.sql, this.args); return { success: true }; }
++}
++
++class RestoreFakeD1 {
++  public settings: RestoreRow = {
++    dorm_name: 'Current Dorm', default_elec_rate: 7, default_water_rate: 13,
++    default_due_date_day: 5, default_penalty_rate: 100, promptpay_id: null, promptpay_name: null,
++    font_scale: 'medium', brand_color: '#112233', contact_phone: '0899999999',
++    bill_footer: 'Current footer', brand_logo_key: 'keep-logo',
++    line_channel_access_token: 'keep-token', line_channel_secret: 'keep-secret', line_bot_enabled: 1,
++    google_spreadsheet_id: 'keep-sheet', subscription_plan: 'pro', subscription_status: 'active', subscription_expires_at: null,
++  };
++  prepare(sql: string) { return new RestoreFakeStatement(this, sql); }
++  async batch(statements: RestoreFakeStatement[]): Promise<Array<{ success: boolean }>> {
++    return statements.map((stmt) => { this.apply(stmt.sql, stmt.args); return { success: true }; });
++  }
++  private q(sql: string) { return sql.replace(/\s+/g, ' ').trim().toLowerCase(); }
++  first(sql: string, args: unknown[]): RestoreRow | null {
++    const q = this.q(sql);
++    if (q.includes('select uid from users')) return { uid: 'owner-public-uid' };
++    if (q.includes('select id from users')) return { id: Number(args[0]) };
++    if (q.includes('from settings')) return { ...this.settings };
++    return null;
++  }
++  all(sql: string, _args: unknown[]): RestoreRow[] {
++    const q = this.q(sql);
++    if (q.includes('from users')) return [{ id: 7, parent_id: null }];
++    return [];
++  }
++  apply(sql: string, args: unknown[]) {
++    const q = this.q(sql);
++    if (!q.startsWith('update settings set')) return;
++    const keys = ['dorm_name','default_elec_rate','default_water_rate','default_due_date_day','default_penalty_rate','promptpay_id','promptpay_name','font_scale','brand_color','contact_phone','bill_footer'];
++    keys.forEach((key, index) => { this.settings[key] = args[index]; });
++  }
++}
++
++function restoreCurrentState(db: RestoreFakeD1) {
++  return {
++    integrations: {
++      rooms: [],
++      settings: {
++        lineChannelAccessToken: db.settings.line_channel_access_token,
++        lineChannelSecret: db.settings.line_channel_secret,
++        lineBotEnabled: db.settings.line_bot_enabled,
++        googleSpreadsheetId: db.settings.google_spreadsheet_id,
++        subscriptionPlan: db.settings.subscription_plan,
++        subscriptionStatus: db.settings.subscription_status,
++        subscriptionExpiresAt: db.settings.subscription_expires_at,
++        brandColor: db.settings.brand_color,
++        contactPhone: db.settings.contact_phone,
++        billFooter: db.settings.bill_footer,
++        brandLogoKey: db.settings.brand_logo_key,
++      },
++    },
++    existingUserIds: new Set([7]),
++    childUserIds: new Set<number>(),
++  };
++}
++
++test('v6 restore preserves current V15 portable brand fields and server-managed logo key', async () => {
++  const db = new RestoreFakeD1();
++  const v6 = backupDataV6(emptyBackupData());
++  const prepared = prepareRestoreData(v6 as any, restoreCurrentState(db) as any, 7, 6);
++  assert.equal((prepared.settings as any).brandColor, '#112233');
++  assert.equal((prepared.settings as any).contactPhone, '0899999999');
++  assert.equal((prepared.settings as any).billFooter, 'Current footer');
++  await restoreBusinessBackup(db as any, 7, prepared);
++  assert.equal(db.settings.brand_color, '#112233');
++  assert.equal(db.settings.contact_phone, '0899999999');
++  assert.equal(db.settings.bill_footer, 'Current footer');
++  assert.equal(db.settings.brand_logo_key, 'keep-logo');
++});
++
++test('v7 restore applies portable brand fields while preserving logo and integration state', async () => {
++  const db = new RestoreFakeD1();
++  const v7 = emptyBackupData();
++  v7.settings.brandColor = '#1DB954';
++  v7.settings.contactPhone = '081-234-5678';
++  v7.settings.billFooter = 'Restored footer';
++  const prepared = prepareRestoreData(v7, restoreCurrentState(db) as any, 7, 7);
++  await restoreBusinessBackup(db as any, 7, prepared);
++  assert.equal(db.settings.brand_color, '#1DB954');
++  assert.equal(db.settings.contact_phone, '081-234-5678');
++  assert.equal(db.settings.bill_footer, 'Restored footer');
++  assert.equal(db.settings.brand_logo_key, 'keep-logo');
++  assert.equal(db.settings.line_channel_secret, 'keep-secret');
++  assert.equal(db.settings.google_spreadsheet_id, 'keep-sheet');
++  assert.equal(db.settings.subscription_plan, 'pro');
++});
