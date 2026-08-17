@@ -1,0 +1,21 @@
+diff --git a/tests/plan-entitlements.test.ts b/tests/plan-entitlements.test.ts
+index b65c0cb..0b1c58c 100644
+--- a/tests/plan-entitlements.test.ts
++++ b/tests/plan-entitlements.test.ts
+@@ -70,3 +70,16 @@ test('pro unlocks every catalogued feature', () => {
+     assert.equal(value, true, key);
+   }
+ });
++
++
++test('white-label entitlement is enabled for Basic Standard Pro while PromptPay matrix stays unchanged', () => {
++  assert.equal(hasPlanFeature('demo', 'whiteLabel'), false);
++  assert.equal(hasPlanFeature('basic', 'whiteLabel'), true);
++  assert.equal(hasPlanFeature('standard', 'whiteLabel'), true);
++  assert.equal(hasPlanFeature('pro', 'whiteLabel'), true);
++
++  assert.equal(hasPlanFeature('demo', 'promptPay'), true);
++  assert.equal(hasPlanFeature('basic', 'promptPay'), false);
++  assert.equal(hasPlanFeature('standard', 'promptPay'), true);
++  assert.equal(hasPlanFeature('pro', 'promptPay'), true);
++});
