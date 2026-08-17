@@ -1,0 +1,63 @@
+name: V15 Task 2 Evidence Field Fix
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [agent/v15-task1-white-label-contract]
+    paths:
+      - '.github/workflows/v15-task2-evidence-field-fix.yml'
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  enrich-and-rerun:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/v15-task1-white-label-contract
+
+      - name: Add explicit secret leak evidence field
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('.github/scripts/v15_task2_d1_smoke.py')
+          s = p.read_text(encoding='utf-8')
+          old = "'publicBranding': {'unauthenticated': True, 'explicitSafeFields': True, 'demoMaskAfterDowngrade': True},"
+          new = "'publicBranding': {'unauthenticated': True, 'explicitSafeFields': True, 'secretLeakCheck': True, 'demoMaskAfterDowngrade': True},"
+          if old not in s:
+              raise SystemExit('expected evidence line not found')
+          p.write_text(s.replace(old, new, 1), encoding='utf-8')
+          PY
+          grep -Fq "'secretLeakCheck': True" .github/scripts/v15_task2_d1_smoke.py
+          python3 -m py_compile .github/scripts/v15_task2_d1_smoke.py
+
+      - name: Commit evidence-only change
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add .github/scripts/v15_task2_d1_smoke.py
+          git commit -m 'test(v15-task2): record public secret leak smoke evidence'
+          git push origin HEAD:agent/v15-task1-white-label-contract
+
+      - name: Dispatch full Task 2 D1 smoke again
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail-with-body -L \
+            -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/v15-task2-d1-smoke.yml/dispatches" \
+            -d '{"ref":"agent/v15-task1-white-label-contract"}'
