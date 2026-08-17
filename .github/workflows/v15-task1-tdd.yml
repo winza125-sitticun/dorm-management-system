@@ -14,9 +14,9 @@ permissions:
   actions: read
 
 jobs:
-  task1-through-task4-red-green:
+  task1-through-task5-red-green:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 30
     steps:
       - name: Checkout V15 gate branch
         uses: actions/checkout@v4
@@ -127,3 +127,36 @@ jobs:
           grep -q 'bill_footer = ?' 'functions/api/[[path]].ts'
           ! grep -q 'brand_logo_key = ?' 'functions/api/[[path]].ts'
           grep -q "whiteLabel') return 'basic'" src/server/services/planAccess.service.ts
+
+      - name: Task 5 RED then GREEN
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          patch -p1 < ../v15-patches/010-task5-test.patch
+          set +e
+          npx tsx --test tests/backup-validation.test.ts > ../task5-red.log 2>&1
+          rc=$?
+          set -e
+          cat ../task5-red.log
+          test "$rc" -ne 0
+          patch -p1 < ../v15-patches/011-task5-impl.patch
+          npx tsx --test tests/backup-validation.test.ts
+          npm run lint
+
+      - name: Task 5 static backup contract review
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'BACKUP_FORMAT_VERSION = 1 as const' src/utils/backupFormat.ts
+          grep -q 'BACKUP_LEGACY_SCHEMA_VERSION = 6 as const' src/utils/backupFormat.ts
+          grep -q 'BACKUP_SCHEMA_VERSION = 7 as const' src/utils/backupFormat.ts
+          grep -q 'BackupManifestSchemaV6' src/server/validators/backup.ts
+          grep -q 'BackupDataSchemaV6' src/server/validators/backup.ts
+          grep -q 'BackupRestoreRequestSchema = z.union' src/server/validators/backup.ts
+          grep -q 'brandColor: string | null' src/utils/backupFormat.ts
+          grep -q 'contactPhone: string | null' src/utils/backupFormat.ts
+          grep -q 'billFooter: string | null' src/utils/backupFormat.ts
+          ! grep -q 'brandLogoKey' src/utils/backupFormat.ts
+          ! grep -q 'brandLogoKey' src/server/validators/backup.ts
