@@ -1,0 +1,233 @@
+name: V15 Task 3 Production Gate
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [agent/v15-task1-white-label-contract]
+    paths:
+      - 'v15-task3-patches/001-task3-tests.patch.gz.b64'
+      - 'v15-task3-patches/002-task3-impl.patch.gz.b64'
+      - 'v15-task3-tests/**'
+      - '.github/workflows/v15-task3-production-gate.yml'
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: v15-task3-production-gate
+  cancel-in-progress: true
+
+env:
+  TASK2_ARTIFACT_ID: 9285398323
+  TASK2_MASTER_SHA256: 5ff63b6cddc1ff0c422f6a4ee443ae847b4440a5e458f0c8e363ffa74c7b4207
+
+jobs:
+  production-gate:
+    name: focused + full tests + lint + types + builds + release
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout V15 Task 3 branch
+        uses: actions/checkout@v4
+
+      - name: Download immutable V15 Task 2 candidate with REST retry
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p candidate
+          curl --fail --location --retry 8 --retry-all-errors --retry-delay 3 \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/winza125-sitticun/dorm-management-system/actions/artifacts/${TASK2_ARTIFACT_ID}/zip" \
+            -o candidate-artifact.zip
+          unzip -q candidate-artifact.zip -d candidate
+
+      - name: Verify and extract exact V15 Task 2 source
+        shell: bash
+        run: |
+          set -euo pipefail
+          MASTER_ZIP="$(find candidate -type f -name 'dorm-management-system-master-v15-task2-REVIEW-CI.zip' -print -quit)"
+          test -n "$MASTER_ZIP"
+          echo "$TASK2_MASTER_SHA256  $MASTER_ZIP" | sha256sum --check --strict
+          rm -rf v15-task3-work
+          mkdir v15-task3-work
+          unzip -q "$MASTER_ZIP" -d v15-task3-work
+          test -f v15-task3-work/package.json
+          test -f v15-task3-work/package-lock.json
+          test -f v15-task3-work/wrangler.master.jsonc
+          test -f v15-task3-work/d1-migrations/0006_add_white_label_settings.sql
+          test ! -e v15-task3-work/src/theme/brandTheme.ts
+
+      - name: Apply all verified V15 Task 3 patches
+        working-directory: v15-task3-work
+        shell: bash
+        run: |
+          set -euo pipefail
+          apply_gz() {
+            local file="$1" expected="$2" out="$3"
+            test "$(git hash-object "../$file")" = "$expected"
+            base64 -d "../$file" | gzip -d > "../$out"
+            patch -p1 < "../$out"
+          }
+          apply_gz v15-task3-patches/001-task3-tests.patch.gz.b64 1568d08139439020b90a097a8a4ee6642e577a14 task3-tests.patch
+          apply_gz v15-task3-patches/002-task3-impl.patch.gz.b64 ebd11cfefb7c941743f77070656f11f7f82dea46 task3-impl.patch
+          cp ../v15-task3-tests/v15-task3-package-parity.test.mjs tests/v15-task3-package-parity.test.mjs
+          git diff --check
+
+      - name: Verify Task 3 contract anchors before candidate creation
+        working-directory: v15-task3-work
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f src/theme/brandTheme.ts
+          test -f src/theme/brandingClient.ts
+          test -f src/components/BrandingBootScreen.tsx
+          grep -q "DEFAULT_BRAND_COLOR = '#1DB954'" src/theme/brandTheme.ts
+          grep -q "BRANDING_TIMEOUT_MS = 3000" src/theme/brandingClient.ts
+          grep -q "fetchPublicBranding()" src/context/ThemeContext.tsx
+          grep -q "applyBrandTokens(document.documentElement.style" src/context/ThemeContext.tsx
+          grep -q 'data-branding-boot="loading"' src/components/BrandingBootScreen.tsx
+          grep -q '<ThemeProvider>' src/App.tsx
+          grep -q -- '--brand-primary: #1DB954' src/index.css
+          grep -q -- '--status-success: #16A34A' src/index.css
+          test ! -e d1-migrations/0007_add_theme_runtime.sql
+          ! grep -R -q -- '--status-success: var(--brand-' src
+          ! grep -R -q -- '--status-warning: var(--brand-' src
+          ! grep -R -q -- '--status-danger: var(--brand-' src
+          ! grep -R -q -- '--status-info: var(--brand-' src
+
+      - name: Create immutable V15 Task 3 master candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f dorm-management-system-master-v15-task3-REVIEW-CI.zip
+          (cd v15-task3-work && zip -qr ../dorm-management-system-master-v15-task3-REVIEW-CI.zip .)
+          unzip -t dorm-management-system-master-v15-task3-REVIEW-CI.zip >/dev/null
+          sha256sum dorm-management-system-master-v15-task3-REVIEW-CI.zip | tee MASTER_V15_TASK3_CI_SHA256.txt
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: v15-task3-work/package-lock.json
+
+      - name: Fresh dependency install
+        working-directory: v15-task3-work
+        run: npm ci
+
+      - name: Focused V15 Task 3 tests
+        working-directory: v15-task3-work
+        run: npx tsx --test tests/brand-theme-runtime.test.ts tests/branding-client-runtime.test.ts tests/theme-root-runtime.test.ts tests/theme-css-contract.test.ts
+
+      - name: Backup regression suite
+        working-directory: v15-task3-work
+        run: npm run test:backup
+
+      - name: Full test suite
+        working-directory: v15-task3-work
+        run: npm test
+
+      - name: TypeScript lint gate
+        working-directory: v15-task3-work
+        run: npm run lint
+
+      - name: Cloudflare types gate
+        working-directory: v15-task3-work
+        run: npm run check:cloudflare-types:master
+
+      - name: Production Pages build
+        working-directory: v15-task3-work
+        run: npm run build:pages
+
+      - name: Production VPS build
+        working-directory: v15-task3-work
+        run: npm run build:vps
+
+      - name: Generate PREVIEW packages
+        working-directory: v15-task3-work
+        run: npm run packages:generate
+
+      - name: Run full package builder parity tests
+        working-directory: v15-task3-work
+        run: npm run test:builder
+
+      - name: Run guarded customer-ready release builder
+        working-directory: v15-task3-work
+        run: npm run packages:release
+
+      - name: Run Task 3 One Master package parity
+        working-directory: v15-task3-work
+        run: node --test tests/v15-task3-package-parity.test.mjs
+
+      - name: Materialize Task 3 candidate packages and SHA-256
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p v15-task3-work/release-v15-task3
+          for plan in demo basic standard pro; do
+            src="v15-task3-work/release-v14/dorm-management-system-${plan}-v14-CUSTOMER-READY.zip"
+            dst="v15-task3-work/release-v15-task3/dorm-management-system-${plan}-v15-TASK3-CANDIDATE.zip"
+            test -f "$src"
+            cp "$src" "$dst"
+            unzip -t "$dst" >/dev/null
+          done
+          sha256sum v15-task3-work/release-v15-task3/*.zip | tee v15-task3-work/V15_TASK3_CANDIDATE_SHA256.txt
+          cat MASTER_V15_TASK3_CI_SHA256.txt
+          cat v15-task3-work/V15_TASK3_CANDIDATE_SHA256.txt
+
+      - name: Final candidate static audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf candidate-audit && mkdir candidate-audit
+          unzip -Z1 dorm-management-system-master-v15-task3-REVIEW-CI.zip > candidate-audit/master-entries.txt
+          for entry in \
+            src/theme/brandTheme.ts \
+            src/theme/brandingClient.ts \
+            src/context/ThemeContext.tsx \
+            src/components/BrandingBootScreen.tsx \
+            src/App.tsx \
+            src/index.css; do
+            grep -Fx "$entry" candidate-audit/master-entries.txt
+          done
+          if grep -Fq 'node_modules/' candidate-audit/master-entries.txt; then echo '::error::Master contains node_modules'; exit 1; fi
+          if grep -Fq 'release-v14/' candidate-audit/master-entries.txt; then echo '::error::Master contains release output'; exit 1; fi
+          if grep -Fq 'preview-v14/' candidate-audit/master-entries.txt; then echo '::error::Master contains preview output'; exit 1; fi
+          for plan in demo basic standard pro; do
+            zip="v15-task3-work/release-v15-task3/dorm-management-system-${plan}-v15-TASK3-CANDIDATE.zip"
+            unzip -p "$zip" 'src/theme/brandTheme.ts' > "candidate-audit/${plan}-brandTheme.ts"
+            unzip -p "$zip" 'src/theme/brandingClient.ts' > "candidate-audit/${plan}-brandingClient.ts"
+            unzip -p "$zip" 'src/context/ThemeContext.tsx' > "candidate-audit/${plan}-ThemeContext.tsx"
+            unzip -p "$zip" 'src/components/BrandingBootScreen.tsx' > "candidate-audit/${plan}-Boot.tsx"
+            unzip -p "$zip" 'src/index.css' > "candidate-audit/${plan}-index.css"
+            unzip -p "$zip" 'functions/api/\[\[path\]\].ts' > "candidate-audit/${plan}-pages.ts"
+            grep -Fq "DEFAULT_BRAND_COLOR = '#1DB954'" "candidate-audit/${plan}-brandTheme.ts"
+            grep -Fq 'BRANDING_TIMEOUT_MS = 3000' "candidate-audit/${plan}-brandingClient.ts"
+            grep -Fq 'fetchPublicBranding()' "candidate-audit/${plan}-ThemeContext.tsx"
+            grep -Fq 'data-branding-boot="loading"' "candidate-audit/${plan}-Boot.tsx"
+            grep -Fq -- '--status-danger: #DC2626' "candidate-audit/${plan}-index.css"
+            grep -Fq '/api/public/branding' "candidate-audit/${plan}-pages.ts"
+          done
+          cmp candidate-audit/demo-brandTheme.ts candidate-audit/pro-brandTheme.ts
+          cmp candidate-audit/demo-brandingClient.ts candidate-audit/pro-brandingClient.ts
+          cmp candidate-audit/demo-ThemeContext.tsx candidate-audit/pro-ThemeContext.tsx
+
+      - name: Upload V15 Task 3 candidate artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: v15-task3-candidate-pending-d1-smoke
+          path: |
+            dorm-management-system-master-v15-task3-REVIEW-CI.zip
+            MASTER_V15_TASK3_CI_SHA256.txt
+            v15-task3-work/release-v15-task3/**
+            v15-task3-work/V15_TASK3_CANDIDATE_SHA256.txt
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Gate notice
+        run: echo 'V15 Task 3 source/release gate passed. Candidate remains pending real Cloudflare D1/browser smoke.'
