@@ -58,6 +58,7 @@ jobs:
         run: npm ci
 
       - name: Apply Task 1 verified patches
+        id: task1
         working-directory: source
         shell: bash
         run: |
@@ -69,6 +70,7 @@ jobs:
           npx tsx --test tests/white-label-settings-ui-utils.test.ts
 
       - name: Apply Task 2 tests only
+        id: task2tests
         working-directory: source
         shell: bash
         run: |
@@ -77,6 +79,7 @@ jobs:
           patch -p1 < ../task2-tests.patch
 
       - name: Verify Task 2 RED
+        id: red
         working-directory: source
         shell: bash
         run: |
@@ -93,6 +96,7 @@ jobs:
           grep -Eq 'refreshBranding|manual branding refresh|missing refreshBranding' ../task2-red.log
 
       - name: Apply Task 2 implementation
+        id: task2impl
         working-directory: source
         shell: bash
         run: |
@@ -101,31 +105,61 @@ jobs:
           patch -p1 < ../task2-impl.patch
 
       - name: Verify Task 2 GREEN
-        working-directory: source
-        run: npx tsx --test tests/brand-theme-runtime.test.ts tests/branding-client-runtime.test.ts tests/theme-root-runtime.test.ts tests/theme-refresh-runtime.test.ts tests/theme-css-contract.test.ts
-
-      - name: Task 1-2 lint and build gate
+        id: green
         working-directory: source
         shell: bash
         run: |
           set -euo pipefail
-          npm run lint
-          npm run build:pages
-          npm run build:vps
-          git diff --check
+          npx tsx --test tests/brand-theme-runtime.test.ts tests/branding-client-runtime.test.ts tests/theme-root-runtime.test.ts tests/theme-refresh-runtime.test.ts tests/theme-css-contract.test.ts 2>&1 | tee ../task2-green.log
 
-      - name: Persist Task 2 GREEN evidence
-        if: success()
+      - name: Lint
+        id: lint
+        working-directory: source
+        run: npm run lint
+
+      - name: Pages build
+        id: pages
+        working-directory: source
+        run: npm run build:pages
+
+      - name: VPS build
+        id: vps
+        working-directory: source
+        run: npm run build:vps
+
+      - name: Diff check
+        id: diffcheck
+        working-directory: source
+        run: git diff --check
+
+      - name: Persist Task 2 diagnostic evidence
+        if: always()
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p v15-task4-evidence
-          printf 'status=RED_VERIFIED_GREEN_PASS\nrun_id=%s\nrun_attempt=%s\nsource_sha=%s\nmaster_sha256=%s\n' \
-            "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$GITHUB_SHA" \
-            'ea70213d83f87eaacfb9002beee1bc5b46bdc3aea158d3bf94d626ab5c0d53c2' \
-            > v15-task4-evidence/task2-green.txt
+          cat > v15-task4-evidence/task2-latest.txt <<EOF
+          run_id=$GITHUB_RUN_ID
+          run_attempt=$GITHUB_RUN_ATTEMPT
+          source_sha=$GITHUB_SHA
+          task1=${{ steps.task1.outcome }}
+          task2tests=${{ steps.task2tests.outcome }}
+          red=${{ steps.red.outcome }}
+          task2impl=${{ steps.task2impl.outcome }}
+          green=${{ steps.green.outcome }}
+          lint=${{ steps.lint.outcome }}
+          pages=${{ steps.pages.outcome }}
+          vps=${{ steps.vps.outcome }}
+          diffcheck=${{ steps.diffcheck.outcome }}
+          EOF
+          if [ "${{ steps.green.outcome }}" = success ] && [ "${{ steps.lint.outcome }}" = success ] && [ "${{ steps.pages.outcome }}" = success ] && [ "${{ steps.vps.outcome }}" = success ] && [ "${{ steps.diffcheck.outcome }}" = success ]; then
+            printf 'status=RED_VERIFIED_GREEN_PASS\nrun_id=%s\nrun_attempt=%s\nsource_sha=%s\nmaster_sha256=%s\n' \
+              "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$GITHUB_SHA" \
+              'ea70213d83f87eaacfb9002beee1bc5b46bdc3aea158d3bf94d626ab5c0d53c2' \
+              > v15-task4-evidence/task2-green.txt
+          fi
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add v15-task4-evidence/task2-green.txt
-          git commit -m 'ci(v15-task4): record Task 2 GREEN evidence'
+          git add v15-task4-evidence/task2-latest.txt v15-task4-evidence/task2-green.txt 2>/dev/null || git add v15-task4-evidence/task2-latest.txt
+          git commit -m 'ci(v15-task4): record Task 2 diagnostic evidence' || exit 0
           git push origin HEAD:agent/v15-task1-white-label-contract
