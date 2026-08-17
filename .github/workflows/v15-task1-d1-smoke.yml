@@ -188,14 +188,20 @@ jobs:
           set -euo pipefail
           PRO_OUT="$(cd pro-work && npx wrangler pages deploy dist --project-name "$PRO_PAGES_NAME" --branch main --commit-hash "$GITHUB_SHA" --commit-dirty=true)"
           printf '%s\n' "$PRO_OUT"
-          PRO_URL="$(printf '%s\n' "$PRO_OUT" | grep -Eo 'https://[A-Za-z0-9.-]+\.pages\.dev' | tail -n1)"
-          test -n "$PRO_URL"
+          PREVIEW_PRO_URL="$(printf '%s\n' "$PRO_OUT" | grep -Eo 'https://[A-Za-z0-9.-]+\.pages\.dev' | tail -n1)"
+          test -n "$PREVIEW_PRO_URL"
+          PRO_URL="https://${PRO_PAGES_NAME}.pages.dev"
+          echo "Pro preview deployment URL: $PREVIEW_PRO_URL"
+          echo "Pro smoke stable URL: $PRO_URL"
           echo "PRO_BASE_URL=$PRO_URL" >> "$GITHUB_ENV"
 
           DEMO_OUT="$(cd demo-work && npx wrangler pages deploy dist --project-name "$DEMO_PAGES_NAME" --branch main --commit-hash "$GITHUB_SHA" --commit-dirty=true)"
           printf '%s\n' "$DEMO_OUT"
-          DEMO_URL="$(printf '%s\n' "$DEMO_OUT" | grep -Eo 'https://[A-Za-z0-9.-]+\.pages\.dev' | tail -n1)"
-          test -n "$DEMO_URL"
+          PREVIEW_DEMO_URL="$(printf '%s\n' "$DEMO_OUT" | grep -Eo 'https://[A-Za-z0-9.-]+\.pages\.dev' | tail -n1)"
+          test -n "$PREVIEW_DEMO_URL"
+          DEMO_URL="https://${DEMO_PAGES_NAME}.pages.dev"
+          echo "Demo preview deployment URL: $PREVIEW_DEMO_URL"
+          echo "Demo smoke stable URL: $DEMO_URL"
           echo "DEMO_BASE_URL=$DEMO_URL" >> "$GITHUB_ENV"
 
       - name: Run Pro v7 and v6 compatibility D1 smoke
