@@ -1,0 +1,84 @@
+diff --git a/src/server/validators/backup.ts b/src/server/validators/backup.ts
+index 683251b..6846b23 100644
+--- a/src/server/validators/backup.ts
++++ b/src/server/validators/backup.ts
+@@ -1,5 +1,5 @@
+ import { z } from 'zod';
+-import { BACKUP_FORMAT, BACKUP_FORMAT_VERSION, BACKUP_MAX_TOTAL_RECORDS, BACKUP_SCHEMA_VERSION, BACKUP_TABLES, type BackupDataV1 } from '../../utils/backupFormat.ts';
++import { BACKUP_FORMAT, BACKUP_FORMAT_VERSION, BACKUP_LEGACY_SCHEMA_VERSION, BACKUP_MAX_TOTAL_RECORDS, BACKUP_SCHEMA_VERSION, BACKUP_TABLES, type BackupDataV1 } from '../../utils/backupFormat.ts';
+ 
+ const nullableString = z.string().nullable();
+ const nullableNumber = z.number().nullable();
+@@ -16,23 +16,31 @@ const HousekeepingSchema = z.object({ id, roomId: id, assignedUserId: maybeUserI
+ const ContractSchema = z.object({ id, roomId: id, roomNumber: z.string(), tenantName: z.string(), tenantPhone: nullableString, idCardNumber: nullableString, startDate: z.string(), endDate: z.string(), monthlyRent: z.number(), depositAmount: z.number(), advanceRentAmount: z.number(), contractDocumentUrl: nullableString, status: z.string(), note: nullableString, createdAt: nullableString, updatedAt: nullableString, deletedAt: nullableString, deletedBy: nullableNumber }).strict();
+ const AnnouncementSchema = z.object({ id, title: z.string(), content: z.string(), category: z.string(), isPinned: z.number(), targetRoomIds: nullableString, imageUrl: nullableString, createdAt: nullableString, updatedAt: nullableString, deletedAt: nullableString, deletedBy: nullableNumber }).strict();
+ const NoteSchema = z.object({ id, createdBy: id, roomId: maybeUserId, title: z.string(), content: z.string(), color: z.string(), isPinned: z.number(), createdAt: nullableString, updatedAt: nullableString, deletedAt: nullableString, deletedBy: nullableNumber }).strict();
+-const SafeSettingsSchema = z.object({ dormName: z.string(), defaultElecRate: z.number(), defaultWaterRate: z.number(), defaultDueDateDay: z.number().int(), defaultPenaltyRate: z.number(), promptpayId: nullableString, promptpayName: nullableString, fontScale: z.enum(['small', 'medium', 'large']) }).strict();
++const SafeSettingsSchemaV6 = z.object({ dormName: z.string(), defaultElecRate: z.number(), defaultWaterRate: z.number(), defaultDueDateDay: z.number().int(), defaultPenaltyRate: z.number(), promptpayId: nullableString, promptpayName: nullableString, fontScale: z.enum(['small', 'medium', 'large']) }).strict();
++const SafeSettingsSchemaV7 = SafeSettingsSchemaV6.extend({ brandColor: nullableString, contactPhone: nullableString, billFooter: nullableString }).strict();
+ 
+-export const BackupManifestSchema = z.object({
++const BackupCountsSchema = z.object({ rooms: z.number().int().nonnegative(), bills: z.number().int().nonnegative(), recurringChargeTemplates: z.number().int().nonnegative(), roomRecurringCharges: z.number().int().nonnegative(), billChargeItems: z.number().int().nonnegative(), maintenanceTickets: z.number().int().nonnegative(), housekeepingTasks: z.number().int().nonnegative(), leaseContracts: z.number().int().nonnegative(), announcements: z.number().int().nonnegative(), notes: z.number().int().nonnegative(), settings: z.literal(1) }).strict();
++const manifestShape = {
+   format: z.literal(BACKUP_FORMAT), formatVersion: z.literal(BACKUP_FORMAT_VERSION), appVersion: z.string(),
+-  schemaVersion: z.literal(BACKUP_SCHEMA_VERSION), createdAt: z.string(), ownerScope: z.string().length(64), dormName: z.string(),
+-  counts: z.object({ rooms: z.number().int().nonnegative(), bills: z.number().int().nonnegative(), recurringChargeTemplates: z.number().int().nonnegative(), roomRecurringCharges: z.number().int().nonnegative(), billChargeItems: z.number().int().nonnegative(), maintenanceTickets: z.number().int().nonnegative(), housekeepingTasks: z.number().int().nonnegative(), leaseContracts: z.number().int().nonnegative(), announcements: z.number().int().nonnegative(), notes: z.number().int().nonnegative(), settings: z.literal(1) }).strict(),
++  createdAt: z.string(), ownerScope: z.string().length(64), dormName: z.string(), counts: BackupCountsSchema,
+   excluded: z.array(z.string()), dataSha256: z.string().regex(/^[0-9a-f]{64}$/),
+-}).strict();
++};
+ 
+-export const BackupDataSchema = z.object({
++export const BackupManifestSchemaV6 = z.object({ ...manifestShape, schemaVersion: z.literal(BACKUP_LEGACY_SCHEMA_VERSION) }).strict();
++export const BackupManifestSchema = z.object({ ...manifestShape, schemaVersion: z.literal(BACKUP_SCHEMA_VERSION) }).strict();
++
++const dataShape = {
+   rooms: z.array(RoomSchema), bills: z.array(BillSchema), recurringChargeTemplates: z.array(RecurringTemplateSchema),
+   roomRecurringCharges: z.array(RoomRecurringSchema), billChargeItems: z.array(BillChargeItemSchema), maintenanceTickets: z.array(MaintenanceSchema),
+   housekeepingTasks: z.array(HousekeepingSchema), leaseContracts: z.array(ContractSchema), announcements: z.array(AnnouncementSchema), notes: z.array(NoteSchema),
+-  settings: SafeSettingsSchema,
+-}).strict();
++};
++export const BackupDataSchemaV6 = z.object({ ...dataShape, settings: SafeSettingsSchemaV6 }).strict();
++export const BackupDataSchema = z.object({ ...dataShape, settings: SafeSettingsSchemaV7 }).strict();
+ 
+-export const BackupRestoreRequestSchema = z.object({ manifest: BackupManifestSchema, data: BackupDataSchema }).strict();
++export const BackupRestoreRequestSchema = z.union([
++  z.object({ manifest: BackupManifestSchemaV6, data: BackupDataSchemaV6 }).strict(),
++  z.object({ manifest: BackupManifestSchema, data: BackupDataSchema }).strict(),
++]);
+ 
+ export class BackupValidationError extends Error {
+   constructor(public code: string, public status = 400, message = code) { super(message); }
+diff --git a/src/utils/backupFormat.ts b/src/utils/backupFormat.ts
+index ff5654e..38e4a77 100644
+--- a/src/utils/backupFormat.ts
++++ b/src/utils/backupFormat.ts
+@@ -1,6 +1,8 @@
+ export const BACKUP_FORMAT = 'dorm-backup' as const;
+ export const BACKUP_FORMAT_VERSION = 1 as const;
+-export const BACKUP_SCHEMA_VERSION = 6 as const;
++export const BACKUP_LEGACY_SCHEMA_VERSION = 6 as const;
++export const BACKUP_SCHEMA_VERSION = 7 as const;
++export type BackupSchemaVersion = typeof BACKUP_LEGACY_SCHEMA_VERSION | typeof BACKUP_SCHEMA_VERSION;
+ export const BACKUP_ARCHIVE_MAX_BYTES = 10 * 1024 * 1024;
+ export const BACKUP_REQUEST_MAX_BYTES = 20 * 1024 * 1024;
+ export const BACKUP_MAX_TOTAL_RECORDS = 60_000;
+@@ -21,13 +23,16 @@ export interface BackupSafeSettingsV1 {
+   promptpayId: string | null;
+   promptpayName: string | null;
+   fontScale: 'small' | 'medium' | 'large';
++  brandColor: string | null;
++  contactPhone: string | null;
++  billFooter: string | null;
+ }
+ 
+ export interface BackupManifestV1 {
+   format: typeof BACKUP_FORMAT;
+   formatVersion: typeof BACKUP_FORMAT_VERSION;
+   appVersion: string;
+-  schemaVersion: typeof BACKUP_SCHEMA_VERSION;
++  schemaVersion: BackupSchemaVersion;
+   createdAt: string;
+   ownerScope: string;
+   dormName: string;
