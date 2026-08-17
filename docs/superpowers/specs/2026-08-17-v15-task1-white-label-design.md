@@ -176,6 +176,19 @@ Gate ต้องตัดสินจาก “ค่าที่เปลี�
 
 Task 1 ไม่เปลี่ยน authorization semantics ของ setting อื่นนอก White-label
 
+### First setup bootstrap exception
+
+`POST /api/setup/init` ของ V14 รับ `dormName` ตอนติดตั้งครั้งแรก และ generated package กำหนด `subscription_plan` ผ่าน schema default ของแพ็กเกจ
+
+เพื่อไม่ทำลาย setup flow เดิม:
+- ทุกแพ็กเกจ รวม Demo ยังคงกำหนด `dormName` ครั้งแรกใน `/api/setup/init` ได้
+- ถือเป็น bootstrap identity ไม่ใช่ post-setup White-label mutation
+- validation ของ `dormName` ใน setup ต้องใช้ข้อกำหนดเดียวกัน: trim, 1..120 ตัวอักษรถ้ามีค่า
+- หลัง setup แล้ว การเปลี่ยน `dormName` ผ่าน `PUT /api/settings` จึงอยู่ใต้ `whiteLabel` gate
+- Demo จึงตั้งชื่อหอได้ตอนติดตั้งครั้งแรก แต่แก้ White-label ภายหลังไม่ได้
+
+Task 1 ต้องมี regression test เพื่อยืนยันว่า Demo first setup ยังสำเร็จ
+
 ## 8. Validation + Normalization
 
 ### dormName
@@ -310,6 +323,11 @@ Builder/parity tests ต้องยืนยันว่า generated Demo/Basi
 - non-white-label settings ไม่ถูก `whiteLabel` gate โดยผิดพลาด
 - GET ไม่ expose logo key/LINE/OAuth secret
 
+### Setup regression tests
+- Demo first setup พร้อม `dormName` ยังสำเร็จ
+- setup `dormName` trim/limit ถูกต้อง
+- หลัง setup Demo เปลี่ยน `dormName` ผ่าน Settings ไม่ได้
+
 ### Migration/schema tests
 - V14 settings row migrate ได้โดยไม่ต้อง backfill
 - new columns nullable
@@ -338,7 +356,7 @@ Builder/parity tests ต้องยืนยันว่า generated Demo/Basi
 - `billFooter` เป็น plain text เพื่อลด HTML/script injection surface
 - ไม่ยอมให้ arbitrary remote logo URL ผ่าน Settings PUT
 - owner scoping เดิมต้องคงอยู่
-- Demo gate fail-closed เมื่อมีการเปลี่ยน White-label จริง
+- Demo gate fail-closed เมื่อมีการเปลี่ยน White-label จริงหลัง setup
 
 ## 14. Migration / Upgrade Safety
 
@@ -356,17 +374,19 @@ Task 1 ถือว่าจบเมื่อ:
 2. migration 0006 additive และ schema/type contract ตรงกัน
 3. GET settings expose derived White-label fields โดยไม่ leak internal/secret fields
 4. PUT settings ใช้ diff-based owner/super_admin + plan gate สำหรับ White-label
-5. validation ครบตาม contract
-6. backup v7 รองรับ safe White-label fields และยัง restore v6 ได้
-7. package metadata/parity สอดคล้อง
-8. tests/lint/Cloudflare types/build ผ่าน
-9. ไม่มีการทำ UI/logo upload/theme rendering เกิน scope ของ Task 1
+5. Demo first setup ยังตั้ง `dormName` ครั้งแรกได้โดยไม่ทำให้ setup flow พัง
+6. validation ครบตาม contract
+7. backup v7 รองรับ safe White-label fields และยัง restore v6 ได้
+8. package metadata/parity สอดคล้อง
+9. tests/lint/Cloudflare types/build ผ่าน
+10. ไม่มีการทำ UI/logo upload/theme rendering เกิน scope ของ Task 1
 
 ## 16. Design Decisions Locked
 
 - Approach: single `whiteLabel` entitlement
 - Matrix: Demo=false, Basic=true, Standard=true, Pro=true
 - PromptPay remains independent existing entitlement
+- First setup may set initial `dormName` on every plan; post-setup edits are entitlement-gated
 - No persisted `whiteLabelEnabled`
 - Logo reference is server-managed and not writable via Settings PUT
 - DB migration additive/nullable
