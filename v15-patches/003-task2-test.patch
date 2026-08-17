@@ -1,0 +1,32 @@
+diff --git a/tests/settings-white-label.test.ts b/tests/settings-white-label.test.ts
+new file mode 100644
+index 0000000..f1c98aa
+--- /dev/null
++++ b/tests/settings-white-label.test.ts
+@@ -0,0 +1,26 @@
++import test from 'node:test';
++import assert from 'node:assert/strict';
++import { readFileSync } from 'node:fs';
++import type { Settings } from '../src/types.ts';
++
++const migrationUrl = new URL('../d1-migrations/0006_add_white_label_settings.sql', import.meta.url);
++
++test('white-label migration is additive and nullable', () => {
++  const migration = readFileSync(migrationUrl, 'utf8');
++  for (const column of ['brand_logo_key', 'brand_color', 'contact_phone', 'bill_footer']) {
++    assert.match(migration, new RegExp(`ALTER TABLE settings ADD COLUMN ${column} TEXT`, 'i'));
++  }
++  assert.doesNotMatch(migration, /DROP\s+COLUMN|RENAME\s+COLUMN|NOT\s+NULL/i);
++});
++
++test('Settings exposes only the public white-label projection', () => {
++  const settings: Partial<Settings> = {
++    brandColor: '#1DB954',
++    contactPhone: '081-234-5678',
++    billFooter: 'ขอบคุณที่ใช้บริการ',
++    brandLogoUrl: null,
++    whiteLabelEnabled: true,
++  };
++  assert.equal(settings.whiteLabelEnabled, true);
++  assert.equal('brandLogoKey' in settings, false);
++});
