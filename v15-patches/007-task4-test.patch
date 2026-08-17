@@ -8,12 +8,23 @@ index f46b568..4091fd9 100644
  import test from 'node:test';
 -import { requiredPlanFeatureForApiRequest, isDemoMutationRestricted, requiredPlanFeaturesForSettingsUpdate } from '../src/server/services/planAccess.service.ts';
 +import { requiredPlanFeatureForApiRequest, isDemoMutationRestricted, requiredPlanFeaturesForSettingsUpdate, minimumPaidPlanForFeature } from '../src/server/services/planAccess.service.ts';
-@@
+ 
+ test('API request mapping identifies Standard and Pro feature routes', () => {
+   assert.equal(requiredPlanFeatureForApiRequest('/api/bills/bulk', 'POST'), 'bulkMeter');
+@@ -34,7 +34,7 @@ test('settings update identifies integration features that require higher plans', () => {
+ });
+ 
  test('demo blocks destructive and configuration mutations while preserving the sales flow', () => {
 -  assert.equal(isDemoMutationRestricted('/api/settings', 'PUT'), true);
 +  assert.equal(isDemoMutationRestricted('/api/settings', 'PUT'), false);
-@@
+   assert.equal(isDemoMutationRestricted('/api/rooms/1', 'DELETE'), true);
+   assert.equal(isDemoMutationRestricted('/api/bills/1', 'DELETE'), true);
+   assert.equal(isDemoMutationRestricted('/api/caretakers', 'POST'), true);
+@@ -91,3 +91,8 @@ test('both server implementations contain authoritative plan errors and limit checks', () => {
+     assert.match(source, /requiredPlanFeaturesForSettingsUpdate/);
+   }
  });
++
 +
 +test('whiteLabel minimum paid plan is Basic', () => {
 +  assert.equal(minimumPaidPlanForFeature('whiteLabel'), 'basic');
@@ -26,6 +37,7 @@ index 9493f7f..712afdf 100644
    })), []);
    assert.deepEqual(changedWhiteLabelFields(current, normalizeWhiteLabelPatch({ brandColor: '#112233' })), ['brandColor']);
  });
++
 +
 +test('Cloudflare settings route exposes white-label projection and route-level gates mutations', () => {
 +  const source = readFileSync(new URL('../functions/api/[[path]].ts', import.meta.url), 'utf8');
