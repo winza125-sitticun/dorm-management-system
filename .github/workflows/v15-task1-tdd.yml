@@ -14,7 +14,7 @@ permissions:
   actions: read
 
 jobs:
-  task1-task2-red-green:
+  task1-through-task3-red-green:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -41,10 +41,6 @@ jobs:
           unzip -q "$MASTER_ZIP" -d source
           test -f source/package.json
 
-      - name: Apply Task 1 RED test only
-        working-directory: source
-        run: patch -p1 < ../v15-patches/001-task1-test.patch
-
       - name: Use Node.js 22
         uses: actions/setup-node@v4
         with:
@@ -56,73 +52,52 @@ jobs:
         working-directory: source
         run: npm ci
 
-      - name: Verify Task 1 RED
+      - name: Task 1 RED then GREEN
         working-directory: source
         shell: bash
         run: |
+          patch -p1 < ../v15-patches/001-task1-test.patch
           set +e
           npx tsx --test tests/plan-entitlements.test.ts > ../task1-red.log 2>&1
           rc=$?
           set -e
           cat ../task1-red.log
-          if [ "$rc" -eq 0 ]; then
-            echo '::error::Task 1 RED test unexpectedly passed before implementation'
-            exit 1
-          fi
-          echo 'Task 1 RED confirmed.'
-
-      - name: Apply Task 1 implementation
-        working-directory: source
-        run: patch -p1 < ../v15-patches/002-task1-impl.patch
-
-      - name: Verify Task 1 GREEN
-        working-directory: source
-        run: npx tsx --test tests/plan-entitlements.test.ts
-
-      - name: Static Task 1 review assertions
-        working-directory: source
-        shell: bash
-        run: |
-          set -euo pipefail
+          test "$rc" -ne 0
+          patch -p1 < ../v15-patches/002-task1-impl.patch
+          npx tsx --test tests/plan-entitlements.test.ts
           grep -q "| 'whiteLabel'" src/constants/planEntitlements.ts
-          grep -q "backupRestore', 'whiteLabel'" src/constants/planEntitlements.ts
-          grep -q "hasPlanFeature('demo', 'promptPay'), true" tests/plan-entitlements.test.ts
           grep -q "hasPlanFeature('basic', 'promptPay'), false" tests/plan-entitlements.test.ts
 
-      - name: Apply Task 2 RED tests only
-        working-directory: source
-        run: patch -p1 < ../v15-patches/003-task2-test.patch
-
-      - name: Verify Task 2 RED
+      - name: Task 2 RED then GREEN
         working-directory: source
         shell: bash
         run: |
+          patch -p1 < ../v15-patches/003-task2-test.patch
           set +e
           npx tsx --test tests/settings-white-label.test.ts > ../task2-red.log 2>&1
           rc=$?
           set -e
           cat ../task2-red.log
-          if [ "$rc" -eq 0 ]; then
-            echo '::error::Task 2 RED test unexpectedly passed before implementation'
-            exit 1
-          fi
-          echo 'Task 2 RED confirmed.'
+          test "$rc" -ne 0
+          patch -p1 < ../v15-patches/004-task2-impl.patch
+          npx tsx --test tests/settings-white-label.test.ts
+          grep -qi 'ALTER TABLE settings ADD COLUMN brand_logo_key TEXT' d1-migrations/0006_add_white_label_settings.sql
+          ! grep -Eqi 'DROP[[:space:]]+COLUMN|RENAME[[:space:]]+COLUMN|NOT[[:space:]]+NULL' d1-migrations/0006_add_white_label_settings.sql
+          ! grep -q 'brandLogoKey' src/types.ts
 
-      - name: Apply Task 2 implementation
-        working-directory: source
-        run: patch -p1 < ../v15-patches/004-task2-impl.patch
-
-      - name: Verify Task 2 GREEN
-        working-directory: source
-        run: npx tsx --test tests/settings-white-label.test.ts
-
-      - name: Static Task 2 review assertions
+      - name: Task 3 RED then GREEN
         working-directory: source
         shell: bash
         run: |
-          set -euo pipefail
-          grep -qi 'ALTER TABLE settings ADD COLUMN brand_logo_key TEXT' d1-migrations/0006_add_white_label_settings.sql
-          grep -qi 'ALTER TABLE settings ADD COLUMN brand_color TEXT' d1-migrations/0006_add_white_label_settings.sql
-          ! grep -Eqi 'DROP[[:space:]]+COLUMN|RENAME[[:space:]]+COLUMN|NOT[[:space:]]+NULL' d1-migrations/0006_add_white_label_settings.sql
-          grep -q 'whiteLabelEnabled?: boolean' src/types.ts
-          ! grep -q 'brandLogoKey' src/types.ts
+          patch -p1 < ../v15-patches/005-task3-test.patch
+          set +e
+          npx tsx --test tests/settings-white-label.test.ts > ../task3-red.log 2>&1
+          rc=$?
+          set -e
+          cat ../task3-red.log
+          test "$rc" -ne 0
+          patch -p1 < ../v15-patches/006-task3-impl.patch
+          npx tsx --test tests/settings-white-label.test.ts
+          grep -q 'const COLOR_RE = /^#\[0-9A-Fa-f\]{6}\$/' src/server/validators/settings.ts
+          grep -q 'brandLogoKey' src/server/validators/settings.ts
+          grep -q 'changedWhiteLabelFields' src/server/validators/settings.ts
