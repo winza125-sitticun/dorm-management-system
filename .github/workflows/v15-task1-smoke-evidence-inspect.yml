@@ -1,0 +1,36 @@
+name: V15 Task 1 Inspect Failed Smoke Evidence
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - agent/v15-task1-white-label-contract
+    paths:
+      - '.github/workflows/v15-task1-smoke-evidence-inspect.yml'
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v5
+        with:
+          name: v15-task1-d1-smoke-evidence
+          path: evidence
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: 31996738178
+      - name: Print evidence only
+        shell: bash
+        run: |
+          set -euo pipefail
+          find evidence -maxdepth 2 -type f -print
+          for f in evidence/*.json; do
+            echo "===== $f ====="
+            cat "$f"
+          done
