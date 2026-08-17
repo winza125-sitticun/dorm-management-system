@@ -1,0 +1,24 @@
+diff --git a/tests/backup-restore.test.ts b/tests/backup-restore.test.ts
+--- a/tests/backup-restore.test.ts
++++ b/tests/backup-restore.test.ts
+@@ -111,9 +111,18 @@ class RestoreFakeD1 {
+   }
+   apply(sql: string, args: unknown[]) {
+     const q = this.q(sql);
+     if (!q.startsWith('update settings set')) return;
+-    const keys = ['dorm_name','default_elec_rate','default_water_rate','default_due_date_day','default_penalty_rate','promptpay_id','promptpay_name','font_scale','brand_color','contact_phone','bill_footer'];
+-    keys.forEach((key, index) => { this.settings[key] = args[index]; });
++    const setStart = 'update settings set ';
++    const whereStart = ' where user_id=?';
++    const whereIndex = q.lastIndexOf(whereStart);
++    assert.notEqual(whereIndex, -1, `unsupported settings UPDATE in fake: ${q}`);
++    const assignments = q.slice(setStart.length, whereIndex).split(',');
++    let bindIndex = 0;
++    for (const assignment of assignments) {
++      const match = assignment.match(/^([a-z0-9_]+)=\?$/);
++      if (!match) continue; // e.g. updated_at=CURRENT_TIMESTAMP
++      this.settings[match[1]] = args[bindIndex++];
++    }
++    assert.equal(bindIndex, args.length - 1, 'fake consumed every SET bind before ownerId');
+   }
+ }
