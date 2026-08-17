@@ -32,6 +32,7 @@ jobs:
     name: disposable Pages + D1 backup restore smoke
     runs-on: ubuntu-latest
     timeout-minutes: 35
+    environment: "fulfilling-communication / production"
 
     steps:
       - name: Checkout gate branch
