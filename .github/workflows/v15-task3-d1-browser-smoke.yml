@@ -1,0 +1,221 @@
+name: V15 Task 3 Cloudflare D1 Browser Smoke
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [agent/v15-task1-white-label-contract]
+    paths: ['.github/workflows/v15-task3-d1-browser-smoke.yml']
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: v15-task3-d1-browser-smoke-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  SOURCE_ARTIFACT_ID: '9295620943'
+  CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+  CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: "fulfilling-communication / production"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Require Cloudflare secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${CLOUDFLARE_API_TOKEN:-}"
+          test -n "${CLOUDFLARE_ACCOUNT_ID:-}"
+
+      - name: Download and verify immutable Task 3 candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 8 --retry-all-errors --retry-delay 3 \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${SOURCE_ARTIFACT_ID}/zip" \
+            -o candidate.zip
+          mkdir candidate-artifact && unzip -q candidate.zip -d candidate-artifact
+          (cd candidate-artifact && sha256sum --check --strict MASTER_V15_TASK3_CI_SHA256.txt)
+          (cd candidate-artifact && sha256sum --check --strict v15-task3-work/V15_TASK3_CANDIDATE_SHA256.txt)
+          PRO_ZIP="candidate-artifact/v15-task3-work/release-v15-task3/dorm-management-system-pro-v15-TASK3-CANDIDATE.zip"
+          DEMO_ZIP="candidate-artifact/v15-task3-work/release-v15-task3/dorm-management-system-demo-v15-TASK3-CANDIDATE.zip"
+          test -f "$PRO_ZIP" && test -f "$DEMO_ZIP"
+          echo "PRO_SHA=$(sha256sum "$PRO_ZIP" | awk '{print $1}')" >> "$GITHUB_ENV"
+          echo "DEMO_SHA=$(sha256sum "$DEMO_ZIP" | awk '{print $1}')" >> "$GITHUB_ENV"
+          mkdir pro-work demo-work
+          unzip -q "$PRO_ZIP" -d pro-work
+          unzip -q "$DEMO_ZIP" -d demo-work
+          for d in pro-work demo-work; do
+            test -f "$d/src/theme/brandTheme.ts"
+            test -f "$d/src/theme/brandingClient.ts"
+            grep -q "DEFAULT_BRAND_COLOR = '#1DB954'" "$d/src/theme/brandTheme.ts"
+            grep -q 'BRANDING_TIMEOUT_MS = 3000' "$d/src/theme/brandingClient.ts"
+            test "$(find "$d/d1-migrations" -maxdepth 1 -type f -printf '%f\n' | sort | tail -n1)" = '0006_add_white_label_settings.sql'
+          done
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install candidate dependencies
+        run: |
+          (cd pro-work && npm ci)
+          (cd demo-work && npm ci)
+
+      - name: Allocate resources
+        shell: bash
+        run: |
+          set -euo pipefail
+          P="$(printf '%s' "$GITHUB_RUN_ID" | tr -cd '0-9' | tail -c 10)-${GITHUB_RUN_ATTEMPT}"
+          echo "PRO_PAGES=v15-t3-pro-${P}" >> "$GITHUB_ENV"
+          echo "PRO_D1=v15-t3-pro-${P}-db" >> "$GITHUB_ENV"
+          echo "DEMO_PAGES=v15-t3-demo-${P}" >> "$GITHUB_ENV"
+          echo "DEMO_D1=v15-t3-demo-${P}-db" >> "$GITHUB_ENV"
+
+      - name: Create D1 and render configs
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd pro-work && npx wrangler d1 create "$PRO_D1" --location apac && npx wrangler d1 info "$PRO_D1" --json > ../pro-d1.json)
+          (cd demo-work && npx wrangler d1 create "$DEMO_D1" --location apac && npx wrangler d1 info "$DEMO_D1" --json > ../demo-d1.json)
+          python3 - <<'PY'
+          import importlib.util, json, os, sys
+          from pathlib import Path
+          def load(path,name):
+              s=importlib.util.spec_from_file_location(name,Path(path)); m=importlib.util.module_from_spec(s); sys.modules[name]=m; s.loader.exec_module(m); return m
+          h=load('.github/scripts/v14_task12_d1_smoke.py','h3'); c=load('.github/scripts/v14_task12_wrangler_config.py','c3')
+          for p,d,i in [('PRO',Path('pro-work'),Path('pro-d1.json')),('DEMO',Path('demo-work'),Path('demo-d1.json'))]:
+              x=h.parse_wrangler_json(i.read_text()); x=x[0] if isinstance(x,list) else x
+              uid=x.get('uuid') or x.get('id') or x.get('database_id'); assert uid
+              text=c.build_wrangler_config((d/'wrangler.template.jsonc').read_text(),os.environ[p+'_PAGES'],os.environ[p+'_D1'],str(uid))
+              (d/'wrangler.jsonc').write_text(text)
+          PY
+
+      - name: Create Pages, secrets and migrate
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd pro-work && npx wrangler pages project create "$PRO_PAGES" --production-branch main)
+          (cd demo-work && npx wrangler pages project create "$DEMO_PAGES" --production-branch main)
+          S1="$(python3 -c 'import secrets;print(secrets.token_urlsafe(48))')"; S2="$(python3 -c 'import secrets;print(secrets.token_urlsafe(48))')"
+          printf '%s\n' "$S1" | (cd pro-work && npx wrangler pages secret put JWT_SECRET --project-name "$PRO_PAGES")
+          printf '%s\n' "$S2" | (cd demo-work && npx wrangler pages secret put JWT_SECRET --project-name "$DEMO_PAGES")
+          unset S1 S2
+          (cd pro-work && npx wrangler d1 migrations apply DB --remote --config wrangler.jsonc)
+          (cd demo-work && npx wrangler d1 migrations apply DB --remote --config wrangler.jsonc)
+
+      - name: Build and deploy
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd pro-work && npm run build:pages && npx wrangler pages deploy dist --project-name "$PRO_PAGES" --branch main --commit-hash "$GITHUB_SHA" --commit-dirty=true)
+          (cd demo-work && npm run build:pages && npx wrangler pages deploy dist --project-name "$DEMO_PAGES" --branch main --commit-hash "$GITHUB_SHA" --commit-dirty=true)
+          echo "PRO_URL=https://${PRO_PAGES}.pages.dev" >> "$GITHUB_ENV"
+          echo "DEMO_URL=https://${DEMO_PAGES}.pages.dev" >> "$GITHUB_ENV"
+
+      - name: Run Pro regression smoke
+        env:
+          SMOKE_WORKDIR: ${{ github.workspace }}/pro-work
+          SMOKE_BASE_URL: ${{ env.PRO_URL }}
+          SMOKE_PAGES_NAME: ${{ env.PRO_PAGES }}
+          SMOKE_D1_NAME: ${{ env.PRO_D1 }}
+          SMOKE_CANDIDATE_SHA256: ${{ env.PRO_SHA }}
+          SMOKE_EVIDENCE_PATH: ${{ github.workspace }}/pro-evidence.json
+        run: |
+          set +e; python3 .github/scripts/v15_task2_d1_smoke.py; echo $? > pro-exit.txt; exit 0
+
+      - name: Run Demo regression smoke
+        env:
+          SMOKE_BASE_URL: ${{ env.DEMO_URL }}
+          SMOKE_PAGES_NAME: ${{ env.DEMO_PAGES }}
+          SMOKE_D1_NAME: ${{ env.DEMO_D1 }}
+          SMOKE_CANDIDATE_SHA256: ${{ env.DEMO_SHA }}
+          SMOKE_EVIDENCE_PATH: ${{ github.workspace }}/demo-evidence.json
+        run: |
+          set +e; python3 .github/scripts/v15_task2_demo_smoke.py; echo $? > demo-exit.txt; exit 0
+
+      - name: Set deterministic browser branding
+        shell: bash
+        run: |
+          set -euo pipefail
+          OWNER="$(python3 -c "import json;print(json.load(open('pro-evidence.json'))['ownerId'])")"
+          (cd pro-work && npx wrangler d1 execute DB --remote --config wrangler.jsonc --command "UPDATE settings SET subscription_plan='pro',brand_color='#6D28D9' WHERE user_id=${OWNER};")
+          (cd demo-work && npx wrangler d1 execute DB --remote --config wrangler.jsonc --command "UPDATE settings SET brand_color='#DC2626' WHERE id=(SELECT MIN(id) FROM settings);")
+          curl --fail --silent --show-error "$PRO_URL/api/public/branding" > pro-branding.json
+          curl --fail --silent --show-error "$DEMO_URL/api/public/branding" > demo-branding.json
+          python3 - <<'PY'
+          import json
+          p=json.load(open('pro-branding.json')); d=json.load(open('demo-branding.json'))
+          assert p['brandColor']=='#6D28D9' and p['whiteLabelEnabled'] is True
+          assert d['brandColor'] is None and d['whiteLabelEnabled'] is False
+          PY
+
+      - name: Headless browser runtime token smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          C="$(command -v google-chrome || command -v chromium || command -v chromium-browser || true)"; test -n "$C"
+          "$C" --headless=new --no-sandbox --disable-gpu --virtual-time-budget=8000 --dump-dom "$PRO_URL/" > pro-dom.html
+          "$C" --headless=new --no-sandbox --disable-gpu --virtual-time-budget=8000 --dump-dom "$DEMO_URL/" > demo-dom.html
+          grep -Fq -- '--brand-primary: #6D28D9' pro-dom.html
+          grep -Fq -- '--brand-primary: #1DB954' demo-dom.html
+          ! grep -Fq 'data-branding-boot="loading"' pro-dom.html
+          ! grep -Fq 'data-branding-boot="loading"' demo-dom.html
+          ! grep -Fq '<div id="root"></div>' pro-dom.html
+          ! grep -Fq '<div id="root"></div>' demo-dom.html
+          python3 - <<'PY'
+          import json
+          e={'pro':{'publicBrandColor':'#6D28D9','runtimeBrandPrimary':'#6D28D9','bootResolved':True},'demo':{'publicBrandColor':None,'runtimeBrandPrimary':'#1DB954','bootResolved':True},'overallPass':True}
+          open('browser-evidence.json','w').write(json.dumps(e,indent=2)+'\n')
+          PY
+
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          A=99;B=99;C=99;D=99
+          [ -d pro-work ] && [ -n "${PRO_PAGES:-}" ] && (cd pro-work && npx wrangler pages project delete "$PRO_PAGES" --yes); A=$?
+          [ -d pro-work ] && [ -n "${PRO_D1:-}" ] && (cd pro-work && npx wrangler d1 delete "$PRO_D1" --skip-confirmation); B=$?
+          [ -d demo-work ] && [ -n "${DEMO_PAGES:-}" ] && (cd demo-work && npx wrangler pages project delete "$DEMO_PAGES" --yes); C=$?
+          [ -d demo-work ] && [ -n "${DEMO_D1:-}" ] && (cd demo-work && npx wrangler d1 delete "$DEMO_D1" --skip-confirmation); D=$?
+          printf '{"proPagesExit":%s,"proD1Exit":%s,"demoPagesExit":%s,"demoD1Exit":%s}\n' "$A" "$B" "$C" "$D" > cleanup-evidence.json
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v15-task3-d1-browser-smoke-evidence
+          path: |
+            pro-evidence.json
+            demo-evidence.json
+            browser-evidence.json
+            cleanup-evidence.json
+            pro-exit.txt
+            demo-exit.txt
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Assert smoke and cleanup
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(cat pro-exit.txt)" = 0
+          test "$(cat demo-exit.txt)" = 0
+          python3 - <<'PY'
+          import json
+          for f in ['pro-evidence.json','demo-evidence.json','browser-evidence.json']: assert json.load(open(f)).get('overallPass') is True, f
+          c=json.load(open('cleanup-evidence.json')); assert all(c[k]==0 for k in c), c
+          PY
