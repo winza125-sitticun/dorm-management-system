@@ -4,73 +4,58 @@
 
 **Goal:** Add validated White-label logo persistence and a safe unauthenticated branding API to the verified V15 Task 1 candidate without changing D1 schemaVersion, backup portability, plan entitlements, or package-generation invariants.
 
-**Architecture:** Treat the verified V15 Task 1 candidate from source/release run `31996317195` as the immutable application baseline rather than repository `main`. Add one pure logo Data URI validator, one pure public-branding projection boundary, then wire those into Cloudflare Pages Functions and Express/VPS with identical authorization and response semantics. Store the canonical Data URI in the existing `settings.brand_logo_key` column, keep logo non-portable in `.dormbackup`, and prove the result with RED→GREEN tests, package parity, full release gates, and real Pro + Demo D1 smoke.
+**Architecture:** Use the immutable V15 Task 1 candidate from source/release run `31996317195` as application source-of-truth, not repository `main`. Add a pure logo validator and a pure public-branding projection service, then wire them into Cloudflare Pages Functions and Express/VPS with matching authorization and response semantics. Store canonical Data URI content in the existing `settings.brand_logo_key`, keep logos excluded from `.dormbackup`, and close only after full source/release gates plus real Pro and Demo D1 smoke.
 
 **Tech Stack:** TypeScript, Express, Drizzle ORM, Cloudflare Pages Functions, Cloudflare D1, Zod, Node.js `node:test`, Vite, Wrangler, GitHub Actions.
 
 ## Global Constraints
 
-- Source-of-truth is V15 Task 1 candidate artifact `9276947765` from run `31996317195`, digest `sha256:9343d09dd935f60e176d31fc6448b37b7e6b6de5f1d01fe410be50d5e8b76260`.
-- V15 Task 1 real D1 smoke run `31999654570` is the behavioral baseline and must remain green.
+- Source-of-truth: Task 1 artifact `9276947765`, run `31996317195`, digest `sha256:9343d09dd935f60e176d31fc6448b37b7e6b6de5f1d01fe410be50d5e8b76260`.
+- Behavioral baseline: Task 1 real D1 smoke run `31999654570` must remain green.
 - Do not use repository `main` as application source and do not independently patch Demo/Basic/Standard/Pro ZIPs.
-- White-label matrix remains Demo=`false`, Basic=`true`, Standard=`true`, Pro=`true`.
-- PromptPay entitlement semantics remain unchanged.
-- Do not add a new D1 migration and do not add `brand_logo_data_uri`; use existing `settings.brand_logo_key` as the V15 Task 2 storage slot.
-- Stored logo value must be a validated canonical Data URI written through the logo API only.
-- Supported MIME types are exactly `image/png`, `image/jpeg`, `image/webp`; SVG and all other formats are rejected.
-- Decoded logo size maximum is exactly `307,200` bytes.
-- MIME header and magic bytes must both match.
-- Logo mutations are owner/super_admin only and additionally require `whiteLabel=true`; staff/caretaker return authorization 403, Demo owner/super_admin return `403 PLAN_REQUIRED`.
-- `GET /api/public/branding` is unauthenticated and explicit-allowlist only.
-- Demo public branding preserves first-setup `dormName` but returns `brandColor`, `contactPhone`, and `logoDataUri` as `null`, with `whiteLabelEnabled=false`.
-- `GET /api/settings` may return `brandLogoUrl`; no API may expose `brand_logo_key` or `brandLogoKey`.
-- `.dormbackup` remains `formatVersion=1`, `schemaVersion=7`; logo stays excluded/non-portable and v6/v7 restore preserves the current logo.
-- LINE, Google OAuth, subscription, backup/restore, owner scoping, and `Cache-Control: no-store` invariants from Task 1 must remain intact.
-- No UI uploader, crop/resize/compression, R2, favicon/PWA changes, bill rendering, or logo portability in Task 2.
-- Real smoke must use stable `https://<project>.pages.dev` URLs, not Wrangler hash-prefixed preview URLs, because Task 1 diagnostics proved the preview hostname can fail TLS in GitHub Actions.
+- White-label matrix remains Demo=`false`, Basic=`true`, Standard=`true`, Pro=`true`; PromptPay matrix remains unchanged.
+- Do not add a D1 migration and do not add `brand_logo_data_uri`; `settings.brand_logo_key` is the sole V15 Task 2 logo storage slot.
+- Supported MIME types are exactly PNG/JPEG/WebP; SVG and all other formats are rejected.
+- Decoded logo maximum is exactly `307,200` bytes; MIME and magic bytes must both match.
+- Logo mutation requires authenticated owner/super_admin plus `whiteLabel=true`; staff/caretaker receive authorization 403, Demo owner/super_admin receives `403 PLAN_REQUIRED`.
+- `GET /api/public/branding` is unauthenticated, installation-global, and explicit-allowlist only. Because it has no owner token, it reads the primary installation settings row deterministically: lowest `settings.id` (`ORDER BY id ASC LIMIT 1`).
+- If stored branding data is malformed, public projection fails safe: invalid/missing `dormName` -> `หอพักของฉัน`; invalid color/contact/logo -> `null`; never serialize malformed raw values.
+- Demo public branding keeps first-setup `dormName` but masks color/contact/logo and returns `whiteLabelEnabled=false`.
+- Authenticated Settings may expose `brandLogoUrl`; no API may expose `brand_logo_key` or `brandLogoKey`.
+- `.dormbackup` stays `formatVersion=1`, `schemaVersion=7`; logo stays non-portable and current logo is preserved by v6/v7 restore.
+- Existing LINE/Google/subscription/backup/owner-scope/no-store invariants remain unchanged.
+- No UI uploader, image processing, R2, PWA/favicons, bill rendering, logo backup portability, or unrelated dependency upgrades.
+- Real smoke must use stable `https://<project>.pages.dev` URLs, not hash-prefixed preview URLs.
 
 ---
 
 ## File Map
 
-The immutable Task 1 candidate is extracted into an isolated execution workspace. Production edits belong to that workspace and are transported into CI as byte-exact patches; the repository branch stores specs/plans, patch artifacts, smoke scripts, workflows, and status evidence.
+Application source changes are made in an extracted Task 1 candidate workspace and transported to CI as byte-exact patches.
 
-Application source files expected to change:
-
-- `src/server/validators/logo.ts` — pure strict Data URI validator and canonicalizer.
-- `src/server/services/branding.service.ts` — safe stored-logo projection and explicit public-branding projection.
-- `src/server/validators/index.ts` — export logo request/body constants/helpers only if route code needs shared imports.
-- `src/db/schema.ts` — Drizzle mapping for Task 1 White-label columns, including `brandLogoKey`; this is schema mapping parity only, not a new D1 migration.
-- `src/types.ts` — public branding response type if needed; retain `Settings.brandLogoUrl` and never add `brandLogoKey` to public Settings.
-- `src/server/services/planAccess.service.ts` — map `/api/settings/logo` mutations to `whiteLabel` where shared plan guard semantics are appropriate.
-- `functions/api/[[path]].ts` — Cloudflare logo PUT/DELETE, authenticated Settings logo projection, unauthenticated public branding endpoint, bounded JSON body.
-- `server.ts` — Express/VPS parity: Task 1 White-label Drizzle projection repair, dedicated logo body parser, logo PUT/DELETE, public branding endpoint.
-- `tests/logo-validation.test.ts` — pure validator tests.
-- `tests/public-branding.test.ts` — projection, Demo masking, secret-leak regressions.
-- `tests/logo-api-contract.test.ts` — route/authorization/response source contract and plan mapping tests.
-- `tests/settings-white-label.test.ts` — authenticated settings logo projection and internal-key non-exposure.
-- `tests/backup-export.test.ts`, `tests/backup-restore.test.ts`, `tests/backup-restore-api.test.ts` — schemaVersion 7 and logo non-portability/preservation regressions.
-- `tests/package-parity.test.mjs`, `tests/package-builder.test.mjs`, `tests/package-release.test.mjs` — One Master generated-package parity.
-
-Repository-side CI/evidence files expected to be created for Task 2:
-
-- `.github/scripts/v15_task2_d1_smoke.py`
-- `.github/scripts/v15_task2_demo_smoke.py`
-- `.github/workflows/v15-task2-tdd.yml`
-- `.github/workflows/v15-task2-production-gate.yml`
-- `.github/workflows/v15-task2-d1-smoke.yml`
-- `V15_TASK2_STATUS_TH.md`
+- Create `src/server/validators/logo.ts` — strict Data URI validation/canonicalization.
+- Create `src/server/services/branding.service.ts` — explicit safe public projection and safe stored-logo projection.
+- Modify `src/db/schema.ts` — map existing Task 1 White-label DB columns for Express/Drizzle; no SQL migration.
+- Modify `src/server/services/planAccess.service.ts` — map logo mutation path to `whiteLabel`.
+- Modify `functions/api/[[path]].ts` — Cloudflare logo PUT/DELETE, Settings logo projection, public branding.
+- Modify `server.ts` — Express parity, dedicated bounded logo parser, logo/public routes.
+- Create `tests/logo-validation.test.ts`.
+- Create `tests/public-branding.test.ts`.
+- Create `tests/logo-api-contract.test.ts`.
+- Modify `tests/settings-white-label.test.ts` and `tests/plan-api-guards.test.ts`.
+- Modify `tests/backup-export.test.ts`, `tests/backup-validation.test.ts`, `tests/backup-restore.test.ts`, `tests/backup-restore-api.test.ts`.
+- Modify `tests/package-builder.test.mjs`, `tests/package-parity.test.mjs`, `tests/package-release.test.mjs`.
+- Create `.github/scripts/v15_task2_d1_smoke.py`, `.github/scripts/v15_task2_demo_smoke.py`.
+- Create `.github/workflows/v15-task2-tdd.yml`, `.github/workflows/v15-task2-production-gate.yml`, `.github/workflows/v15-task2-d1-smoke.yml`.
+- Create `V15_TASK2_STATUS_TH.md` only after final PASS.
 
 ---
 
-### Task 1: Build a strict logo Data URI validator
+### Task 1: Strict Logo Data URI Validator
 
-**Files:**
-- Create: `src/server/validators/logo.ts`
-- Create/Test: `tests/logo-validation.test.ts`
+**Files:** Create `src/server/validators/logo.ts`; create `tests/logo-validation.test.ts`.
 
-**Interfaces:**
-- Produces:
+**Produces:**
 
 ```ts
 export const LOGO_MAX_DECODED_BYTES = 307_200;
@@ -86,69 +71,20 @@ export function validateLogoDataUri(input: unknown): ValidatedLogoData;
 export function safeStoredLogoDataUri(input: unknown): string | null;
 ```
 
-- `validateLogoDataUri()` throws an `Error` with a short field-safe message; it must never include the full input/base64 payload.
-- `safeStoredLogoDataUri()` returns canonical Data URI only when the stored value validates; otherwise `null`.
-
-- [ ] **Step 1: Write RED tests for valid PNG/JPEG/WebP and canonicalization**
-
-Use tiny byte fixtures with correct signatures and assert exact canonical MIME, byte count, and re-encoded Data URI.
-
-```ts
-const png = Uint8Array.from([0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a,0x00]);
-const jpeg = Uint8Array.from([0xff,0xd8,0xff,0xe0,0x00]);
-const webp = new TextEncoder().encode('RIFF1234WEBP');
-```
-
-- [ ] **Step 2: Write RED tests for malformed/unsafe inputs**
-
-Cover: missing/non-string, remote URL, SVG, GIF, invalid base64, whitespace inside base64, extra Data URI parameters, zero-byte payload, PNG/JPEG/WebP MIME mismatch, and `307_201` decoded bytes.
-
-Also assert thrown messages do not contain a sentinel substring from the payload.
-
-- [ ] **Step 3: Run RED**
-
-Run:
-
-```bash
-npx tsx --test tests/logo-validation.test.ts
-```
-
-Expected: FAIL because `src/server/validators/logo.ts` does not exist.
-
-- [ ] **Step 4: Implement the minimal validator**
-
-Implementation rules:
-- parse with an anchored pattern equivalent to `^data:(image/png|image/jpeg|image/webp);base64,([A-Za-z0-9+/]*={0,2})$`;
-- reject whitespace before decode;
-- enforce canonical base64 round-trip so permissive decoder behavior cannot accept malformed padding;
-- decode before checking `sizeBytes`;
-- check exact signatures from the approved spec;
-- re-encode bytes and return canonical lowercase MIME Data URI.
-
-Do not reuse `UploadValidationService.validateUpload()` because its limit is 5 MB and it does not validate magic bytes.
-
-- [ ] **Step 5: Run GREEN and TypeScript gate**
-
-```bash
-npx tsx --test tests/logo-validation.test.ts
-npm run lint
-```
-
-Expected: all validator tests PASS; lint exit 0.
-
-- [ ] **Step 6: Review and commit**
-
-Review for no Node-only `Buffer` dependency in the validator so the same source runs under Pages Functions. Commit the byte-exact test + implementation patch.
+- [ ] **Step 1: Write valid-format RED tests.** Use tiny PNG/JPEG/WebP signature fixtures and assert MIME, byte count, and canonical re-encoded Data URI.
+- [ ] **Step 2: Write unsafe-input RED tests.** Cover missing/non-string, remote URL, SVG/GIF, malformed Data URI, extra parameters, invalid base64/padding/whitespace, zero bytes, MIME/magic mismatch, and 307,201 decoded bytes. Assert errors never contain a sentinel payload substring.
+- [ ] **Step 3: Run RED:** `npx tsx --test tests/logo-validation.test.ts` -> FAIL because module does not exist.
+- [ ] **Step 4: Implement minimal validator.** Parse only `data:(image/png|image/jpeg|image/webp);base64,<payload>`, strict base64 round-trip, decode before size check, verify PNG `89504E470D0A1A0A`, JPEG `FFD8FF`, WebP `RIFF....WEBP`, then canonical re-encode. Do not use Node-only `Buffer` and do not reuse the existing 5 MB upload validator.
+- [ ] **Step 5: Run GREEN:** `npx tsx --test tests/logo-validation.test.ts && npm run lint`.
+- [ ] **Step 6: Review/commit** byte-exact test + production patch.
 
 ---
 
-### Task 2: Add a pure explicit-allowlist public branding projection
+### Task 2: Explicit Public Branding Projection
 
-**Files:**
-- Create: `src/server/services/branding.service.ts`
-- Create/Test: `tests/public-branding.test.ts`
+**Files:** Create `src/server/services/branding.service.ts`; create `tests/public-branding.test.ts`.
 
-**Interfaces:**
+**Produces:**
 
 ```ts
 export interface BrandingSource {
@@ -158,7 +94,6 @@ export interface BrandingSource {
   brandLogoValue?: unknown;
   subscriptionPlan?: unknown;
 }
-
 export interface PublicBranding {
   dormName: string;
   brandColor: string | null;
@@ -166,175 +101,53 @@ export interface PublicBranding {
   logoDataUri: string | null;
   whiteLabelEnabled: boolean;
 }
-
 export function buildPublicBranding(source: BrandingSource): PublicBranding;
 ```
 
-`buildPublicBranding()` consumes only the safe fields above, derives `whiteLabelEnabled` with existing plan helpers, and calls `safeStoredLogoDataUri()` for the logo.
-
-- [ ] **Step 1: Write RED paid-plan projection tests**
-
-Assert Basic/Standard/Pro preserve dorm name, normalized color/contact, valid logo, and `whiteLabelEnabled=true`.
-
-- [ ] **Step 2: Write RED Demo masking test**
-
-Provide Demo with non-null brand color/contact/logo and assert output keeps only `dormName`; custom branding values are `null` and enabled is false.
-
-- [ ] **Step 3: Write RED secret-leak regression**
-
-Pass an object with extra sentinel fields such as `promptpayId`, `lineChannelAccessToken`, `lineChannelSecret`, `googleSpreadsheetId`, `refreshToken`, `subscriptionLicenseKey`, then assert serialized output contains none of their names or values.
-
-- [ ] **Step 4: Run RED**
-
-```bash
-npx tsx --test tests/public-branding.test.ts
-```
-
-- [ ] **Step 5: Implement the minimal projection**
-
-Use object construction from named safe inputs only. Do not spread the source row.
-
-- [ ] **Step 6: Run GREEN + lint**
-
-```bash
-npx tsx --test tests/logo-validation.test.ts tests/public-branding.test.ts
-npm run lint
-```
-
-- [ ] **Step 7: Review and commit**
-
-Reject any implementation that serializes a full settings row then deletes fields.
+- [ ] **Step 1: RED paid-plan tests.** Basic/Standard/Pro output valid dormName/color/contact/logo and enabled=true.
+- [ ] **Step 2: RED Demo masking test.** Demo with stored custom values returns dormName only; color/contact/logo null; enabled=false.
+- [ ] **Step 3: RED malformed-storage tests.** Invalid dorm name falls back to `หอพักของฉัน`; invalid color/contact/logo become null rather than leaking raw values.
+- [ ] **Step 4: RED secret-leak test.** Feed an object carrying sentinel PromptPay, LINE, Google, OAuth, password, role, license and backup fields through an `as any` boundary; serialized result must contain neither names nor values.
+- [ ] **Step 5: Run RED:** `npx tsx --test tests/public-branding.test.ts`.
+- [ ] **Step 6: Implement.** Construct output from named safe values only. Reuse Task 1 White-label normalization under try/catch for safe dorm/color/contact projection and `safeStoredLogoDataUri()` for logo. Never spread the source row.
+- [ ] **Step 7: Run GREEN:** `npx tsx --test tests/logo-validation.test.ts tests/public-branding.test.ts && npm run lint`.
+- [ ] **Step 8: Review/commit.** Reject any “serialize then delete secrets” design.
 
 ---
 
-### Task 3: Wire Cloudflare plan guards, bounded logo requests, mutations, and Settings projection
+### Task 3: Cloudflare Logo Mutation + Authenticated Settings Projection
 
-**Files:**
-- Modify: `src/server/services/planAccess.service.ts`
-- Modify: `functions/api/[[path]].ts`
-- Create/Test: `tests/logo-api-contract.test.ts`
-- Modify/Test: `tests/settings-white-label.test.ts`
+**Files:** Modify `src/server/services/planAccess.service.ts`, `functions/api/[[path]].ts`, `tests/plan-api-guards.test.ts`, `tests/settings-white-label.test.ts`; create `tests/logo-api-contract.test.ts`.
 
-**Interfaces:**
-- `requiredPlanFeatureForApiRequest('/api/settings/logo', 'PUT'|'DELETE') === 'whiteLabel'`.
-- Cloudflare PUT body is bounded by `LOGO_REQUEST_MAX_BYTES = 430_080` before JSON parse.
-- PUT response: `{ success: true, brandLogoUrl: canonicalDataUri }`.
-- DELETE response: `{ success: true, brandLogoUrl: null }`.
-- `GET /api/settings` returns `brandLogoUrl` from valid stored `brand_logo_key`, never internal key.
+**Contract:** `requiredPlanFeatureForApiRequest('/api/settings/logo', 'PUT'|'DELETE') === 'whiteLabel'`; PUT request is bounded to 430,080 raw bytes; success exposes `brandLogoUrl` only.
 
-- [ ] **Step 1: Write RED plan/role contract tests**
-
-Assert `/api/settings/logo` requires `whiteLabel`; Demo owner maps to PLAN_REQUIRED while staff role is still explicitly rejected as FORBIDDEN after authentication under an enabled owner plan.
-
-- [ ] **Step 2: Write RED route-source contract tests**
-
-Assert Cloudflare source has:
-- path `/api/settings/logo` for PUT and DELETE;
-- `readBoundedJson(...LOGO_REQUEST_MAX_BYTES...)` on PUT;
-- role check restricted to owner/super_admin;
-- `UPDATE settings SET brand_logo_key = ?` scoped by `user_id = ?`;
-- delete uses `brand_logo_key = NULL` scoped by owner;
-- no logging of `logoDataUri` payload;
-- Settings GET projects `brandLogoUrl` through `safeStoredLogoDataUri` and does not include `brandLogoKey`.
-
-- [ ] **Step 3: Run RED**
-
-```bash
-npx tsx --test tests/logo-api-contract.test.ts tests/settings-white-label.test.ts tests/plan-api-guards.test.ts
-```
-
-- [ ] **Step 4: Implement Cloudflare mutations**
-
-Place the logo mutation block before the generic `/api/settings` block. Required order:
-1. `getAuthUser()`;
-2. reject unauthenticated 401;
-3. reject non owner/super_admin with `FORBIDDEN`;
-4. require DB;
-5. resolve effective owner plan and require whiteLabel;
-6. PUT: bounded JSON → require `logoDataUri` → validate → update owner row → return public field only;
-7. DELETE: set NULL for owner row → return null.
-
-Do not route logo writes through generic `PUT /api/settings`; `brandLogoKey`/`brandLogoUrl` remain read-only there.
-
-- [ ] **Step 5: Update authenticated Settings logo projection**
-
-Replace Task 1's `brandLogoUrl: null` with safe validated projection from `res.brand_logo_key`; preserve all existing redaction for LINE/Google fields.
-
-- [ ] **Step 6: Run GREEN + Cloudflare TypeScript gate**
-
-```bash
-npx tsx --test tests/logo-validation.test.ts tests/logo-api-contract.test.ts tests/settings-white-label.test.ts tests/plan-api-guards.test.ts
-npm run lint
-npm run check:cloudflare-types:master
-```
-
-- [ ] **Step 7: Review and commit**
-
-Verify every logo UPDATE/DELETE includes effective `user_id` owner scope and no response/log exposes the internal key name.
+- [ ] **Step 1: RED plan/role tests.** Demo owner -> PLAN_REQUIRED; owner/super_admin paid plans allowed; staff under paid owner -> FORBIDDEN.
+- [ ] **Step 2: RED source-contract tests.** Require dedicated `/api/settings/logo` PUT/DELETE, bounded JSON on PUT, owner/super_admin gate, owner-scoped SQL update/delete, no payload logging, and `GET /api/settings` logo projection through `safeStoredLogoDataUri()`.
+- [ ] **Step 3: Run RED:** `npx tsx --test tests/logo-api-contract.test.ts tests/settings-white-label.test.ts tests/plan-api-guards.test.ts`.
+- [ ] **Step 4: Implement mutation block before generic Settings.** Order: auth -> owner role -> DB -> whiteLabel plan -> bounded JSON/validation -> owner-scoped update. DELETE sets `brand_logo_key=NULL`. Generic Settings PUT still rejects logo fields.
+- [ ] **Step 5: Replace Task 1 `brandLogoUrl:null` in authenticated Settings with safe stored-logo projection while retaining all existing LINE/Google redaction.
+- [ ] **Step 6: Run GREEN/type gates:** `npx tsx --test tests/logo-validation.test.ts tests/logo-api-contract.test.ts tests/settings-white-label.test.ts tests/plan-api-guards.test.ts && npm run lint && npm run check:cloudflare-types:master`.
+- [ ] **Step 7: Review/commit.** Every write/delete must contain effective owner `user_id` scope.
 
 ---
 
-### Task 4: Add unauthenticated Cloudflare `GET /api/public/branding`
+### Task 4: Cloudflare `GET /api/public/branding`
 
-**Files:**
-- Modify: `functions/api/[[path]].ts`
-- Modify/Test: `tests/public-branding.test.ts`
-- Modify/Test: `tests/logo-api-contract.test.ts`
+**Files:** Modify `functions/api/[[path]].ts`, `tests/public-branding.test.ts`, `tests/logo-api-contract.test.ts`.
 
-**Interfaces:**
-- `GET /api/public/branding` does not call `getAuthUser()`.
-- D1 query selects only: `dorm_name`, `brand_color`, `contact_phone`, `brand_logo_key`, `subscription_plan`.
-- Response is `buildPublicBranding(...)` only.
-
-- [ ] **Step 1: Add RED public-route source assertions**
-
-Assert the route exists before authenticated Settings routing, uses a five-column explicit SELECT rather than `SELECT *`, and response shape excludes `billFooter`, PromptPay, LINE, Google, subscription status/expiry, and internal key field.
-
-- [ ] **Step 2: Run RED**
-
-```bash
-npx tsx --test tests/public-branding.test.ts tests/logo-api-contract.test.ts
-```
-
-- [ ] **Step 3: Implement the Cloudflare public endpoint**
-
-If no settings row exists, return default branding:
-
-```json
-{
-  "dormName": "หอพักของฉัน",
-  "brandColor": null,
-  "contactPhone": null,
-  "logoDataUri": null,
-  "whiteLabelEnabled": false
-}
-```
-
-Do not require JWT_SECRET/auth for this read path beyond normal application startup configuration.
-
-- [ ] **Step 4: Run GREEN + lint**
-
-```bash
-npx tsx --test tests/public-branding.test.ts tests/logo-api-contract.test.ts
-npm run lint
-```
-
-- [ ] **Step 5: Review and commit**
-
-Review serialized fixtures with sentinel secrets and verify none can enter the response through object spread.
+- [ ] **Step 1: RED route tests.** Endpoint exists without `getAuthUser()`, queries exactly `dorm_name, brand_color, contact_phone, brand_logo_key, subscription_plan`, uses `ORDER BY id ASC LIMIT 1`, and never uses `SELECT *`.
+- [ ] **Step 2: Run RED:** `npx tsx --test tests/public-branding.test.ts tests/logo-api-contract.test.ts`.
+- [ ] **Step 3: Implement.** Query primary settings row, pass only five safe columns to `buildPublicBranding()`. If no row exists, return `{dormName:'หอพักของฉัน',brandColor:null,contactPhone:null,logoDataUri:null,whiteLabelEnabled:false}`.
+- [ ] **Step 4: Run GREEN/lint:** `npx tsx --test tests/public-branding.test.ts tests/logo-api-contract.test.ts && npm run lint`.
+- [ ] **Step 5: Review/commit** with sentinel leak inspection.
 
 ---
 
-### Task 5: Repair Express/Drizzle White-label parity and add equivalent logo/public routes
+### Task 5: Express/Drizzle Parity Repair + Logo/Public Routes
 
-**Files:**
-- Modify: `src/db/schema.ts`
-- Modify: `server.ts`
-- Modify/Test: `tests/logo-api-contract.test.ts`
-- Modify/Test: `tests/settings-white-label.test.ts`
+**Files:** Modify `src/db/schema.ts`, `server.ts`, `tests/logo-api-contract.test.ts`, `tests/settings-white-label.test.ts`, `tests/public-branding.test.ts`.
 
-**Interfaces:**
-- Drizzle `settings` mapping gains existing DB columns only:
+**Drizzle mapping only — no new migration:** 
 
 ```ts
 brandLogoKey: text('brand_logo_key'),
@@ -343,261 +156,71 @@ contactPhone: text('contact_phone'),
 billFooter: text('bill_footer'),
 ```
 
-- No SQL migration file is created.
-- Express uses the same validator/projection helpers as Cloudflare.
-
-- [ ] **Step 1: Write RED parity assertions**
-
-The exact Task 1 candidate inspection showed Express/Drizzle does not yet map the new White-label columns and Express Settings projection is behind Cloudflare. Add tests that require the four Drizzle mappings, `brandLogoUrl`, `brandColor`, `contactPhone`, `billFooter`, and `whiteLabelEnabled` in Express GET Settings.
-
-- [ ] **Step 2: Add RED Express route assertions**
-
-Require PUT/DELETE `/api/settings/logo`, GET `/api/public/branding`, owner/super_admin gate, whiteLabel plan gate, and explicit-safe public selection.
-
-- [ ] **Step 3: Run RED**
-
-```bash
-npx tsx --test tests/logo-api-contract.test.ts tests/settings-white-label.test.ts tests/public-branding.test.ts
-```
-
-- [ ] **Step 4: Add a dedicated Express logo JSON parser before global `express.json()`**
-
-The default Express JSON parser limit is too small for a 300 KiB decoded image encoded as base64. Mount a parser only for PUT `/api/settings/logo` with maximum raw JSON bytes `430_080`; return existing-style error envelope on malformed or oversized JSON. Do not raise the global API body limit.
-
-- [ ] **Step 5: Implement Express Settings parity and logo mutations**
-
-Use Drizzle owner-scoped selects/updates. Generic `/api/settings` must still reject `brandLogoKey`/`brandLogoUrl`; dedicated logo route owns writes.
-
-- [ ] **Step 6: Implement Express public branding**
-
-Use a Drizzle select projection listing only safe fields, then `buildPublicBranding()`.
-
-- [ ] **Step 7: Run GREEN + VPS build gate**
-
-```bash
-npx tsx --test tests/logo-validation.test.ts tests/public-branding.test.ts tests/logo-api-contract.test.ts tests/settings-white-label.test.ts
-npm run lint
-npm run build:vps
-```
-
-- [ ] **Step 8: Review and commit**
-
-Confirm this is mapping/runtime parity only: no new D1 migration, no second logo storage field, no fake persistence.
+- [ ] **Step 1: RED parity test.** The verified Task 1 candidate inspection showed Express/Drizzle lacks these mappings and Express Settings projection lags Cloudflare. Require all four mappings plus `brandColor`, `contactPhone`, `billFooter`, `brandLogoUrl`, `whiteLabelEnabled` in Express Settings response.
+- [ ] **Step 2: RED Express route tests.** Require PUT/DELETE logo, GET public branding, owner/plan gates, and safe primary-row projection.
+- [ ] **Step 3: Run RED:** `npx tsx --test tests/logo-api-contract.test.ts tests/settings-white-label.test.ts tests/public-branding.test.ts`.
+- [ ] **Step 4: Add dedicated Express logo parser before global `express.json()`.** Parse only PUT `/api/settings/logo`, cap raw JSON at 430,080 bytes, return the same new-route error envelope for malformed/oversized JSON. Do not increase the global parser limit.
+- [ ] **Step 5: Implement Settings parity and logo routes.** Use Drizzle owner-scoped selects/updates and the same logo validator. New logo endpoints use `{success:false,error:{code,message}}` for 400/401/403/500 so they match Pages.
+- [ ] **Step 6: Implement public branding.** Drizzle select only safe columns, `orderBy(asc(settings.id)).limit(1)`, then `buildPublicBranding()`.
+- [ ] **Step 7: Run GREEN/VPS gate:** `npx tsx --test tests/logo-validation.test.ts tests/public-branding.test.ts tests/logo-api-contract.test.ts tests/settings-white-label.test.ts && npm run lint && npm run build:vps`.
+- [ ] **Step 8: Review/commit.** Confirm mapping parity only; no second logo column, no SQL migration, no fake persistence.
 
 ---
 
-### Task 6: Lock backup/restore non-portability and preservation regressions
+### Task 6: Backup/Restore Logo Non-Portability Regressions
 
-**Files:**
-- Modify/Test: `tests/backup-export.test.ts`
-- Modify/Test: `tests/backup-validation.test.ts`
-- Modify/Test: `tests/backup-restore.test.ts`
-- Modify/Test: `tests/backup-restore-api.test.ts`
+**Files:** Modify `tests/backup-export.test.ts`, `tests/backup-validation.test.ts`, `tests/backup-restore.test.ts`, `tests/backup-restore-api.test.ts`.
 
-**Interfaces:**
-- New export remains schemaVersion 7.
-- Exported settings never contain `brandLogoKey`, `brand_logo_key`, `logoDataUri`, or `brandLogoUrl`.
-- v7 restore preserves current `brand_logo_key` while restoring portable White-label fields.
-- v6 restore also preserves current `brand_logo_key`.
-
-- [ ] **Step 1: Add failing export exclusion tests**
-
-Seed a sentinel Data URI in the source settings row and assert no archive JSON contains the sentinel or any logo field names.
-
-- [ ] **Step 2: Add failing restore-preservation tests**
-
-Set current logo sentinel A, restore v7/v6 payloads, assert current logo remains A while business/portable settings behave as Task 1 already specifies.
-
-- [ ] **Step 3: Run RED if current coverage is insufficient**
-
-```bash
-npm run test:backup
-```
-
-If existing Task 1 behavior already makes a new assertion GREEN immediately, temporarily mutate the tested preservation branch in the isolated workspace to prove the regression test turns RED, then restore implementation before continuing.
-
-- [ ] **Step 4: Make only the minimal production fix required**
-
-Do not bump schemaVersion and do not add logo to `BackupSafeSettingsV1`.
-
-- [ ] **Step 5: Run GREEN + full focused regression**
-
-```bash
-npm run test:backup
-npx tsx --test tests/logo-validation.test.ts tests/public-branding.test.ts tests/logo-api-contract.test.ts tests/settings-white-label.test.ts
-npm run lint
-```
-
-- [ ] **Step 6: Review and commit**
-
-Check that integration/subscription preservation logic was not broadened or weakened.
+- [ ] **Step 1: Add export exclusion assertions.** Seed a sentinel Data URI; archive JSON must contain neither sentinel nor `brandLogoKey`, `brand_logo_key`, `logoDataUri`, `brandLogoUrl`. Export remains schemaVersion 7.
+- [ ] **Step 2: Add v7/v6 preservation assertions.** Current logo sentinel A must survive both restore versions while existing portable White-label/business behavior remains unchanged.
+- [ ] **Step 3: Prove regression test sensitivity.** Run `npm run test:backup`. If new assertions are already green because Task 1 preservation is correct, temporarily mutate the isolated test workspace to remove logo preservation and prove the assertion goes RED, then restore the source before continuing.
+- [ ] **Step 4: Apply only a minimal production correction if evidence identifies one.** Never bump schemaVersion and never add logo to safe backup settings.
+- [ ] **Step 5: Run GREEN:** `npm run test:backup && npx tsx --test tests/logo-validation.test.ts tests/public-branding.test.ts tests/logo-api-contract.test.ts tests/settings-white-label.test.ts && npm run lint`.
+- [ ] **Step 6: Review/commit** without weakening LINE/Google/subscription preservation.
 
 ---
 
-### Task 7: Prove One Master package parity and package safety
+### Task 7: One Master Package Parity
 
-**Files:**
-- Modify/Test: `tests/package-builder.test.mjs`
-- Modify/Test: `tests/package-parity.test.mjs`
-- Modify/Test: `tests/package-release.test.mjs`
-- Do not independently modify generated ZIPs.
+**Files:** Modify `tests/package-builder.test.mjs`, `tests/package-parity.test.mjs`, `tests/package-release.test.mjs`; never hand-edit generated ZIPs.
 
-**Interfaces:**
-- Demo generated package contains logo/public API code but runtime entitlement blocks mutations.
-- Basic/Standard/Pro generated packages contain identical validator/API implementation with plan data controlling access.
-- No package contains a second logo column/migration.
-
-- [ ] **Step 1: Add RED package assertions**
-
-Generated package checks must verify:
-- `src/server/validators/logo.ts` exists;
-- `src/server/services/branding.service.ts` exists;
-- Pages Functions contains `/api/public/branding` and `/api/settings/logo`;
-- `d1-migrations` still ends at `0006_add_white_label_settings.sql`;
-- source does not contain `brand_logo_data_uri`;
-- entitlement matrix remains Demo false / paid plans true.
-
-- [ ] **Step 2: Run preview generation and package tests**
-
-```bash
-npm run packages:generate
-npm run test:builder
-```
-
-Expected before builder/parity updates: at least one new assertion RED.
-
-- [ ] **Step 3: Update only builder/parity logic needed for the new master files**
-
-Never hand-edit generated package ZIP contents.
-
-- [ ] **Step 4: Run GREEN package gate**
-
-```bash
-npm run packages:generate
-npm run test:builder
-npm run packages:release
-```
-
-- [ ] **Step 5: Review and commit**
-
-Inspect all four package hashes and confirm differences are plan/config metadata, not independent logo feature patches.
+- [ ] **Step 1: RED package assertions.** Generated packages must contain `logo.ts`, `branding.service.ts`, public/logo routes, no `brand_logo_data_uri`, and no migration after `0006_add_white_label_settings.sql`; entitlement matrix remains Demo false / paid true.
+- [ ] **Step 2: Run preview RED:** `npm run packages:generate && npm run test:builder`.
+- [ ] **Step 3: Update builder/parity expectations only where required by the new master files.
+- [ ] **Step 4: Run GREEN release gate:** `npm run packages:generate && npm run test:builder && npm run packages:release`.
+- [ ] **Step 5: Review/commit.** Verify four ZIPs derive from one master and differ only through approved plan/config mutation.
 
 ---
 
-### Task 8: Assemble immutable V15 Task 2 candidate and run the full source/release gate
+### Task 8: Immutable Task 2 Source/Release Candidate
 
-**Files:**
-- Create: `.github/workflows/v15-task2-production-gate.yml`
-- Create/update: byte-exact Task 2 test/production patch artifacts used by the workflow.
+**Files:** Create `.github/workflows/v15-task2-production-gate.yml` plus byte-exact Task 2 test/production patch artifacts used by that workflow.
 
-**Interfaces:**
-- Input is immutable Task 1 candidate artifact `9276947765` from run `31996317195`.
-- Output artifact name: `v15-task2-candidate-pending-d1-smoke`.
-- Candidate must include master ZIP, four generated plan ZIPs, and SHA-256 manifest.
+**Input:** Task 1 artifact `9276947765` / run `31996317195`.
+**Output:** `v15-task2-candidate-pending-d1-smoke` containing master ZIP, four package ZIPs and SHA-256 manifest.
 
-- [ ] **Step 1: Write the fail-closed workflow**
-
-Workflow sequence:
-1. checkout Task 2 execution branch;
-2. download exact Task 1 candidate artifact by run ID + artifact name;
-3. verify artifact digest/Task 1 SHA files;
-4. extract master into clean workspace;
-5. apply Task 2 byte-exact patches with SHA-256 verification;
-6. Node 22;
-7. `npm ci`;
-8. focused Task 2 tests;
-9. full `npm test`;
-10. `npm run lint`;
-11. `npm run check:cloudflare-types:master`;
-12. `npm run build:pages`;
-13. `npm run build:vps`;
-14. `npm run packages:generate` + builder tests;
-15. guarded `npm run packages:release`;
-16. compute master + four package SHA-256;
-17. upload candidate artifact marked pending D1 smoke.
-
-- [ ] **Step 2: Trigger gate and inspect every step**
-
-Do not accept only overall workflow status; verify test/lint/types/build/package steps individually.
-
-- [ ] **Step 3: Record candidate IDs and hashes**
-
-Candidate is not CUSTOMER-READY and Task 2 is not complete at this point.
+- [ ] **Step 1: Build fail-closed workflow:** checkout -> download exact Task 1 artifact -> verify hashes/digest -> extract clean master -> verify/apply Task 2 patches -> Node 22 -> `npm ci` -> focused tests -> full `npm test` -> lint -> Cloudflare types -> Pages build -> VPS build -> package preview/tests -> guarded package release -> SHA-256 -> upload pending-smoke artifact.
+- [ ] **Step 2: Trigger and inspect every individual gate**, not only overall workflow conclusion.
+- [ ] **Step 3: Record run/job/artifact IDs, digest and master/package hashes.** Do not mark Task 2 complete yet.
 
 ---
 
-### Task 9: Run real Pro + Demo Cloudflare D1 smoke and close Task 2 only with evidence
+### Task 9: Real Pro + Demo D1 Smoke and Final Status
 
-**Files:**
-- Create: `.github/scripts/v15_task2_d1_smoke.py`
-- Create: `.github/scripts/v15_task2_demo_smoke.py`
-- Create: `.github/workflows/v15-task2-d1-smoke.yml`
-- Create after PASS: `V15_TASK2_STATUS_TH.md`
+**Files:** Create `.github/scripts/v15_task2_d1_smoke.py`, `.github/scripts/v15_task2_demo_smoke.py`, `.github/workflows/v15-task2-d1-smoke.yml`; create `V15_TASK2_STATUS_TH.md` only after PASS.
 
-**Interfaces:**
-- Smoke downloads only the immutable Task 2 candidate from Task 8.
-- Creates disposable Pro and Demo D1 + Pages projects in APAC.
-- Uses stable project URLs `https://<project>.pages.dev` for health and API tests.
-- Cleanup always runs and must exit 0 for all created Pages/D1 resources.
-
-- [ ] **Step 1: Write Pro smoke assertions**
-
-The Pro smoke must:
-1. apply migrations through `0006_add_white_label_settings.sql` and prove no Task 2 migration exists;
-2. first setup/login;
-3. PUT a valid PNG logo and verify canonical `brandLogoUrl`;
-4. GET authenticated Settings and verify logo plus White-label fields, with no internal key;
-5. GET public branding unauthenticated and verify safe allowlisted fields only;
-6. repeat valid logo PUT for JPEG and WebP;
-7. reject SVG, invalid base64, MIME/magic mismatch, and decoded 307,201-byte payload with `400 VALIDATION_ERROR`;
-8. seed sentinel PromptPay/LINE/Google values and prove public response does not contain them;
-9. export schema v7 backup and prove logo data/internal key absent;
-10. mutate business + portable White-label state, restore v7, prove logo preserved and logical backup hash behavior from Task 1 remains correct;
-11. restore v6 and prove logo preserved;
-12. DELETE logo and verify authenticated/public projections become null;
-13. switch owner plan to demo and verify public dormName remains while custom branding is masked and PUT/DELETE logo return `403 PLAN_REQUIRED`.
-
-- [ ] **Step 2: Write Demo smoke assertions**
-
-The Demo smoke must:
-1. first setup with custom dormName succeeds;
-2. public branding works without auth and returns that dormName;
-3. brandColor/contact/logo are null and enabled false;
-4. PUT logo returns 403 PLAN_REQUIRED;
-5. DELETE logo returns 403 PLAN_REQUIRED;
-6. backup export remains allowed and schemaVersion 7.
-
-- [ ] **Step 3: Create fail-closed smoke workflow**
-
-Reuse Task 1 proven resource lifecycle: candidate hash verification, temp D1/Pages create, JWT secrets, migrations, build/deploy, stable Pages URL, smoke, sanitized evidence upload, `if: always()` cleanup.
-
-- [ ] **Step 4: Run smoke and inspect sanitized evidence**
-
-Required final evidence fields include candidate SHA, `overallPass`, health, logo validation matrix, public secret-leak checks, v7/v6 preservation, Demo gates, and cleanup result.
-
-- [ ] **Step 5: Verify cleanup logs**
-
-All created Pro/Demo Pages projects and D1 databases must report cleanup exit `0` even after failures.
-
-- [ ] **Step 6: Write final Task 2 status only after fresh verification**
-
-`V15_TASK2_STATUS_TH.md` must record:
-- source/release run + job;
-- candidate artifact ID/digest;
-- master and four package SHA-256;
-- D1 smoke run + job;
-- evidence artifact ID/digest;
-- Pro/Demo result matrix;
-- cleanup exits;
-- any non-blocking dependency warnings.
-
-Only then mark **PASS — Task 2 verified complete**. Do not merge to `main` automatically.
+- [ ] **Step 1: Pro smoke.** Apply migrations through 0006 and assert no Task 2 migration; setup/login; PUT valid PNG and verify canonical authenticated/public projections; repeat JPEG/WebP; reject SVG, malformed base64, MIME/magic mismatch and 307,201-byte logo with 400 VALIDATION_ERROR; seed PromptPay/LINE/Google sentinels and prove public response contains none; export v7 and prove logo absent; v7 restore preserves logo; v6 restore preserves logo; DELETE clears logo; switch to Demo and verify public dormName remains while custom branding is masked and PUT/DELETE return PLAN_REQUIRED.
+- [ ] **Step 2: Demo smoke.** First setup dormName succeeds; unauthenticated public branding returns that name with custom fields null; PUT/DELETE logo return PLAN_REQUIRED; backup export remains allowed schemaVersion 7.
+- [ ] **Step 3: Create fail-closed workflow.** Download only Task 2 candidate; create disposable Pro/Demo APAC D1 + Pages; set JWT; migrate/build/deploy; use stable project URLs; run smoke; always upload sanitized evidence and cleanup.
+- [ ] **Step 4: Inspect evidence.** Require candidate SHA, `overallPass`, health, format validation matrix, secret-leak checks, v7/v6 preservation, Demo gates.
+- [ ] **Step 5: Verify cleanup.** Pro Pages, Pro D1, Demo Pages, Demo D1 all exit 0 even after a failed attempt.
+- [ ] **Step 6: Write final `V15_TASK2_STATUS_TH.md`.** Record source/release run+job, candidate artifact ID/digest, master/four package SHA-256, smoke run+job, evidence artifact ID/digest, Pro/Demo matrix, cleanup exits and non-blocking dependency warnings. Only then mark `PASS — Task 2 verified complete`. Do not merge `main` automatically.
 
 ---
 
 ## Final Verification Checklist
 
-Before claiming Task 2 complete, verify all items with fresh evidence:
+Before any completion claim, run and inspect fresh evidence for:
 
 ```bash
 npx tsx --test tests/logo-validation.test.ts tests/public-branding.test.ts tests/logo-api-contract.test.ts tests/settings-white-label.test.ts
@@ -612,19 +235,16 @@ npm run test:builder
 npm run packages:release
 ```
 
-Then verify real Cloudflare smoke separately. Passing local/source gates without D1 smoke is not sufficient.
+Then run the independent real Cloudflare Pro + Demo D1 smoke. Source/local gates alone are insufficient.
 
 ## Explicit Non-Goals
 
-Do not implement any of these while executing this plan:
-- UI logo uploader or branding controls;
-- image resizing/cropping/compression;
-- pixel dimension validation;
-- R2 storage;
-- remote image fetching;
-- PWA/favicons;
-- bill/logo rendering;
-- backup logo portability;
-- PromptPay entitlement changes;
-- package-plan restructuring;
-- unrelated dependency upgrades or `npm audit fix --force`.
+- UI logo uploader/branding controls
+- image crop/resize/compression or pixel validation
+- R2 or remote image fetching
+- PWA/favicons
+- bill/logo rendering
+- logo portability in backup
+- PromptPay entitlement changes
+- package-plan restructuring
+- unrelated dependency upgrades or `npm audit fix --force`
