@@ -1,0 +1,12 @@
+run_id=32082100971
+run_attempt=1
+source_sha=f80e680d431c08d22f6414c50bc267681898467e
+task1=success
+task2tests=success
+red=success
+task2impl=success
+green=failure
+lint=skipped
+pages=skipped
+vps=skipped
+diffcheck=skipped
