@@ -1,0 +1,122 @@
+name: V15 Task 3 TDD Gate
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [agent/v15-task1-white-label-contract]
+    paths:
+      - 'v15-task3-patches/**'
+      - '.github/workflows/v15-task3-tdd.yml'
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  runtime-red-green:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Checkout Task 3 branch
+        uses: actions/checkout@v4
+
+      - name: Download immutable Task 2 candidate
+        uses: actions/download-artifact@v5
+        with:
+          name: v15-task2-candidate-pending-d1-smoke
+          path: candidate
+          github-token: ${{ github.token }}
+          repository: winza125-sitticun/dorm-management-system
+          run-id: 32021078155
+
+      - name: Extract exact Task 2 Master
+        shell: bash
+        run: |
+          set -euo pipefail
+          MASTER_ZIP="$(find candidate -type f -name 'dorm-management-system-master-v15-task2-REVIEW-CI.zip' -print -quit)"
+          test -n "$MASTER_ZIP"
+          echo 'd21e9796ee64f95dc3a39c7304b679571e1437c366372a977dbf1628f4bfe05b  '"$MASTER_ZIP" | sha256sum --check --strict
+          mkdir source
+          unzip -q "$MASTER_ZIP" -d source
+          test -f source/package.json
+          test -f source/src/context/ThemeContext.tsx
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: source/package-lock.json
+
+      - name: Install exact dependencies
+        working-directory: source
+        run: npm ci
+
+      - name: Apply Task 3 tests only
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object ../v15-task3-patches/001-task3-tests.patch.gz.b64)" = 1568d08139439020b90a097a8a4ee6642e577a14
+          base64 -d ../v15-task3-patches/001-task3-tests.patch.gz.b64 | gzip -d > ../task3-tests.patch
+          patch -p1 < ../task3-tests.patch
+
+      - name: Task 3 RED
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          npx tsx --test tests/brand-theme-runtime.test.ts tests/branding-client-runtime.test.ts tests/theme-root-runtime.test.ts tests/theme-css-contract.test.ts > ../task3-red.log 2>&1
+          rc=$?
+          set -e
+          cat ../task3-red.log
+          if [ "$rc" -eq 0 ]; then
+            echo '::error::Task 3 RED unexpectedly passed before implementation patch'
+            exit 1
+          fi
+          grep -Eq 'brandTheme|brandingClient|BrandingBootScreen|ERR_MODULE_NOT_FOUND|Cannot find module|missing' ../task3-red.log
+
+      - name: Apply Task 3 implementation
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object ../v15-task3-patches/002-task3-impl.patch.gz.b64)" = ebd11cfefb7c941743f77070656f11f7f82dea46
+          base64 -d ../v15-task3-patches/002-task3-impl.patch.gz.b64 | gzip -d > ../task3-impl.patch
+          patch -p1 < ../task3-impl.patch
+
+      - name: Task 3 GREEN focused tests
+        working-directory: source
+        run: npx tsx --test tests/brand-theme-runtime.test.ts tests/branding-client-runtime.test.ts tests/theme-root-runtime.test.ts tests/theme-css-contract.test.ts
+
+      - name: Regression and build gate
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm test
+          npm run lint
+          npm run check:cloudflare-types:master
+          npm run build:pages
+          npm run build:vps
+          git diff --check
+
+      - name: Task 3 scope and security audit
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(find d1-migrations -maxdepth 1 -type f | wc -l)" -eq 7
+          test ! -e d1-migrations/0007_add_theme_runtime.sql
+          grep -q "DEFAULT_BRAND_COLOR = '#1DB954'" src/theme/brandTheme.ts
+          grep -q "BRANDING_TIMEOUT_MS = 3000" src/theme/brandingClient.ts
+          grep -q "fetchPublicBranding()" src/context/ThemeContext.tsx
+          grep -q "applyBrandTokens(document.documentElement.style" src/context/ThemeContext.tsx
+          grep -q 'data-branding-boot="loading"' src/components/BrandingBootScreen.tsx
+          grep -q '<ThemeProvider>' src/App.tsx
+          ! grep -R -q -- '--status-success: var(--brand-' src
+          ! grep -R -q -- '--status-warning: var(--brand-' src
+          ! grep -R -q -- '--status-danger: var(--brand-' src
+          ! grep -R -q -- '--status-info: var(--brand-' src
+          ! git diff --name-only | grep -Eq 'functions/api|server\.ts|src/db/schema\.ts|d1-migrations/'
