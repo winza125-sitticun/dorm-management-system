@@ -14,9 +14,9 @@ permissions:
   actions: read
 
 jobs:
-  task1-logo-validator-red-green:
+  task1-task2-red-green:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - name: Checkout V15 Task 2 branch
         uses: actions/checkout@v4
@@ -41,6 +41,7 @@ jobs:
           unzip -q "$MASTER_ZIP" -d source
           test -f source/package.json
           test ! -e source/src/server/validators/logo.ts
+          test ! -e source/src/server/services/branding.service.ts
 
       - name: Use Node.js 22
         uses: actions/setup-node@v4
@@ -61,22 +62,17 @@ jobs:
           test "$(git hash-object ../v15-task2-patches/001-task1-test.patch.b64)" = '6dfd6bc4b4df61d1cb2ca2b07f3c7f217d55818a'
           base64 -d ../v15-task2-patches/001-task1-test.patch.b64 > ../task1-test.patch
           patch -p1 < ../task1-test.patch
-
           set +e
           npx tsx --test tests/logo-validation.test.ts > ../task1-red.log 2>&1
           rc=$?
           set -e
           cat ../task1-red.log
-          if [ "$rc" -eq 0 ]; then
-            echo '::error::Task 1 RED unexpectedly passed before logo validator implementation'
-            exit 1
-          fi
+          test "$rc" -ne 0
           grep -Eq 'Cannot find module|ERR_MODULE_NOT_FOUND|logo' ../task1-red.log
 
           test "$(git hash-object ../v15-task2-patches/002-task1-impl.patch.b64)" = '79230a4e613b46d7a71b0cbf3d13168ff497661a'
           base64 -d ../v15-task2-patches/002-task1-impl.patch.b64 > ../task1-impl.patch
           patch -p1 < ../task1-impl.patch
-
           npx tsx --test tests/logo-validation.test.ts
           npm run lint
           npm run check:cloudflare-types:master
@@ -94,3 +90,40 @@ jobs:
           grep -q 'btoa(binary) !== payload' src/server/validators/logo.ts
           ! grep -q 'Buffer' src/server/validators/logo.ts
           ! grep -qi 'svg' src/server/validators/logo.ts
+
+      - name: Task 2 RED then GREEN
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object ../v15-task2-patches/003-task2-test.patch.b64)" = 'ff9bb8e86d633b729dc76663e2ab1f39b9e0c582'
+          base64 -d ../v15-task2-patches/003-task2-test.patch.b64 > ../task2-test.patch
+          patch -p1 < ../task2-test.patch
+          set +e
+          npx tsx --test tests/public-branding.test.ts > ../task2-red.log 2>&1
+          rc=$?
+          set -e
+          cat ../task2-red.log
+          test "$rc" -ne 0
+          grep -Eq 'Cannot find module|ERR_MODULE_NOT_FOUND|branding' ../task2-red.log
+
+          test "$(git hash-object ../v15-task2-patches/004-task2-impl.patch.b64)" = '8ecae53f5a20b2d8e1adae70f4e812aa9f218972'
+          base64 -d ../v15-task2-patches/004-task2-impl.patch.b64 > ../task2-impl.patch
+          patch -p1 < ../task2-impl.patch
+          npx tsx --test tests/logo-validation.test.ts tests/public-branding.test.ts
+          npm run lint
+          npm run check:cloudflare-types:master
+
+      - name: Task 2 static privacy review
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'buildPublicBranding' src/server/services/branding.service.ts
+          grep -q "hasPlanFeature(plan, 'whiteLabel')" src/server/services/branding.service.ts
+          grep -q 'safeStoredLogoDataUri' src/server/services/branding.service.ts
+          grep -q 'DEFAULT_DORM_NAME' src/server/services/branding.service.ts
+          ! grep -q '\.\.\.source' src/server/services/branding.service.ts
+          ! grep -q 'promptpay' src/server/services/branding.service.ts
+          ! grep -q 'lineChannel' src/server/services/branding.service.ts
+          ! grep -q 'googleSpreadsheet' src/server/services/branding.service.ts
