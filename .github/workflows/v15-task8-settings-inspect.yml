@@ -1,0 +1,43 @@
+name: V15 Task 8 Inspect Settings Payload
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - agent/v15-task1-white-label-contract
+    paths:
+      - '.github/workflows/v15-task8-settings-inspect.yml'
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v5
+        with:
+          name: v15-task1-candidate-pending-d1-smoke
+          path: candidate
+          github-token: ${{ github.token }}
+          repository: winza125-sitticun/dorm-management-system
+          run-id: 31996317195
+      - name: Print exact settings payload and plan defaults
+        shell: bash
+        run: |
+          set -euo pipefail
+          MASTER="$(find candidate -type f -name 'dorm-management-system-master-v15-task1-REVIEW-CI.zip' -print -quit)"
+          mkdir source
+          unzip -q "$MASTER" -d source
+          echo '=== SettingsSchema ==='
+          sed -n '60,105p' source/src/server/validators/index.ts
+          for plan in pro demo; do
+            ZIP="$(find candidate -type f -name "dorm-management-system-${plan}-v15-TASK1-CANDIDATE.zip" -print -quit)"
+            mkdir "pkg-$plan"
+            unzip -q "$ZIP" -d "pkg-$plan"
+            echo "=== $plan subscription defaults ==="
+            grep -Rni -m 20 "subscription_plan\|subscriptionPlan" "pkg-$plan/d1-migrations" "pkg-$plan/src/server/db/schema.ts" "pkg-$plan/server/seed.ts" || true
+          done
