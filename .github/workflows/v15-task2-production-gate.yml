@@ -184,17 +184,34 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          unzip -l dorm-management-system-master-v15-task2-REVIEW-CI.zip | grep -q 'src/server/validators/logo.ts'
-          unzip -l dorm-management-system-master-v15-task2-REVIEW-CI.zip | grep -q 'src/server/services/branding.service.ts'
-          ! unzip -l dorm-management-system-master-v15-task2-REVIEW-CI.zip | grep -q 'node_modules/'
-          ! unzip -l dorm-management-system-master-v15-task2-REVIEW-CI.zip | grep -q 'release-v14/'
-          ! unzip -l dorm-management-system-master-v15-task2-REVIEW-CI.zip | grep -q 'preview-v14/'
+          mkdir -p candidate-audit
+          unzip -Z1 dorm-management-system-master-v15-task2-REVIEW-CI.zip > candidate-audit/master-entries.txt
+          grep -Fx 'src/server/validators/logo.ts' candidate-audit/master-entries.txt
+          grep -Fx 'src/server/services/branding.service.ts' candidate-audit/master-entries.txt
+          if grep -Fq 'node_modules/' candidate-audit/master-entries.txt; then
+            echo '::error::Master candidate contains node_modules'
+            exit 1
+          fi
+          if grep -Fq 'release-v14/' candidate-audit/master-entries.txt; then
+            echo '::error::Master candidate contains generated release output'
+            exit 1
+          fi
+          if grep -Fq 'preview-v14/' candidate-audit/master-entries.txt; then
+            echo '::error::Master candidate contains generated preview output'
+            exit 1
+          fi
           for plan in demo basic standard pro; do
             zip="v15-task2-work/release-v15-task2/dorm-management-system-${plan}-v15-TASK2-CANDIDATE.zip"
-            unzip -p "$zip" 'src/server/validators/logo.ts' | grep -q 'LOGO_MAX_DECODED_BYTES = 307_200'
-            unzip -p "$zip" 'functions/api/[[path]].ts' | grep -q '/api/public/branding'
-            unzip -p "$zip" 'functions/api/[[path]].ts' | grep -q '/api/settings/logo'
-            ! unzip -p "$zip" 'src/db/schema.ts' | grep -q 'brand_logo_data_uri'
+            unzip -p "$zip" 'src/server/validators/logo.ts' > "candidate-audit/${plan}-logo.ts"
+            unzip -p "$zip" 'functions/api/\[\[path\]\].ts' > "candidate-audit/${plan}-pages.ts"
+            unzip -p "$zip" 'src/db/schema.ts' > "candidate-audit/${plan}-schema.ts"
+            grep -Fq 'LOGO_MAX_DECODED_BYTES = 307_200' "candidate-audit/${plan}-logo.ts"
+            grep -Fq '/api/public/branding' "candidate-audit/${plan}-pages.ts"
+            grep -Fq '/api/settings/logo' "candidate-audit/${plan}-pages.ts"
+            if grep -Fq 'brand_logo_data_uri' "candidate-audit/${plan}-schema.ts"; then
+              echo "::error::${plan} package contains forbidden brand_logo_data_uri"
+              exit 1
+            fi
           done
 
       - name: Upload V15 Task 2 candidate artifacts
