@@ -14,7 +14,7 @@ permissions:
   actions: read
 
 jobs:
-  task1-through-task5-red-green:
+  task1-through-task6-red:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -128,7 +128,7 @@ jobs:
           ! grep -q 'brand_logo_key = ?' 'functions/api/[[path]].ts'
           grep -q "whiteLabel') return 'basic'" src/server/services/planAccess.service.ts
 
-      - name: Task 5 RED then GREEN
+      - name: Task 5 RED then focused GREEN
         working-directory: source
         shell: bash
         run: |
@@ -142,7 +142,6 @@ jobs:
           test "$rc" -ne 0
           patch -p1 < ../v15-patches/011-task5-impl.patch
           npx tsx --test tests/backup-validation.test.ts
-          npm run lint
 
       - name: Task 5 static backup contract review
         working-directory: source
@@ -160,3 +159,20 @@ jobs:
           grep -q 'billFooter: string | null' src/utils/backupFormat.ts
           ! grep -q 'brandLogoKey' src/utils/backupFormat.ts
           ! grep -q 'brandLogoKey' src/server/validators/backup.ts
+
+      - name: Task 6 verify RED before production implementation
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          patch -p1 < ../v15-patches/012-task6-test.patch
+          set +e
+          npx tsx --test tests/backup-export.test.ts tests/backup-restore.test.ts tests/backup-restore-api.test.ts > ../task6-red.log 2>&1
+          rc=$?
+          set -e
+          cat ../task6-red.log
+          if [ "$rc" -eq 0 ]; then
+            echo '::error::Task 6 RED tests unexpectedly passed before implementation'
+            exit 1
+          fi
+          echo 'Task 6 RED confirmed. Full lint remains deferred until Task 6 GREEN.'
