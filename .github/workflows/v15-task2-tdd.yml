@@ -14,9 +14,9 @@ permissions:
   actions: read
 
 jobs:
-  task1-task2-red-green:
+  task1-task3-red-green:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 30
     steps:
       - name: Checkout V15 Task 2 branch
         uses: actions/checkout@v4
@@ -69,7 +69,6 @@ jobs:
           cat ../task1-red.log
           test "$rc" -ne 0
           grep -Eq 'Cannot find module|ERR_MODULE_NOT_FOUND|logo' ../task1-red.log
-
           test "$(git hash-object ../v15-task2-patches/002-task1-impl.patch.b64)" = '79230a4e613b46d7a71b0cbf3d13168ff497661a'
           base64 -d ../v15-task2-patches/002-task1-impl.patch.b64 > ../task1-impl.patch
           patch -p1 < ../task1-impl.patch
@@ -106,7 +105,6 @@ jobs:
           cat ../task2-red.log
           test "$rc" -ne 0
           grep -Eq 'Cannot find module|ERR_MODULE_NOT_FOUND|branding' ../task2-red.log
-
           test "$(git hash-object ../v15-task2-patches/004-task2-impl.patch.b64)" = '8ecae53f5a20b2d8e1adae70f4e812aa9f218972'
           base64 -d ../v15-task2-patches/004-task2-impl.patch.b64 > ../task2-impl.patch
           patch -p1 < ../task2-impl.patch
@@ -127,3 +125,40 @@ jobs:
           ! grep -q 'promptpay' src/server/services/branding.service.ts
           ! grep -q 'lineChannel' src/server/services/branding.service.ts
           ! grep -q 'googleSpreadsheet' src/server/services/branding.service.ts
+
+      - name: Task 3 RED then GREEN
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object ../v15-task2-patches/005-task3-test.patch.b64)" = '533fe0864b56ac04dc9aba7cabab73aa0d6e28c4'
+          base64 -d ../v15-task2-patches/005-task3-test.patch.b64 > ../task3-test.patch
+          patch -p1 < ../task3-test.patch
+          set +e
+          npx tsx --test tests/logo-api-contract.test.ts tests/settings-white-label.test.ts tests/plan-api-guards.test.ts > ../task3-red.log 2>&1
+          rc=$?
+          set -e
+          cat ../task3-red.log
+          test "$rc" -ne 0
+          grep -Eq 'settings/logo|whiteLabel|logo route|brandLogoUrl' ../task3-red.log
+
+          test "$(git hash-object ../v15-task2-patches/006-task3-impl.patch.b64)" = 'fdc73ddf8c7b6b7bb07d3ca700a8e86c189177a0'
+          base64 -d ../v15-task2-patches/006-task3-impl.patch.b64 > ../task3-impl.patch
+          patch -p1 < ../task3-impl.patch
+          npx tsx --test tests/logo-validation.test.ts tests/public-branding.test.ts tests/logo-api-contract.test.ts tests/settings-white-label.test.ts tests/plan-api-guards.test.ts
+          npm run lint
+          npm run check:cloudflare-types:master
+
+      - name: Task 3 static authorization and privacy review
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q "path === '/api/settings/logo'.*whiteLabel" src/server/services/planAccess.service.ts
+          grep -q 'getAuthUser({ skipPlanAccess: true })' 'functions/api/[[path]].ts'
+          grep -q 'LOGO_REQUEST_MAX_BYTES' 'functions/api/[[path]].ts'
+          grep -q 'validateLogoDataUri(bodyResult.data.logoDataUri)' 'functions/api/[[path]].ts'
+          grep -q 'UPDATE settings SET brand_logo_key = ?' 'functions/api/[[path]].ts'
+          grep -q 'UPDATE settings SET brand_logo_key = NULL' 'functions/api/[[path]].ts'
+          grep -q 'brandLogoUrl: safeStoredLogoDataUri(res.brand_logo_key)' 'functions/api/[[path]].ts'
+          ! grep -Eq 'console\.(log|warn|error)\([^\n]*logoDataUri' 'functions/api/[[path]].ts'
