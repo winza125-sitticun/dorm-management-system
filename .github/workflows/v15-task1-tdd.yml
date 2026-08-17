@@ -166,6 +166,7 @@ jobs:
         run: |
           set -euo pipefail
           patch -p1 < ../v15-patches/012-task6-test.patch
+          patch -p1 < ../v15-patches/012b-task6-fake-sql.patch
           set +e
           npx tsx --test tests/backup-export.test.ts tests/backup-restore.test.ts tests/backup-restore-api.test.ts > ../task6-red.log 2>&1
           rc=$?
