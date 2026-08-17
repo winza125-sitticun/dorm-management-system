@@ -1,0 +1,99 @@
+name: V15 Task 4 Task 3 TDD Gate
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [agent/v15-task1-white-label-contract]
+    paths:
+      - 'v15-task4-patches/006-task3-tests.patch.b64'
+      - '.github/workflows/v15-task4-task3-tdd.yml'
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  task3-red:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/v15-task1-white-label-contract
+
+      - name: Assemble verified Task 1-2 source from immutable Task 3 candidate
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          curl -fL --retry 8 --retry-delay 3 --retry-all-errors \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/winza125-sitticun/dorm-management-system/actions/artifacts/9295620943/zip" -o candidate.zip
+          unzip -q candidate.zip -d candidate
+          MASTER_ZIP="candidate/dorm-management-system-master-v15-task3-REVIEW-CI.zip"
+          echo 'ea70213d83f87eaacfb9002beee1bc5b46bdc3aea158d3bf94d626ab5c0d53c2  '"$MASTER_ZIP" | sha256sum --check --strict
+          mkdir source
+          unzip -q "$MASTER_ZIP" -d source
+          cd source
+          for p in 001-task1-tests 002-task1-impl 003-task2-tests 005-task2-test-contract-fix 004-task2-impl; do
+            base64 -d "../v15-task4-patches/${p}.patch.b64" > "../${p}.patch"
+            patch -p1 < "../${p}.patch"
+          done
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: source/package-lock.json
+
+      - name: Install exact dependencies
+        working-directory: source
+        run: npm ci
+
+      - name: Verify prior tasks GREEN
+        working-directory: source
+        run: |
+          npx tsx --test tests/white-label-settings-ui-utils.test.ts tests/brand-theme-runtime.test.ts tests/branding-client-runtime.test.ts tests/theme-root-runtime.test.ts tests/theme-refresh-runtime.test.ts tests/theme-css-contract.test.ts
+
+      - name: Apply Task 3 tests only
+        id: tests
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          base64 -d ../v15-task4-patches/006-task3-tests.patch.b64 > ../task3-tests.patch
+          patch -p1 < ../task3-tests.patch
+          test ! -e src/components/WhiteLabelSettingsSection.tsx
+
+      - name: Verify Task 3 RED
+        id: red
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          npx tsx --test tests/white-label-settings-section.test.ts > ../task3-red.log 2>&1
+          rc=$?
+          set -e
+          cat ../task3-red.log
+          test "$rc" -ne 0
+          grep -Eq 'must exist|WhiteLabelSettingsSection' ../task3-red.log
+
+      - name: Persist Task 3 RED evidence
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p v15-task4-evidence
+          printf 'status=RED_VERIFIED\nrun_id=%s\nrun_attempt=%s\nsource_sha=%s\nmaster_sha256=%s\n' \
+            "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$GITHUB_SHA" \
+            'ea70213d83f87eaacfb9002beee1bc5b46bdc3aea158d3bf94d626ab5c0d53c2' \
+            > v15-task4-evidence/task3-red.txt
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add v15-task4-evidence/task3-red.txt
+          git commit -m 'ci(v15-task4): record Task 3 RED evidence'
+          git push origin HEAD:agent/v15-task1-white-label-contract
