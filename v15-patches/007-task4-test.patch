@@ -1,0 +1,58 @@
+diff --git a/tests/plan-api-guards.test.ts b/tests/plan-api-guards.test.ts
+index f46b568..4091fd9 100644
+--- a/tests/plan-api-guards.test.ts
++++ b/tests/plan-api-guards.test.ts
+@@ -1,7 +1,7 @@
+ import assert from 'node:assert/strict';
+ import { readFileSync } from 'node:fs';
+ import test from 'node:test';
+-import { requiredPlanFeatureForApiRequest, isDemoMutationRestricted, requiredPlanFeaturesForSettingsUpdate } from '../src/server/services/planAccess.service.ts';
++import { requiredPlanFeatureForApiRequest, isDemoMutationRestricted, requiredPlanFeaturesForSettingsUpdate, minimumPaidPlanForFeature } from '../src/server/services/planAccess.service.ts';
+@@
+ test('demo blocks destructive and configuration mutations while preserving the sales flow', () => {
+-  assert.equal(isDemoMutationRestricted('/api/settings', 'PUT'), true);
++  assert.equal(isDemoMutationRestricted('/api/settings', 'PUT'), false);
+@@
+ });
++
++test('whiteLabel minimum paid plan is Basic', () => {
++  assert.equal(minimumPaidPlanForFeature('whiteLabel'), 'basic');
++});
+diff --git a/tests/settings-white-label.test.ts b/tests/settings-white-label.test.ts
+index 9493f7f..712afdf 100644
+--- a/tests/settings-white-label.test.ts
++++ b/tests/settings-white-label.test.ts
+@@ -86,3 +86,34 @@ test('diff ignores unchanged normalized values and reports actual changes', () => {
+   })), []);
+   assert.deepEqual(changedWhiteLabelFields(current, normalizeWhiteLabelPatch({ brandColor: '#112233' })), ['brandColor']);
+ });
++
++test('Cloudflare settings route exposes white-label projection and route-level gates mutations', () => {
++  const source = readFileSync(new URL('../functions/api/[[path]].ts', import.meta.url), 'utf8');
++  const settingsStart = source.indexOf('if (path === "/api/settings")');
++  assert.notEqual(settingsStart, -1);
++  const settingsBlock = source.slice(settingsStart, settingsStart + 15000);
++  assert.match(settingsBlock, /brandColor:\s*res\.brand_color/);
++  assert.match(settingsBlock, /contactPhone:\s*res\.contact_phone/);
++  assert.match(settingsBlock, /billFooter:\s*res\.bill_footer/);
++  assert.match(settingsBlock, /brandLogoUrl:\s*null/);
++  assert.match(settingsBlock, /whiteLabelEnabled:\s*hasPlanFeature\(subscriptionPlan, ['"]whiteLabel['"]\)/);
++  assert.match(settingsBlock, /normalizeWhiteLabelPatch\(body\)/);
++  assert.match(settingsBlock, /changedWhiteLabelFields\(existing/);
++  assert.match(settingsBlock, /owner|super_admin/);
++  assert.match(settingsBlock, /PLAN_REQUIRED/);
++  assert.match(settingsBlock, /brand_color/);
++  assert.match(settingsBlock, /contact_phone/);
++  assert.match(settingsBlock, /bill_footer/);
++  assert.doesNotMatch(settingsBlock, /brand_logo_key\s*=/);
++});
++
++test('Demo setup keeps first dorm name bootstrap validation outside white-label plan gate', () => {
++  const source = readFileSync(new URL('../functions/api/[[path]].ts', import.meta.url), 'utf8');
++  const start = source.indexOf('path === "/api/setup/init" && method === "POST"');
++  const end = source.indexOf('// ──────────────────────────────────────────────', start + 100);
++  const block = source.slice(start, end > start ? end : start + 7000);
++  assert.match(block, /normalizeWhiteLabelPatch\(\{\s*dormName:/);
++  assert.doesNotMatch(block, /hasPlanFeature\([^\n]*whiteLabel/);
++  assert.match(block, /INSERT INTO settings \(user_id, dorm_name\)/);
++});
