@@ -1,0 +1,125 @@
+name: V15 Task 2 Task 5 TDD Gate
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [agent/v15-task1-white-label-contract]
+    paths:
+      - 'v15-task2-patches/009-task5-test.patch.gz.b64'
+      - 'v15-task2-patches/010-task5-impl.patch.gz.b64'
+      - '.github/workflows/v15-task2-task5-tdd.yml'
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  express-parity-red-green:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout Task 2 branch
+        uses: actions/checkout@v4
+
+      - name: Download immutable Task 1 candidate
+        uses: actions/download-artifact@v5
+        with:
+          name: v15-task1-candidate-pending-d1-smoke
+          path: candidate
+          github-token: ${{ github.token }}
+          repository: winza125-sitticun/dorm-management-system
+          run-id: 31996317195
+
+      - name: Extract exact source
+        shell: bash
+        run: |
+          set -euo pipefail
+          MASTER_ZIP="$(find candidate -type f -name 'dorm-management-system-master-v15-task1-REVIEW-CI.zip' -print -quit)"
+          test -n "$MASTER_ZIP"
+          echo '13fa8904b3a55d56516761a2731781e15af63658e48d627cdad1c7a167aa2366  '"$MASTER_ZIP" | sha256sum --check --strict
+          mkdir source
+          unzip -q "$MASTER_ZIP" -d source
+          test -f source/package.json
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: source/package-lock.json
+
+      - name: Install exact dependencies
+        working-directory: source
+        run: npm ci
+
+      - name: Rebuild verified Task 1-4 source
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          apply_plain() {
+            local file="$1" expected="$2" out="$3"
+            test "$(git hash-object "../$file")" = "$expected"
+            base64 -d "../$file" > "../$out"
+            patch -p1 < "../$out"
+          }
+          apply_plain v15-task2-patches/001-task1-test.patch.b64 6dfd6bc4b4df61d1cb2ca2b07f3c7f217d55818a t1-test.patch
+          apply_plain v15-task2-patches/002-task1-impl.patch.b64 79230a4e613b46d7a71b0cbf3d13168ff497661a t1-impl.patch
+          apply_plain v15-task2-patches/003-task2-test.patch.b64 ff9bb8e86d633b729dc76663e2ab1f39b9e0c582 t2-test.patch
+          apply_plain v15-task2-patches/004-task2-impl.patch.b64 8ecae53f5a20b2d8e1adae70f4e812aa9f218972 t2-impl.patch
+          apply_plain v15-task2-patches/005-task3-test.patch.b64 533fe0864b56ac04dc9aba7cabab73aa0d6e28c4 t3-test.patch
+          apply_plain v15-task2-patches/006-task3-impl.patch.b64 fdc73ddf8c7b6b7bb07d3ca700a8e86c189177a0 t3-impl.patch
+          apply_plain v15-task2-patches/007-task4-test.patch.b64 ec68a4378a8cc1d1363e60dcc90e2b423ea87eb7 t4-test.patch
+          apply_plain v15-task2-patches/008-task4-impl.patch.b64 dd7029e6e72e3305df6f7088434d8c311465a370 t4-impl.patch
+          npx tsx --test tests/logo-validation.test.ts tests/public-branding.test.ts tests/logo-api-contract.test.ts tests/settings-white-label.test.ts tests/plan-api-guards.test.ts
+
+      - name: Task 5 RED
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object ../v15-task2-patches/009-task5-test.patch.gz.b64)" = 34dcf755c3ce9e6147ee4a0a312b7be57ee644dd
+          base64 -d ../v15-task2-patches/009-task5-test.patch.gz.b64 | gzip -d > ../task5-test.patch
+          patch -p1 < ../task5-test.patch
+          set +e
+          npx tsx --test tests/logo-api-contract.test.ts tests/settings-white-label.test.ts tests/public-branding.test.ts tests/plan-api-guards.test.ts > ../task5-red.log 2>&1
+          rc=$?
+          set -e
+          cat ../task5-red.log
+          if [ "$rc" -eq 0 ]; then
+            echo '::error::Task 5 RED unexpectedly passed before Express parity implementation'
+            exit 1
+          fi
+          grep -Eq 'brandLogoKey|deferLogoPlanAccess|Express|public branding|settings/logo' ../task5-red.log
+
+      - name: Task 5 GREEN
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object ../v15-task2-patches/010-task5-impl.patch.gz.b64)" = 82d098eeb1c37480f98d441f7f491f597116df23
+          base64 -d ../v15-task2-patches/010-task5-impl.patch.gz.b64 | gzip -d > ../task5-impl.patch
+          patch -p1 < ../task5-impl.patch
+          npx tsx --test tests/logo-validation.test.ts tests/public-branding.test.ts tests/logo-api-contract.test.ts tests/settings-white-label.test.ts tests/plan-api-guards.test.ts
+          npm run lint
+          npm run check:cloudflare-types:master
+          npm run build:vps
+
+      - name: Task 5 parity/security review
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q "brandLogoKey: text('brand_logo_key')" src/db/schema.ts
+          grep -q "brandColor: text('brand_color')" src/db/schema.ts
+          grep -q "contactPhone: text('contact_phone')" src/db/schema.ts
+          grep -q "billFooter: text('bill_footer')" src/db/schema.ts
+          ! grep -R -q 'brand_logo_data_uri' src server.ts
+          grep -q "deferLogoPlanAccess = requestPath === '/api/settings/logo'" src/middleware/auth.ts
+          grep -q 'const logoJsonParser = express.json({ limit: LOGO_REQUEST_MAX_BYTES' server.ts
+          grep -q 'app.get("/api/public/branding"' server.ts
+          grep -q 'orderBy(asc(settings.id)).limit(1)' server.ts
+          grep -q 'brandLogoUrl: safeStoredLogoDataUri(brandLogoKey)' server.ts
+          grep -q "whiteLabelEnabled: hasPlanFeature(subscriptionPlan, 'whiteLabel')" server.ts
+          ! sed -n '/app.get("\/api\/public\/branding"/,/\/\/ GET User Settings/p' server.ts | grep -Eq 'promptpayId|lineChannelAccessToken|lineChannelSecret|googleSpreadsheetId|billFooter'
+          git diff --check
