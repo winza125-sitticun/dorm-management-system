@@ -1,6 +1,11 @@
 diff --git a/functions/api/[[path]].ts b/functions/api/[[path]].ts
 --- a/functions/api/[[path]].ts
 +++ b/functions/api/[[path]].ts
-@@
+@@ -2535,7 +2535,7 @@ export const onRequest: PagesFunction<Env> = async (context) => {
+         }
+         const body = await getJson();
 -        let whiteLabelPatch;
 +        let whiteLabelPatch: ReturnType<typeof normalizeWhiteLabelPatch>;
+         try {
+           whiteLabelPatch = normalizeWhiteLabelPatch(body as Record<string, unknown>);
+         } catch (error: any) {
