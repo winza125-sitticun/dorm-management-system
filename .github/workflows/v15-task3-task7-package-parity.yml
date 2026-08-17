@@ -1,0 +1,120 @@
+name: V15 Task 3 Task 7 Package Parity
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [agent/v15-task1-white-label-contract]
+    paths:
+      - 'v15-task3-patches/003-task7-package-parity.patch.gz.b64'
+      - '.github/workflows/v15-task3-task7-package-parity.yml'
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  one-master-package-parity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - name: Checkout Task 3 branch
+        uses: actions/checkout@v4
+
+      - name: Download immutable Task 2 candidate
+        uses: actions/download-artifact@v5
+        with:
+          name: v15-task2-candidate-pending-d1-smoke
+          path: candidate
+          github-token: ${{ github.token }}
+          repository: winza125-sitticun/dorm-management-system
+          run-id: 32021078155
+
+      - name: Extract exact Task 2 Master
+        shell: bash
+        run: |
+          set -euo pipefail
+          MASTER_ZIP="$(find candidate -type f -name 'dorm-management-system-master-v15-task2-REVIEW-CI.zip' -print -quit)"
+          test -n "$MASTER_ZIP"
+          echo '5ff63b6cddc1ff0c422f6a4ee443ae847b4440a5e458f0c8e363ffa74c7b4207  '"$MASTER_ZIP" | sha256sum --check --strict
+          mkdir source
+          unzip -q "$MASTER_ZIP" -d source
+          test -f source/package.json
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: source/package-lock.json
+
+      - name: Install exact dependencies
+        working-directory: source
+        run: npm ci
+
+      - name: Apply verified Task 3 runtime patches
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          apply_gz() {
+            local file="$1" expected="$2" out="$3"
+            test "$(git hash-object "../$file")" = "$expected"
+            base64 -d "../$file" | gzip -d > "../$out"
+            patch -p1 < "../$out"
+          }
+          apply_gz v15-task3-patches/001-task3-tests.patch.gz.b64 1568d08139439020b90a097a8a4ee6642e577a14 task3-tests.patch
+          apply_gz v15-task3-patches/002-task3-impl.patch.gz.b64 ebd11cfefb7c941743f77070656f11f7f82dea46 task3-impl.patch
+          npx tsx --test tests/brand-theme-runtime.test.ts tests/branding-client-runtime.test.ts tests/theme-root-runtime.test.ts tests/theme-css-contract.test.ts
+
+      - name: Generate preview packages and run builder tests
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run packages:generate
+          npm run test:builder
+
+      - name: Run guarded customer-ready package release
+        working-directory: source
+        run: npm run packages:release
+
+      - name: Apply Task 7 package parity assertions
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object ../v15-task3-patches/003-task7-package-parity.patch.gz.b64)" = c9575d39ff459c0ed299361465b50c92025ef20e
+          base64 -d ../v15-task3-patches/003-task7-package-parity.patch.gz.b64 | gzip -d > ../task7-package.patch
+          patch -p1 < ../task7-package.patch
+          node --test tests/v15-task3-package-parity.test.mjs
+
+      - name: Prove package parity catches a missing runtime file
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          mv src/theme/brandTheme.ts ../brandTheme.ts.saved
+          set +e
+          node --test tests/v15-task3-package-parity.test.mjs > ../task7-sensitivity.log 2>&1
+          rc=$?
+          set -e
+          cat ../task7-sensitivity.log
+          test "$rc" -ne 0
+          grep -Eq 'brandTheme|ENOENT|missing' ../task7-sensitivity.log
+          mv ../brandTheme.ts.saved src/theme/brandTheme.ts
+          node --test tests/v15-task3-package-parity.test.mjs
+
+      - name: Final One Master review
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run lint
+          npm run check:cloudflare-types:master
+          npm run build:pages
+          npm run build:vps
+          test ! -e d1-migrations/0007_add_theme_runtime.sql
+          for plan in demo basic standard pro; do
+            test -f "release-v14/dorm-management-system-${plan}-v14-CUSTOMER-READY.zip"
+          done
+          git diff --check
