@@ -1,0 +1,51 @@
+name: V15 Task 7 Inspect Exact Source
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - agent/v15-task1-white-label-contract
+    paths:
+      - '.github/workflows/v15-task7-inspect.yml'
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download immutable V14 candidate
+        uses: actions/download-artifact@v5
+        with:
+          name: v14-task12-candidate-pending-d1-smoke
+          path: candidate
+          github-token: ${{ github.token }}
+          repository: winza125-sitticun/dorm-management-system
+          run-id: 31980850645
+      - name: Extract exact V14 R3-CI source
+        shell: bash
+        run: |
+          set -euo pipefail
+          MASTER_ZIP="$(find candidate -type f -name 'dorm-management-system-master-v14-REVIEW-R3-CI.zip' -print -quit)"
+          test -n "$MASTER_ZIP"
+          echo 'f130f9df0b9cff927b34b8281542b755b85084b4f68fec6d383033969cec53ab  '"$MASTER_ZIP" | sha256sum --check --strict
+          mkdir source
+          unzip -q "$MASTER_ZIP" -d source
+      - name: Print Task 7 package source
+        shell: bash
+        run: |
+          set -euo pipefail
+          for f in source/package-plans/demo.json source/package-plans/basic.json source/package-plans/standard.json source/package-plans/pro.json; do
+            echo "===== $f ====="
+            cat "$f"
+            echo
+          done
+          for f in source/tests/package-parity.test.mjs source/tests/package-builder.test.mjs source/tests/package-release.test.mjs; do
+            echo "===== $f ====="
+            cat "$f"
+            echo
+          done
