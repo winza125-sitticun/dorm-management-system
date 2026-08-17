@@ -51,6 +51,34 @@ jobs:
           test -f v14-work/package-lock.json
           test -f v14-work/wrangler.master.jsonc
 
+      - name: Apply Revision 3 TypeScript narrowing fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('v14-work/functions/api/[[path]].ts')
+          old = 'if (!bodyResult.ok) return errorResponse(bodyResult.code, bodyResult.message, bodyResult.status);'
+          new = 'if (bodyResult.ok === false) return errorResponse(bodyResult.code, bodyResult.message, bodyResult.status);'
+          source = path.read_text(encoding='utf-8')
+          count = source.count(old)
+          if count != 2:
+              raise SystemExit(f'Expected exactly 2 R2 narrowing guards, found {count}')
+          source = source.replace(old, new)
+          path.write_text(source, encoding='utf-8')
+          if path.read_text(encoding='utf-8').count(new) != 2:
+              raise SystemExit('Revision 3 patch verification failed')
+          PY
+
+      - name: Create immutable Master V14 R3 candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f dorm-management-system-master-v14-REVIEW-R3-CI.zip
+          (cd v14-work && zip -qr ../dorm-management-system-master-v14-REVIEW-R3-CI.zip .)
+          unzip -t dorm-management-system-master-v14-REVIEW-R3-CI.zip >/dev/null
+          sha256sum dorm-management-system-master-v14-REVIEW-R3-CI.zip | tee MASTER_V14_R3_CI_SHA256.txt
+
       - name: Use Node.js 22
         uses: actions/setup-node@v4
         with:
@@ -98,6 +126,8 @@ jobs:
         with:
           name: v14-task12-candidate-pending-d1-smoke
           path: |
+            dorm-management-system-master-v14-REVIEW-R3-CI.zip
+            MASTER_V14_R3_CI_SHA256.txt
             v14-work/release-v14/**
             v14-work/TASK12_GITHUB_CANDIDATE_SHA256.txt
           if-no-files-found: error
