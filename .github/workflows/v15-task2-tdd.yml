@@ -1,0 +1,96 @@
+name: V15 Task 2 TDD Gate
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - agent/v15-task1-white-label-contract
+    paths:
+      - 'v15-task2-patches/**'
+      - '.github/workflows/v15-task2-tdd.yml'
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  task1-logo-validator-red-green:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout V15 Task 2 branch
+        uses: actions/checkout@v4
+
+      - name: Download immutable V15 Task 1 candidate
+        uses: actions/download-artifact@v5
+        with:
+          name: v15-task1-candidate-pending-d1-smoke
+          path: candidate
+          github-token: ${{ github.token }}
+          repository: winza125-sitticun/dorm-management-system
+          run-id: 31996317195
+
+      - name: Extract exact V15 Task 1 source
+        shell: bash
+        run: |
+          set -euo pipefail
+          MASTER_ZIP="$(find candidate -type f -name 'dorm-management-system-master-v15-task1-REVIEW-CI.zip' -print -quit)"
+          test -n "$MASTER_ZIP"
+          echo '13fa8904b3a55d56516761a2731781e15af63658e48d627cdad1c7a167aa2366  '"$MASTER_ZIP" | sha256sum --check --strict
+          mkdir source
+          unzip -q "$MASTER_ZIP" -d source
+          test -f source/package.json
+          test ! -e source/src/server/validators/logo.ts
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: source/package-lock.json
+
+      - name: Install exact dependencies
+        working-directory: source
+        run: npm ci
+
+      - name: Task 1 RED then GREEN
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          base64 -d ../v15-task2-patches/001-task1-test.patch.b64 > ../task1-test.patch
+          echo '8c78543bd860fc1df4d75d39221c903a6b628a8148dcbfe68f8f347d190231f7  ../task1-test.patch' | sha256sum --check --strict
+          patch -p1 < ../task1-test.patch
+
+          set +e
+          npx tsx --test tests/logo-validation.test.ts > ../task1-red.log 2>&1
+          rc=$?
+          set -e
+          cat ../task1-red.log
+          if [ "$rc" -eq 0 ]; then
+            echo '::error::Task 1 RED unexpectedly passed before logo validator implementation'
+            exit 1
+          fi
+          grep -Eq 'Cannot find module|ERR_MODULE_NOT_FOUND|logo' ../task1-red.log
+
+          base64 -d ../v15-task2-patches/002-task1-impl.patch.b64 > ../task1-impl.patch
+          echo '9df8a34228ceafb17c0022ad5b2441f5326df24ac3c2c3722af396605d7dffa3  ../task1-impl.patch' | sha256sum --check --strict
+          patch -p1 < ../task1-impl.patch
+
+          npx tsx --test tests/logo-validation.test.ts
+          npm run lint
+          npm run check:cloudflare-types:master
+
+      - name: Task 1 static security review
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'LOGO_MAX_DECODED_BYTES = 307_200' src/server/validators/logo.ts
+          grep -q "image/png.*image/jpeg.*image/webp" src/server/validators/logo.ts
+          grep -q '0x89' src/server/validators/logo.ts
+          grep -q '0xff' src/server/validators/logo.ts
+          grep -q 'hasWebpSignature' src/server/validators/logo.ts
+          grep -q 'btoa(binary) !== payload' src/server/validators/logo.ts
+          ! grep -q 'Buffer' src/server/validators/logo.ts
+          ! grep -qi 'svg' src/server/validators/logo.ts
