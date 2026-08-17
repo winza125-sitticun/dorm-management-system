@@ -5,7 +5,7 @@ on:
   push:
     branches: [agent/v15-task1-white-label-contract]
     paths:
-      - 'v15-task3-patches/003-task7-package-parity.patch.gz.b64'
+      - 'v15-task3-tests/v15-task3-package-parity.test.mjs'
       - '.github/workflows/v15-task3-task7-package-parity.yml'
 
 permissions:
@@ -82,15 +82,13 @@ jobs:
         working-directory: source
         run: npm run packages:release
 
-      - name: Apply Task 7 package parity assertions
-        working-directory: source
+      - name: Install Task 7 package parity assertions
         shell: bash
-        run: |
-          set -euo pipefail
-          test "$(git hash-object ../v15-task3-patches/003-task7-package-parity.patch.gz.b64)" = bd9f693cbe0c6cbac56147ca5d7691c341783907
-          base64 -d ../v15-task3-patches/003-task7-package-parity.patch.gz.b64 | gzip -d > ../task7-package.patch
-          patch -p1 < ../task7-package.patch
-          node --test tests/v15-task3-package-parity.test.mjs
+        run: cp v15-task3-tests/v15-task3-package-parity.test.mjs source/tests/v15-task3-package-parity.test.mjs
+
+      - name: Run Task 7 package parity assertions
+        working-directory: source
+        run: node --test tests/v15-task3-package-parity.test.mjs
 
       - name: Prove package parity catches a missing runtime file
         working-directory: source
@@ -110,11 +108,15 @@ jobs:
 
       - name: Final One Master review
         working-directory: source
+        shell: bash
         run: |
+          set -euo pipefail
           npm run lint
           npm run check:cloudflare-types:master
           npm run build:pages
           npm run build:vps
           test ! -e d1-migrations/0007_add_theme_runtime.sql
-          for plan in demo basic standard pro; do test -f "release-v14/dorm-management-system-${plan}-v14-CUSTOMER-READY.zip"; done
+          for plan in demo basic standard pro; do
+            test -f "release-v14/dorm-management-system-${plan}-v14-CUSTOMER-READY.zip"
+          done
           git diff --check
