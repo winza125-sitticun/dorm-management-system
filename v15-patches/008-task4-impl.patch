@@ -1,5 +1,5 @@
 diff --git a/functions/api/[[path]].ts b/functions/api/[[path]].ts
-index 4faa268..79f98ab 100644
+index 4faa268..bc3b42e 100644
 --- a/functions/api/[[path]].ts
 +++ b/functions/api/[[path]].ts
 @@ -27,6 +27,7 @@ import { BACKUP_REQUEST_MAX_BYTES, type BackupDataV1, type BackupManifestV1 } fr
@@ -7,7 +7,11 @@ index 4faa268..79f98ab 100644
  import { loadRestoreCurrentState, prepareRestoreData, restoreBusinessBackup, verifyRestoredBackup, RestorePartialFailure } from '../../src/server/services/restore.service.ts';
  import { BackupValidationError } from '../../src/server/validators/backup.ts';
 +import { changedWhiteLabelFields, normalizeWhiteLabelPatch } from '../../src/server/validators/settings.ts';
+ 
+ function getJwtSecret(env: Env): string {
+   if (!env.JWT_SECRET || env.JWT_SECRET.length < 32) {
 @@ -1718,7 +1719,14 @@ export const onRequest: PagesFunction<Env> = async (context) => {
+ 
          const hashedPassword = await hashPassword(validated.password);
          const cleanUid = validated.email.trim().toLowerCase();
 -        const dormName = validated.dormName?.trim() || "หอพักของฉัน";
@@ -19,6 +23,9 @@ index 4faa268..79f98ab 100644
 +            return errorResponse('VALIDATION_ERROR', String(error?.message || 'ชื่อหอพักไม่ถูกต้อง'), 400);
 +          }
 +        }
+ 
+         await env.DB.prepare(
+           "INSERT INTO users (uid, email, role, password, permissions) VALUES (?, ?, 'super_admin', ?, 'manage_rooms,manage_bills,edit_payments,manage_settings')"
 @@ -2490,7 +2498,12 @@ export const onRequest: PagesFunction<Env> = async (context) => {
                  subscriptionPlan,
                  subscriptionStatus: String(res.subscription_status || 'active'),
@@ -31,6 +38,8 @@ index 4faa268..79f98ab 100644
 +                brandLogoUrl: null,
 +                whiteLabelEnabled: hasPlanFeature(subscriptionPlan, 'whiteLabel')
                });
+             }
+           } catch (e) {
 @@ -2508,7 +2521,12 @@ export const onRequest: PagesFunction<Env> = async (context) => {
            subscriptionPlan: 'pro',
            subscriptionStatus: 'active',
@@ -43,16 +52,21 @@ index 4faa268..79f98ab 100644
 +          brandLogoUrl: null,
 +          whiteLabelEnabled: true
          });
+       }
+ 
 @@ -2517,6 +2535,12 @@ export const onRequest: PagesFunction<Env> = async (context) => {
+           return errorResponse("FORBIDDEN", "คุณไม่มีสิทธิ์แก้ไขการตั้งค่าระบบ", 403);
          }
          const body = await getJson();
-+        let whiteLabelPatch;
++        let whiteLabelPatch: ReturnType<typeof normalizeWhiteLabelPatch>;
 +        try {
 +          whiteLabelPatch = normalizeWhiteLabelPatch(body as Record<string, unknown>);
 +        } catch (error: any) {
 +          return errorResponse('VALIDATION_ERROR', String(error?.message || 'ข้อมูล White-label ไม่ถูกต้อง'), 400);
 +        }
          const validated = validateZod(SettingsSchema, body);
+         const { subscriptionPlan } = await getSubscriptionMetadata(Number(userId));
+         for (const feature of requiredPlanFeaturesForSettingsUpdate(validated as Record<string, unknown>)) {
 @@ -2528,11 +2552,47 @@ export const onRequest: PagesFunction<Env> = async (context) => {
          let lineTokenConfigured = false;
          let lineSecretConfigured = false;
@@ -99,7 +113,10 @@ index 4faa268..79f98ab 100644
 +            savedBillFooter = billFooterToSave == null ? null : String(billFooterToSave);
 +            const dormNameToSave = whiteLabelPatch.dormName ?? validated.dormName;
              const existingFontScale = String(existing?.font_scale || 'medium');
+             if (!isSettingsAdmin && validated.fontScale !== undefined && validated.fontScale !== existingFontScale) {
+               return errorResponse('FORBIDDEN', 'เฉพาะ Admin หรือเจ้าของหอพักเท่านั้นที่ปรับขนาดตัวอักษรได้', 403);
 @@ -2559,15 +2619,15 @@ export const onRequest: PagesFunction<Env> = async (context) => {
+ 
              if (existing) {
                await env.DB.prepare(
 -                `UPDATE settings SET dorm_name = ?, default_elec_rate = ?, default_water_rate = ?, default_due_date_day = ?, default_penalty_rate = ?, promptpay_id = ?, promptpay_name = ?, line_channel_access_token = ?, line_channel_secret = ?, line_bot_enabled = ?, google_spreadsheet_id = ?, font_scale = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?`
@@ -116,12 +133,19 @@ index 4faa268..79f98ab 100644
 -              authUser.effectiveUserId || authUser.id, validated.dormName, validated.defaultElecRate, validated.defaultWaterRate, validated.defaultDueDateDay, validated.defaultPenaltyRate, validated.promptpayId || null, validated.promptpayName || null, tokenToSave || null, secretToSave || null, validated.lineBotEnabled ? 1 : 0, validated.googleSpreadsheetId || null, fontScaleToSave
 +              authUser.effectiveUserId || authUser.id, dormNameToSave, validated.defaultElecRate, validated.defaultWaterRate, validated.defaultDueDateDay, validated.defaultPenaltyRate, validated.promptpayId || null, validated.promptpayName || null, tokenToSave || null, secretToSave || null, validated.lineBotEnabled ? 1 : 0, validated.googleSpreadsheetId || null, fontScaleToSave, brandColorToSave, contactPhoneToSave, billFooterToSave
                ).run();
+             }
+ 
 @@ -2579,7 +2639,7 @@ export const onRequest: PagesFunction<Env> = async (context) => {
+               targetType: 'setting',
                targetId: existing ? String(existing.id) : "new",
                oldValue: redactSettingsForAudit(existing),
 -              newValue: redactSettingsForAudit(validated),
 +              newValue: redactSettingsForAudit({ ...validated, ...whiteLabelPatch }),
+               ipAddress: clientIp,
+               userAgent
+             });
 @@ -2595,7 +2655,13 @@ export const onRequest: PagesFunction<Env> = async (context) => {
+           lineTokenConfigured,
            lineSecretConfigured,
            ...subscription,
 -          fontScale: savedFontScale
@@ -133,18 +157,26 @@ index 4faa268..79f98ab 100644
 +          brandLogoUrl: null,
 +          whiteLabelEnabled: hasPlanFeature(subscription.subscriptionPlan, 'whiteLabel')
          }, "บันทึกการตั้งค่าระบบเรียบร้อยแล้วค่ะ");
+       }
+     }
 diff --git a/src/server/services/planAccess.service.ts b/src/server/services/planAccess.service.ts
 index f5c3495..7fe2a69 100644
 --- a/src/server/services/planAccess.service.ts
 +++ b/src/server/services/planAccess.service.ts
-@@ -22,7 +22,7 @@ export function requiredPlanFeatureForApiRequest(path: string, method: HttpMethod): PlanFeature | null {
+@@ -22,7 +22,7 @@ export function requiredPlanFeatureForApiRequest(path: string, method: HttpMetho
  }
  
  export function minimumPaidPlanForFeature(feature: PlanFeature): 'basic' | 'standard' | 'pro' {
 -  if (feature === 'settings' || feature === 'notes' || feature === 'backupExport' || feature === 'backupRestore') return 'basic';
 +  if (feature === 'settings' || feature === 'notes' || feature === 'backupExport' || feature === 'backupRestore' || feature === 'whiteLabel') return 'basic';
-@@ -31,7 +31,6 @@ export function minimumPaidPlanForFeature(feature: PlanFeature): 'basic' | 'standard' | 'pro' {
+   if (feature === 'promptPay' || feature === 'bulkMeter' || feature === 'reports' || feature === 'recurringCharges' || feature === 'staff') {
+     return 'standard';
+   }
+@@ -31,7 +31,6 @@ export function minimumPaidPlanForFeature(feature: PlanFeature): 'basic' | 'stan
+ 
  export function isDemoMutationRestricted(path: string, method: HttpMethod): boolean {
    if (method === 'DELETE') return true;
 -  if (path === '/api/settings' && method === 'PUT') return true;
    if ((path === '/api/caretakers' || path.startsWith('/api/caretakers/')) && method !== 'GET') return true;
+   if (path.startsWith('/api/google-sheets/') && method !== 'GET') return true;
+   if (path.startsWith('/api/line/') && !path.endsWith('/webhook')) return true;
