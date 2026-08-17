@@ -1,0 +1,213 @@
+name: V15 Task 2 Production Gate
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [agent/v15-task1-white-label-contract]
+    paths:
+      - 'v15-task2-patches/**'
+      - '.github/workflows/v15-task2-production-gate.yml'
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: v15-task2-production-gate
+  cancel-in-progress: true
+
+env:
+  TASK1_SOURCE_RUN_ID: 31996317195
+  TASK1_SOURCE_ARTIFACT: v15-task1-candidate-pending-d1-smoke
+  TASK1_MASTER_SHA256: 13fa8904b3a55d56516761a2731781e15af63658e48d627cdad1c7a167aa2366
+
+jobs:
+  production-gate:
+    name: focused + full tests + lint + types + builds + release
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - name: Checkout V15 Task 2 branch
+        uses: actions/checkout@v4
+
+      - name: Download immutable V15 Task 1 candidate
+        uses: actions/download-artifact@v5
+        with:
+          name: ${{ env.TASK1_SOURCE_ARTIFACT }}
+          path: candidate
+          github-token: ${{ github.token }}
+          repository: winza125-sitticun/dorm-management-system
+          run-id: ${{ env.TASK1_SOURCE_RUN_ID }}
+
+      - name: Verify and extract exact V15 Task 1 source
+        shell: bash
+        run: |
+          set -euo pipefail
+          MASTER_ZIP="$(find candidate -type f -name 'dorm-management-system-master-v15-task1-REVIEW-CI.zip' -print -quit)"
+          test -n "$MASTER_ZIP"
+          echo "$TASK1_MASTER_SHA256  $MASTER_ZIP" | sha256sum --check --strict
+          rm -rf v15-task2-work
+          mkdir v15-task2-work
+          unzip -q "$MASTER_ZIP" -d v15-task2-work
+          test -f v15-task2-work/package.json
+          test -f v15-task2-work/package-lock.json
+          test -f v15-task2-work/wrangler.master.jsonc
+          test -f v15-task2-work/d1-migrations/0006_add_white_label_settings.sql
+          test ! -e v15-task2-work/src/server/validators/logo.ts
+
+      - name: Apply all verified V15 Task 2 patches
+        working-directory: v15-task2-work
+        shell: bash
+        run: |
+          set -euo pipefail
+          apply_plain() {
+            local file="$1" expected="$2" out="$3"
+            test "$(git hash-object "../$file")" = "$expected"
+            base64 -d "../$file" > "../$out"
+            patch -p1 < "../$out"
+          }
+          apply_gz() {
+            local file="$1" expected="$2" out="$3"
+            test "$(git hash-object "../$file")" = "$expected"
+            base64 -d "../$file" | gzip -d > "../$out"
+            patch -p1 < "../$out"
+          }
+          apply_plain v15-task2-patches/001-task1-test.patch.b64 6dfd6bc4b4df61d1cb2ca2b07f3c7f217d55818a t1-test.patch
+          apply_plain v15-task2-patches/002-task1-impl.patch.b64 79230a4e613b46d7a71b0cbf3d13168ff497661a t1-impl.patch
+          apply_plain v15-task2-patches/003-task2-test.patch.b64 ff9bb8e86d633b729dc76663e2ab1f39b9e0c582 t2-test.patch
+          apply_plain v15-task2-patches/004-task2-impl.patch.b64 8ecae53f5a20b2d8e1adae70f4e812aa9f218972 t2-impl.patch
+          apply_plain v15-task2-patches/005-task3-test.patch.b64 533fe0864b56ac04dc9aba7cabab73aa0d6e28c4 t3-test.patch
+          apply_plain v15-task2-patches/006-task3-impl.patch.b64 fdc73ddf8c7b6b7bb07d3ca700a8e86c189177a0 t3-impl.patch
+          apply_plain v15-task2-patches/007-task4-test.patch.b64 ec68a4378a8cc1d1363e60dcc90e2b423ea87eb7 t4-test.patch
+          apply_plain v15-task2-patches/008-task4-impl.patch.b64 dd7029e6e72e3305df6f7088434d8c311465a370 t4-impl.patch
+          apply_gz v15-task2-patches/009-task5-test.patch.gz.b64 34dcf755c3ce9e6147ee4a0a312b7be57ee644dd t5-test.patch
+          apply_gz v15-task2-patches/010-task5-impl.patch.gz.b64 82d098eeb1c37480f98d441f7f491f597116df23 t5-impl.patch
+          apply_gz v15-task2-patches/011-task6-test.patch.gz.b64 3f9e32de377d98d2d5a9ed9db571cc95d0e71ba0 t6-test.patch
+          apply_gz v15-task2-patches/012-task7-test.patch.gz.b64 31029123437d05e241f68e36ce41a31d79f0b5a1 t7-test.patch
+          git diff --check
+
+      - name: Verify Task 2 contract anchors before candidate creation
+        working-directory: v15-task2-work
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f src/server/validators/logo.ts
+          test -f src/server/services/branding.service.ts
+          grep -q 'LOGO_MAX_DECODED_BYTES = 307_200' src/server/validators/logo.ts
+          grep -q '/api/public/branding' 'functions/api/[[path]].ts'
+          grep -q '/api/settings/logo' 'functions/api/[[path]].ts'
+          grep -q 'app.get("/api/public/branding"' server.ts
+          grep -q 'app.put("/api/settings/logo"' server.ts
+          grep -q "brandLogoKey: text('brand_logo_key')" src/db/schema.ts
+          test "$(find d1-migrations -maxdepth 1 -type f -printf '%f\n' | sort | tail -n1)" = '0006_add_white_label_settings.sql'
+          ! grep -R -q 'brand_logo_data_uri' src functions server.ts d1-migrations scripts
+          grep -q 'BACKUP_SCHEMA_VERSION = 7' src/utils/backupFormat.ts
+          grep -q "'whiteLabel'" src/constants/planEntitlements.ts
+
+      - name: Create immutable V15 Task 2 master candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f dorm-management-system-master-v15-task2-REVIEW-CI.zip
+          (cd v15-task2-work && zip -qr ../dorm-management-system-master-v15-task2-REVIEW-CI.zip .)
+          unzip -t dorm-management-system-master-v15-task2-REVIEW-CI.zip >/dev/null
+          sha256sum dorm-management-system-master-v15-task2-REVIEW-CI.zip | tee MASTER_V15_TASK2_CI_SHA256.txt
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: v15-task2-work/package-lock.json
+
+      - name: Fresh dependency install
+        working-directory: v15-task2-work
+        run: npm ci
+
+      - name: Focused V15 Task 2 tests
+        working-directory: v15-task2-work
+        run: npx tsx --test tests/logo-validation.test.ts tests/public-branding.test.ts tests/logo-api-contract.test.ts tests/settings-white-label.test.ts tests/plan-api-guards.test.ts
+
+      - name: Backup regression suite
+        working-directory: v15-task2-work
+        run: npm run test:backup
+
+      - name: Full test suite
+        working-directory: v15-task2-work
+        run: npm test
+
+      - name: TypeScript lint gate
+        working-directory: v15-task2-work
+        run: npm run lint
+
+      - name: Cloudflare types gate
+        working-directory: v15-task2-work
+        run: npm run check:cloudflare-types:master
+
+      - name: Production Pages build
+        working-directory: v15-task2-work
+        run: npm run build:pages
+
+      - name: Production VPS build
+        working-directory: v15-task2-work
+        run: npm run build:vps
+
+      - name: Generate PREVIEW packages
+        working-directory: v15-task2-work
+        run: npm run packages:generate
+
+      - name: Run full package builder parity tests
+        working-directory: v15-task2-work
+        run: npm run test:builder
+
+      - name: Run guarded customer-ready release builder
+        working-directory: v15-task2-work
+        run: npm run packages:release
+
+      - name: Materialize Task 2 candidate packages and SHA-256
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p v15-task2-work/release-v15-task2
+          for plan in demo basic standard pro; do
+            src="v15-task2-work/release-v14/dorm-management-system-${plan}-v14-CUSTOMER-READY.zip"
+            dst="v15-task2-work/release-v15-task2/dorm-management-system-${plan}-v15-TASK2-CANDIDATE.zip"
+            test -f "$src"
+            cp "$src" "$dst"
+            unzip -t "$dst" >/dev/null
+          done
+          sha256sum v15-task2-work/release-v15-task2/*.zip | tee v15-task2-work/V15_TASK2_CANDIDATE_SHA256.txt
+          cat MASTER_V15_TASK2_CI_SHA256.txt
+          cat v15-task2-work/V15_TASK2_CANDIDATE_SHA256.txt
+
+      - name: Final candidate static audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          unzip -l dorm-management-system-master-v15-task2-REVIEW-CI.zip | grep -q 'src/server/validators/logo.ts'
+          unzip -l dorm-management-system-master-v15-task2-REVIEW-CI.zip | grep -q 'src/server/services/branding.service.ts'
+          ! unzip -l dorm-management-system-master-v15-task2-REVIEW-CI.zip | grep -q 'node_modules/'
+          ! unzip -l dorm-management-system-master-v15-task2-REVIEW-CI.zip | grep -q 'release-v14/'
+          ! unzip -l dorm-management-system-master-v15-task2-REVIEW-CI.zip | grep -q 'preview-v14/'
+          for plan in demo basic standard pro; do
+            zip="v15-task2-work/release-v15-task2/dorm-management-system-${plan}-v15-TASK2-CANDIDATE.zip"
+            unzip -p "$zip" 'src/server/validators/logo.ts' | grep -q 'LOGO_MAX_DECODED_BYTES = 307_200'
+            unzip -p "$zip" 'functions/api/[[path]].ts' | grep -q '/api/public/branding'
+            unzip -p "$zip" 'functions/api/[[path]].ts' | grep -q '/api/settings/logo'
+            ! unzip -p "$zip" 'src/db/schema.ts' | grep -q 'brand_logo_data_uri'
+          done
+
+      - name: Upload V15 Task 2 candidate artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: v15-task2-candidate-pending-d1-smoke
+          path: |
+            dorm-management-system-master-v15-task2-REVIEW-CI.zip
+            MASTER_V15_TASK2_CI_SHA256.txt
+            v15-task2-work/release-v15-task2/**
+            v15-task2-work/V15_TASK2_CANDIDATE_SHA256.txt
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Gate notice
+        run: echo 'V15 Task 2 source/release gate passed. Candidate remains pending real Cloudflare D1 smoke.'
