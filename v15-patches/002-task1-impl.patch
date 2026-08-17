@@ -1,0 +1,45 @@
+diff --git a/src/constants/planEntitlements.ts b/src/constants/planEntitlements.ts
+index f20b6be..46b21d7 100644
+--- a/src/constants/planEntitlements.ts
++++ b/src/constants/planEntitlements.ts
+@@ -18,7 +18,8 @@ export type PlanFeature =
+   | 'googleSheets'
+   | 'auditLogs'
+   | 'backupExport'
+-  | 'backupRestore';
++  | 'backupRestore'
++  | 'whiteLabel';
+ 
+ export type PlanLimit = 'maxRooms' | 'maxStaff';
+ 
+@@ -31,7 +32,7 @@ const featureSet = (enabled: readonly PlanFeature[]): Record<PlanFeature, boolea
+   const all: PlanFeature[] = [
+     'settings', 'notes', 'promptPay', 'bulkMeter', 'reports', 'recurringCharges', 'staff',
+     'contracts', 'checkout', 'maintenance', 'housekeeping', 'announcements', 'tenantPortal',
+-    'lineIntegration', 'googleSheets', 'auditLogs', 'backupExport', 'backupRestore',
++    'lineIntegration', 'googleSheets', 'auditLogs', 'backupExport', 'backupRestore', 'whiteLabel',
+   ];
+   return Object.fromEntries(all.map((feature) => [feature, enabled.includes(feature)])) as Record<PlanFeature, boolean>;
+ };
+@@ -43,18 +44,18 @@ export const PLAN_ENTITLEMENTS: Readonly<Record<SubscriptionPlan, PlanEntitlemen
+   },
+   basic: {
+     limits: { maxRooms: 10, maxStaff: 0 },
+-    features: featureSet(['settings', 'notes', 'backupExport', 'backupRestore']),
++    features: featureSet(['settings', 'notes', 'backupExport', 'backupRestore', 'whiteLabel']),
+   },
+   standard: {
+     limits: { maxRooms: 30, maxStaff: 2 },
+-    features: featureSet(['settings', 'notes', 'promptPay', 'bulkMeter', 'reports', 'recurringCharges', 'staff', 'backupExport', 'backupRestore']),
++    features: featureSet(['settings', 'notes', 'promptPay', 'bulkMeter', 'reports', 'recurringCharges', 'staff', 'backupExport', 'backupRestore', 'whiteLabel']),
+   },
+   pro: {
+     limits: { maxRooms: 100, maxStaff: 5 },
+     features: featureSet([
+       'settings', 'notes', 'promptPay', 'bulkMeter', 'reports', 'recurringCharges', 'staff',
+       'contracts', 'checkout', 'maintenance', 'housekeeping', 'announcements', 'tenantPortal',
+-      'lineIntegration', 'googleSheets', 'auditLogs', 'backupExport', 'backupRestore',
++      'lineIntegration', 'googleSheets', 'auditLogs', 'backupExport', 'backupRestore', 'whiteLabel',
+     ]),
+   },
+ });
