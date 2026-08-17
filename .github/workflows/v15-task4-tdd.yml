@@ -69,7 +69,7 @@ jobs:
           patch -p1 < ../task1-impl.patch
           npx tsx --test tests/white-label-settings-ui-utils.test.ts
 
-      - name: Apply Task 2 tests only
+      - name: Apply Task 2 tests and contract evolution
         id: task2tests
         working-directory: source
         shell: bash
@@ -77,6 +77,8 @@ jobs:
           set -euo pipefail
           base64 -d ../v15-task4-patches/003-task2-tests.patch.b64 > ../task2-tests.patch
           patch -p1 < ../task2-tests.patch
+          base64 -d ../v15-task4-patches/005-task2-test-contract-fix.patch.b64 > ../task2-contract-fix.patch
+          patch -p1 < ../task2-contract-fix.patch
 
       - name: Verify Task 2 RED
         id: red
