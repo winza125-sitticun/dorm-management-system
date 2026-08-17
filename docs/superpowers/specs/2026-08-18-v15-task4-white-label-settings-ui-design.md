@@ -45,7 +45,9 @@ Task 4 ต้องใช้ contract ที่มีอยู่แล้วแ
 - `billFooter`: nullable, trim, max 500, plain text
 - `brandLogoUrl` เป็น read-only และห้ามส่งกลับเข้า PUT settings
 
-Task 4 ห้าม bypass validator เหล่านี้
+การเปลี่ยน `dormName`, `brandColor`, `contactPhone` หรือ `billFooter` ผ่าน `/api/settings` ถูกตรวจด้วย White-label diff gate เดียวกัน: การเปลี่ยนจริงต้องเป็น owner/super_admin และ plan ต้องมี `whiteLabel`
+
+Task 4 ห้าม bypass validator หรือ diff gate เหล่านี้
 
 ### Logo contract
 
@@ -117,12 +119,13 @@ staff/caretaker แม้เข้าหน้า Settings ได้ ห้า�
 
 ย้าย UI ของ `dormName` จาก section `ข้อมูลและชื่อสถานประกอบการ` เดิมเข้า White-label section เพื่อไม่ให้มี input ซ้ำสองจุด
 
-Semantics ของ dorm name ไม่เปลี่ยน:
+Semantics ต้องตรง backend Task 1:
 
-- dorm name ไม่ถือเป็น paid-branding field โดยตัวมันเอง
-- mutation ยังอิง `canManageSettings` เดิม
-- Demo ยังคงเห็น dorm name ได้
-- Task 4 ไม่สร้าง bypass สำหรับ Demo ให้แก้ dormName ผ่าน `/api/settings`; first-setup exception ยังคงอยู่ที่ `/api/setup/init` ตาม Task 1
+- การตั้ง `dormName` ครั้งแรกยังทำได้ผ่าน `/api/setup/init` ตาม first-setup exception รวมถึง Demo
+- หลัง setup แล้ว การเปลี่ยน `dormName` ผ่าน Settings อยู่ใน White-label diff gate
+- ใน Settings จึงแก้ dorm name ได้เฉพาะ owner/super_admin ที่มี White-label entitlement
+- Demo ยังคงเห็น dorm name ที่ตั้งไว้ตอน setup แต่แก้ไม่ได้จาก Settings
+- staff/caretaker เห็นค่าได้แต่แก้ไม่ได้
 
 ### 3.3 White-label edit permission in UI
 
@@ -132,11 +135,23 @@ Semantics ของ dorm name ไม่เปลี่ยน:
 
 พฤติกรรม:
 
-- owner/super_admin + Basic/Standard/Pro: controls paid-branding ใช้งานได้
-- Demo owner: เห็น values/preview แต่ paid-branding controls disabled และแสดงข้อความว่า White-label ใช้ได้ตั้งแต่ Basic
+- owner/super_admin + Basic/Standard/Pro: controls White-label รวม dorm name ใช้งานได้
+- Demo owner: เห็น values แต่ controls White-label disabled และแสดงข้อความว่า White-label ใช้ได้ตั้งแต่ Basic
 - staff/caretaker: เห็น section แบบ read-only และแสดงข้อความ `เฉพาะเจ้าของหอพัก/Admin เท่านั้นที่แก้ไข White-label ได้`
 
 ห้ามใช้ `settings.whiteLabelEnabled` เพียงตัวเดียวเป็น authorization; ใช้ local entitlement/role เพื่อ UX และ backend เป็น authoritative authorization
+
+### 3.4 Demo effective preview
+
+`GET /api/settings` อาจยังมีค่าที่เคยบันทึกตอนเป็น paid plan แม้ plan ถูกลดเป็น Demo แต่ public branding จะ mask paid fields
+
+ดังนั้น Demo UI ต้องแยก `stored values` ออกจาก `effective runtime preview`:
+
+- fields สามารถแสดง persisted value แบบ disabled เพื่อไม่ทำให้ผู้ใช้คิดว่าข้อมูลหาย
+- preview ต้องแสดงผลที่ใช้งานจริงใน Demo: dorm name เดิม + fallback brand `#1DB954`, no logo, no contact phone
+- แสดง badge/ข้อความว่า `White-label ปิดใช้งานใน Demo` และค่าที่เก็บไว้จะไม่ถูกนำไปใช้จนกว่า plan รองรับ
+
+ห้าม preview Demo ด้วย dormant paid-branding values ราวกับเปิดใช้งานอยู่
 
 ## 4. Draft state and validation
 
@@ -165,7 +180,7 @@ Initialize จาก `settings`:
 
 ### UI validation
 
-ก่อน main settings save:
+ก่อน main settings save สำหรับผู้ที่ `canEditWhiteLabel`:
 
 - dormName trim ต้อง 1..120 และ plain text
 - brandColor ถ้าไม่ว่างต้อง exact `#RRGGBB`; normalize uppercase
@@ -210,11 +225,13 @@ Client preflight:
 
 การเลือกไฟล์ยังไม่เขียน server ทันที
 
-UI เก็บ `pendingLogoDataUri` เฉพาะ memory และ preview ใช้ค่าลำดับนี้:
+UI เก็บ `pendingLogoDataUri` เฉพาะ memory และ paid-plan preview ใช้ค่าลำดับนี้:
 
 1. pending logo ที่เพิ่งเลือก
 2. logo ที่บันทึกแล้วจาก `settings.brandLogoUrl` / refreshed settings
 3. no-logo fallback
+
+Demo effective preview ต้อง mask logo ตามข้อ 3.4 แม้ authenticated settings จะยังมี stored logo
 
 ห้ามเก็บ logo Data URI ลง localStorage/sessionStorage
 
@@ -247,17 +264,17 @@ UI เก็บ `pendingLogoDataUri` เฉพาะ memory และ preview �
 
 Brand text fields ใช้ main settings save lifecycle เดิม ไม่สร้าง backend endpoint ใหม่
 
-แก้ `buildSettingsPayload()` ให้ include fields White-label เฉพาะเมื่อ UI มีสิทธิ์ส่ง:
+แก้ `buildSettingsPayload()` ให้ include fields White-label เฉพาะเมื่อ `canEditWhiteLabel`:
 
-- `brandColor`
-- `contactPhone`
-- `billFooter`
+- `brandColor`: normalized uppercase หรือ null
+- `contactPhone`: trimmed value หรือ null
+- `billFooter`: trimmed value หรือ null
 
 `brandLogoUrl` ห้ามอยู่ใน payload
 
-สำหรับ user ที่ไม่มีสิทธิ์ White-label ต้อง omit paid-branding fields แทนการส่งค่ากลับไปโดยไม่จำเป็น
+`dormName` ยังต้องอยู่ใน payload เพราะ SettingsSchema เดิม require field นี้ แต่ UI ของผู้ที่ไม่มี `canEditWhiteLabel` ต้องเป็น read-only ทำให้ค่าที่ส่งกลับเป็นค่าเดิม ไม่ใช่ mutation ที่ UI เปิดให้ทำ
 
-`dormName` ยังคงอยู่ใน payload ตาม semantics เดิม
+สำหรับ user ที่ไม่มีสิทธิ์ White-label ต้อง omit paid-branding fields แทนการส่งค่ากลับไปโดยไม่จำเป็น
 
 หลัง `onUpdateSettings()` สำเร็จ:
 
@@ -305,9 +322,9 @@ Behavior:
 
 Preview ต้องเป็น compact card ใน White-label section และ responsive บน mobile
 
-แสดง:
+สำหรับ paid plan แสดง:
 
-- logo หรือ placeholder icon
+- pending/saved logo หรือ placeholder icon
 - dorm name draft
 - brand-color primary sample
 - contact phone ถ้ามี
@@ -317,6 +334,8 @@ Preview ต้องเป็น compact card ใน White-label section แล�
 ใช้ `deriveBrandTokens()` จาก Task 3 เพื่อให้ preview algorithm ตรงกับ runtime จริง
 
 Preview ใช้ inline/scoped styles เท่านั้น และห้ามแก้ global CSS variables ก่อน save
+
+Demo ใช้ effective preview ตามข้อ 3.4
 
 Semantic status colors ไม่อยู่ในการ preview re-theme และ Task 4 ห้ามเปลี่ยน status tokens
 
@@ -371,7 +390,8 @@ Task 4 ห้ามสร้าง global store ใหม่
 
 - SettingsView/WhiteLabelSettingsSection ใช้ `whiteLabel` entitlement
 - owner/super_admin gate มีอยู่
-- Demo lock messaging มีอยู่
+- Demo lock messaging และ effective preview masking มีอยู่
+- dormName ใน Settings ใช้ White-label edit gate หลัง setup
 - `brandLogoUrl` ไม่ถูกส่งใน settings PUT payload
 - logo PUT/DELETE ใช้ dedicated endpoint เดิม
 - `refreshBranding()` ถูกเรียกหลัง successful settings/logo mutation
@@ -405,7 +425,7 @@ plan behavior ต้องมาจาก entitlement data ไม่ใช่แ
 Pro/paid smoke ต้องพิสูจน์อย่างน้อย:
 
 - owner เปิด Settings และ White-label controls ใช้งานได้
-- save color/phone/footer ผ่าน authenticated API
+- save dorm name/color/phone/footer ผ่าน authenticated API
 - upload supported logo ผ่าน API
 - public branding สะท้อนค่าที่บันทึก
 - browser runtime token เปลี่ยนโดยไม่ full-page reload หลัง refresh flow
@@ -413,9 +433,10 @@ Pro/paid smoke ต้องพิสูจน์อย่างน้อย:
 
 Demo smoke ต้องพิสูจน์:
 
-- dorm name ยังอ่านได้
+- dorm name จาก setup ยังอ่านได้แต่แก้ไม่ได้จาก Settings
 - paid White-label controls locked
-- server logo mutation ยัง 403 PLAN_REQUIRED
+- effective preview ใช้ default brand/no logo/no contact แม้มี dormant stored branding
+- server settings White-label mutation และ logo mutation ยัง 403 PLAN_REQUIRED
 - public branding ยัง mask paid branding
 - runtime ยัง fallback primary `#1DB954`
 
@@ -444,11 +465,11 @@ Task 4 ไม่ทำ:
 
 Task 4 ถือว่า complete เมื่อทั้งหมดเป็นจริง:
 
-1. owner/super_admin ของ Basic/Standard/Pro แก้ brand color/contact phone/bill footer และจัดการ logo ได้จาก Settings
-2. dorm name อยู่ใน White-label Settings section แต่ semantics เดิมไม่เปลี่ยน
-3. Demo เห็นข้อมูล/preview แต่ paid-branding controls locked
+1. owner/super_admin ของ Basic/Standard/Pro แก้ dorm name/brand color/contact phone/bill footer และจัดการ logo ได้จาก Settings
+2. Demo ใช้ dorm name จาก first setup ต่อได้ แต่แก้ White-label จาก Settings ไม่ได้
+3. Demo เห็น stored values แบบ read-only ได้ แต่ effective preview แสดงเฉพาะ branding ที่ plan ใช้งานจริง
 4. staff/caretaker ไม่สามารถ mutate White-label ผ่าน UI และ backend regression ยังป้องกันอยู่
-5. live preview เปลี่ยนตาม draft โดยไม่ mutate global runtime ก่อน save
+5. live preview เปลี่ยนตาม draft ของ paid plan โดยไม่ mutate global runtime ก่อน save
 6. settings save สำเร็จแล้ว runtime branding refresh โดยไม่ reload
 7. logo upload/delete ใช้ dedicated Task 2 API และ refresh settings/runtime หลัง success
 8. refresh failure ไม่ทำให้ persisted save ถูกตีความว่า failed และไม่ reset runtime เป็น fallback โดยไม่จำเป็น
