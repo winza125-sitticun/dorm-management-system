@@ -27,6 +27,19 @@ function listZip(zip) {
   return execFileSync('unzip', ['-Z1', zip], { encoding: 'utf8' }).split(/\r?\n/).filter(Boolean);
 }
 
+function entitlementSection(source, plan) {
+  const order = ['demo', 'basic', 'standard', 'pro'];
+  const index = order.indexOf(plan);
+  const start = source.search(new RegExp(`\\b${plan}:\\s*\\{`));
+  assert.notEqual(start, -1, `missing ${plan} entitlement start`);
+  if (index === order.length - 1) return source.slice(start);
+  const nextPlan = order[index + 1];
+  const tail = source.slice(start + 1);
+  const nextOffset = tail.search(new RegExp(`\\b${nextPlan}:\\s*\\{`));
+  assert.notEqual(nextOffset, -1, `missing ${nextPlan} entitlement boundary`);
+  return source.slice(start, start + 1 + nextOffset);
+}
+
 test('all four packages contain byte-identical Task 3 runtime files', () => {
   for (const plan of plans) assert.ok(fs.existsSync(zipFor(plan)), `missing ${plan} package`);
   for (const file of runtimeFiles) {
@@ -43,12 +56,13 @@ test('Task 3 runtime is identical across generated plans', () => {
 });
 
 test('white-label entitlement matrix stays Demo false and paid true', () => {
-  for (const plan of plans) {
-    const source = readZipEntry(zipFor(plan), 'src/constants/planEntitlements.ts');
-    const block = source.match(new RegExp(`${plan}:\\s*\\{([\\s\\S]*?)\\n\\s*\\},`));
-    assert.ok(block, `missing ${plan} entitlement block`);
-    const enabled = /whiteLabel:\s*true/.test(block[1]);
-    assert.equal(enabled, plan !== 'demo', `${plan}: whiteLabel mismatch`);
+  for (const packagePlan of plans) {
+    const source = readZipEntry(zipFor(packagePlan), 'src/constants/planEntitlements.ts');
+    for (const entitlementPlan of plans) {
+      const section = entitlementSection(source, entitlementPlan);
+      const enabled = /whiteLabel:\s*true/.test(section);
+      assert.equal(enabled, entitlementPlan !== 'demo', `${packagePlan}: ${entitlementPlan} whiteLabel mismatch`);
+    }
   }
 });
 
