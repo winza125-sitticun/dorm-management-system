@@ -165,8 +165,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          patch -p1 < ../v15-patches/012-task6-test.patch
-          patch -p1 < ../v15-patches/012b-task6-fake-sql.patch
+          base64 -d ../v15-patches/012-task6-test.patch.b64 > ../task6-test-exact.patch
+          echo '94c6ab12f997697c94e3fe58570af0063195229f6d7eadb5a3ff785b8c289d07  ../task6-test-exact.patch' | sha256sum --check --strict
+          patch -p1 < ../task6-test-exact.patch
           set +e
           npx tsx --test tests/backup-export.test.ts tests/backup-restore.test.ts tests/backup-restore-api.test.ts > ../task6-red.log 2>&1
           rc=$?
