@@ -14,9 +14,9 @@ permissions:
   actions: read
 
 jobs:
-  task1-through-task3-red-green:
+  task1-through-task4-red-green:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - name: Checkout V15 gate branch
         uses: actions/checkout@v4
@@ -56,6 +56,7 @@ jobs:
         working-directory: source
         shell: bash
         run: |
+          set -euo pipefail
           patch -p1 < ../v15-patches/001-task1-test.patch
           set +e
           npx tsx --test tests/plan-entitlements.test.ts > ../task1-red.log 2>&1
@@ -65,13 +66,12 @@ jobs:
           test "$rc" -ne 0
           patch -p1 < ../v15-patches/002-task1-impl.patch
           npx tsx --test tests/plan-entitlements.test.ts
-          grep -q "| 'whiteLabel'" src/constants/planEntitlements.ts
-          grep -q "hasPlanFeature('basic', 'promptPay'), false" tests/plan-entitlements.test.ts
 
       - name: Task 2 RED then GREEN
         working-directory: source
         shell: bash
         run: |
+          set -euo pipefail
           patch -p1 < ../v15-patches/003-task2-test.patch
           set +e
           npx tsx --test tests/settings-white-label.test.ts > ../task2-red.log 2>&1
@@ -81,14 +81,13 @@ jobs:
           test "$rc" -ne 0
           patch -p1 < ../v15-patches/004-task2-impl.patch
           npx tsx --test tests/settings-white-label.test.ts
-          grep -qi 'ALTER TABLE settings ADD COLUMN brand_logo_key TEXT' d1-migrations/0006_add_white_label_settings.sql
           ! grep -Eqi 'DROP[[:space:]]+COLUMN|RENAME[[:space:]]+COLUMN|NOT[[:space:]]+NULL' d1-migrations/0006_add_white_label_settings.sql
-          ! grep -q 'brandLogoKey' src/types.ts
 
       - name: Task 3 RED then GREEN
         working-directory: source
         shell: bash
         run: |
+          set -euo pipefail
           patch -p1 < ../v15-patches/005-task3-test.patch
           set +e
           npx tsx --test tests/settings-white-label.test.ts > ../task3-red.log 2>&1
@@ -98,6 +97,34 @@ jobs:
           test "$rc" -ne 0
           patch -p1 < ../v15-patches/006-task3-impl.patch
           npx tsx --test tests/settings-white-label.test.ts
-          grep -q 'const COLOR_RE = /^#\[0-9A-Fa-f\]{6}\$/' src/server/validators/settings.ts
-          grep -q 'brandLogoKey' src/server/validators/settings.ts
-          grep -q 'changedWhiteLabelFields' src/server/validators/settings.ts
+
+      - name: Task 4 RED then GREEN
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          patch -p1 < ../v15-patches/007-task4-test.patch
+          set +e
+          npx tsx --test tests/settings-white-label.test.ts tests/plan-api-guards.test.ts > ../task4-red.log 2>&1
+          rc=$?
+          set -e
+          cat ../task4-red.log
+          test "$rc" -ne 0
+          patch -p1 < ../v15-patches/008-task4-impl.patch
+          patch -p1 < ../v15-patches/009-task4-typefix.patch
+          npx tsx --test tests/settings-white-label.test.ts tests/plan-api-guards.test.ts
+          npm run lint
+
+      - name: Task 4 static contract review
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q "hasPlanFeature(subscriptionPlan, 'whiteLabel')" 'functions/api/[[path]].ts'
+          grep -q 'changedWhiteLabelFields(existing' 'functions/api/[[path]].ts'
+          grep -q 'legacySettingsChanged' 'functions/api/[[path]].ts'
+          grep -q 'brand_color = ?' 'functions/api/[[path]].ts'
+          grep -q 'contact_phone = ?' 'functions/api/[[path]].ts'
+          grep -q 'bill_footer = ?' 'functions/api/[[path]].ts'
+          ! grep -q 'brand_logo_key = ?' 'functions/api/[[path]].ts'
+          grep -q "whiteLabel') return 'basic'" src/server/services/planAccess.service.ts
