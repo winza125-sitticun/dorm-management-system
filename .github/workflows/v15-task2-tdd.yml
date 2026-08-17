@@ -58,8 +58,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          test "$(git hash-object ../v15-task2-patches/001-task1-test.patch.b64)" = '6dfd6bc4b4df61d1cb2ca2b07f3c7f217d55818a'
           base64 -d ../v15-task2-patches/001-task1-test.patch.b64 > ../task1-test.patch
-          echo '8c78543bd860fc1df4d75d39221c903a6b628a8148dcbfe68f8f347d190231f7  ../task1-test.patch' | sha256sum --check --strict
           patch -p1 < ../task1-test.patch
 
           set +e
@@ -73,8 +73,8 @@ jobs:
           fi
           grep -Eq 'Cannot find module|ERR_MODULE_NOT_FOUND|logo' ../task1-red.log
 
+          test "$(git hash-object ../v15-task2-patches/002-task1-impl.patch.b64)" = '79230a4e613b46d7a71b0cbf3d13168ff497661a'
           base64 -d ../v15-task2-patches/002-task1-impl.patch.b64 > ../task1-impl.patch
-          echo '9df8a34228ceafb17c0022ad5b2441f5326df24ac3c2c3722af396605d7dffa3  ../task1-impl.patch' | sha256sum --check --strict
           patch -p1 < ../task1-impl.patch
 
           npx tsx --test tests/logo-validation.test.ts
