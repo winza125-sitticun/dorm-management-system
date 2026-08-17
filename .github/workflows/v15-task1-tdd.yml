@@ -175,7 +175,9 @@ jobs:
             echo '::error::Task 6 RED tests unexpectedly passed before implementation'
             exit 1
           fi
-          patch -p1 < ../v15-patches/013-task6-impl.patch
+          base64 -d ../v15-patches/013-task6-impl.patch.b64 > ../task6-impl-exact.patch
+          echo '27d13e930660d0aca1f72e446a6addcb6acc3022c4d8474ce90c40e256cda30e  ../task6-impl-exact.patch' | sha256sum --check --strict
+          patch -p1 < ../task6-impl-exact.patch
           npx tsx --test tests/backup-export.test.ts tests/backup-validation.test.ts tests/backup-restore.test.ts tests/backup-restore-api.test.ts
           npm run lint
 
