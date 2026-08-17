@@ -9,7 +9,7 @@ on:
       - '.github/workflows/v15-task4-tdd.yml'
 
 permissions:
-  contents: read
+  contents: write
   actions: read
 
 jobs:
@@ -19,6 +19,8 @@ jobs:
     steps:
       - name: Checkout Task 4 branch
         uses: actions/checkout@v4
+        with:
+          ref: agent/v15-task1-white-label-contract
 
       - name: Download immutable Task 3 candidate by artifact ID
         shell: bash
@@ -82,3 +84,18 @@ jobs:
             exit 1
           fi
           grep -Eq 'whiteLabelSettings|ERR_MODULE_NOT_FOUND|Cannot find module' ../task1-red.log
+
+      - name: Persist RED evidence marker
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p v15-task4-evidence
+          printf 'status=RED_VERIFIED\nrun_id=%s\nrun_attempt=%s\nsource_sha=%s\nmaster_sha256=%s\n' \
+            "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$GITHUB_SHA" \
+            'ea70213d83f87eaacfb9002beee1bc5b46bdc3aea158d3bf94d626ab5c0d53c2' \
+            > v15-task4-evidence/task1-red.txt
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add v15-task4-evidence/task1-red.txt
+          git commit -m 'ci(v15-task4): record Task 1 RED evidence'
+          git push origin HEAD:agent/v15-task1-white-label-contract
