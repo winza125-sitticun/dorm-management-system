@@ -6,13 +6,14 @@ import { execFileSync } from 'node:child_process';
 
 const root = process.cwd();
 const plans = ['demo', 'basic', 'standard', 'pro'];
-const runtimeFiles = [
+const sharedFiles = [
   'src/theme/brandTheme.ts',
   'src/theme/brandingClient.ts',
   'src/context/ThemeContext.tsx',
   'src/components/BrandingBootScreen.tsx',
   'src/App.tsx',
   'src/index.css',
+  'src/constants/planEntitlements.ts',
 ];
 
 function zipFor(plan) {
@@ -27,42 +28,18 @@ function listZip(zip) {
   return execFileSync('unzip', ['-Z1', zip], { encoding: 'utf8' }).split(/\r?\n/).filter(Boolean);
 }
 
-function entitlementSection(source, plan) {
-  const order = ['demo', 'basic', 'standard', 'pro'];
-  const index = order.indexOf(plan);
-  const start = source.search(new RegExp(`\\b${plan}:\\s*\\{`));
-  assert.notEqual(start, -1, `missing ${plan} entitlement start`);
-  if (index === order.length - 1) return source.slice(start);
-  const nextPlan = order[index + 1];
-  const tail = source.slice(start + 1);
-  const nextOffset = tail.search(new RegExp(`\\b${nextPlan}:\\s*\\{`));
-  assert.notEqual(nextOffset, -1, `missing ${nextPlan} entitlement boundary`);
-  return source.slice(start, start + 1 + nextOffset);
-}
-
-test('all four packages contain byte-identical Task 3 runtime files', () => {
+test('all four packages contain byte-identical Task 3 runtime and entitlement source', () => {
   for (const plan of plans) assert.ok(fs.existsSync(zipFor(plan)), `missing ${plan} package`);
-  for (const file of runtimeFiles) {
+  for (const file of sharedFiles) {
     const master = fs.readFileSync(path.join(root, file), 'utf8');
     for (const plan of plans) assert.equal(readZipEntry(zipFor(plan), file), master, `${plan}: ${file} differs`);
   }
 });
 
-test('Task 3 runtime is identical across generated plans', () => {
-  for (const file of runtimeFiles) {
+test('Task 3 runtime and entitlement source are identical across generated plans', () => {
+  for (const file of sharedFiles) {
     const expected = readZipEntry(zipFor('pro'), file);
     for (const plan of plans) assert.equal(readZipEntry(zipFor(plan), file), expected, `${plan}: ${file} runtime drift`);
-  }
-});
-
-test('white-label entitlement matrix stays Demo false and paid true', () => {
-  for (const packagePlan of plans) {
-    const source = readZipEntry(zipFor(packagePlan), 'src/constants/planEntitlements.ts');
-    for (const entitlementPlan of plans) {
-      const section = entitlementSection(source, entitlementPlan);
-      const enabled = /whiteLabel:\s*true/.test(section);
-      assert.equal(enabled, entitlementPlan !== 'demo', `${packagePlan}: ${entitlementPlan} whiteLabel mismatch`);
-    }
   }
 });
 
