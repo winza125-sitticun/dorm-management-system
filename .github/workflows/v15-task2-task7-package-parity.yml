@@ -1,0 +1,140 @@
+name: V15 Task 2 Task 7 Package Parity
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [agent/v15-task1-white-label-contract]
+    paths:
+      - 'v15-task2-patches/012-task7-test.patch.gz.b64'
+      - '.github/workflows/v15-task2-task7-package-parity.yml'
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  one-master-package-parity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout Task 2 branch
+        uses: actions/checkout@v4
+
+      - name: Download immutable Task 1 candidate
+        uses: actions/download-artifact@v5
+        with:
+          name: v15-task1-candidate-pending-d1-smoke
+          path: candidate
+          github-token: ${{ github.token }}
+          repository: winza125-sitticun/dorm-management-system
+          run-id: 31996317195
+
+      - name: Extract exact source
+        shell: bash
+        run: |
+          set -euo pipefail
+          MASTER_ZIP="$(find candidate -type f -name 'dorm-management-system-master-v15-task1-REVIEW-CI.zip' -print -quit)"
+          test -n "$MASTER_ZIP"
+          echo '13fa8904b3a55d56516761a2731781e15af63658e48d627cdad1c7a167aa2366  '"$MASTER_ZIP" | sha256sum --check --strict
+          mkdir source && unzip -q "$MASTER_ZIP" -d source
+          test -f source/package.json
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: source/package-lock.json
+
+      - name: Install exact dependencies
+        working-directory: source
+        run: npm ci
+
+      - name: Rebuild verified Task 1-6 source
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          apply_plain() {
+            local file="$1" expected="$2" out="$3"
+            test "$(git hash-object "../$file")" = "$expected"
+            base64 -d "../$file" > "../$out"
+            patch -p1 < "../$out"
+          }
+          apply_gz() {
+            local file="$1" expected="$2" out="$3"
+            test "$(git hash-object "../$file")" = "$expected"
+            base64 -d "../$file" | gzip -d > "../$out"
+            patch -p1 < "../$out"
+          }
+          apply_plain v15-task2-patches/001-task1-test.patch.b64 6dfd6bc4b4df61d1cb2ca2b07f3c7f217d55818a t1-test.patch
+          apply_plain v15-task2-patches/002-task1-impl.patch.b64 79230a4e613b46d7a71b0cbf3d13168ff497661a t1-impl.patch
+          apply_plain v15-task2-patches/003-task2-test.patch.b64 ff9bb8e86d633b729dc76663e2ab1f39b9e0c582 t2-test.patch
+          apply_plain v15-task2-patches/004-task2-impl.patch.b64 8ecae53f5a20b2d8e1adae70f4e812aa9f218972 t2-impl.patch
+          apply_plain v15-task2-patches/005-task3-test.patch.b64 533fe0864b56ac04dc9aba7cabab73aa0d6e28c4 t3-test.patch
+          apply_plain v15-task2-patches/006-task3-impl.patch.b64 fdc73ddf8c7b6b7bb07d3ca700a8e86c189177a0 t3-impl.patch
+          apply_plain v15-task2-patches/007-task4-test.patch.b64 ec68a4378a8cc1d1363e60dcc90e2b423ea87eb7 t4-test.patch
+          apply_plain v15-task2-patches/008-task4-impl.patch.b64 dd7029e6e72e3305df6f7088434d8c311465a370 t4-impl.patch
+          apply_gz v15-task2-patches/009-task5-test.patch.gz.b64 34dcf755c3ce9e6147ee4a0a312b7be57ee644dd t5-test.patch
+          apply_gz v15-task2-patches/010-task5-impl.patch.gz.b64 82d098eeb1c37480f98d441f7f491f597116df23 t5-impl.patch
+          apply_gz v15-task2-patches/011-task6-test.patch.gz.b64 3f9e32de377d98d2d5a9ed9db571cc95d0e71ba0 t6-test.patch
+          npm run test:backup
+
+      - name: Apply Task 7 package assertions
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object ../v15-task2-patches/012-task7-test.patch.gz.b64)" = 31029123437d05e241f68e36ce41a31d79f0b5a1
+          base64 -d ../v15-task2-patches/012-task7-test.patch.gz.b64 | gzip -d > ../task7-test.patch
+          patch -p1 < ../task7-test.patch
+          node --test tests/package-parity.test.mjs tests/package-release.test.mjs
+
+      - name: Prove package assertions detect missing Task 2 implementation
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          mv src/server/validators/logo.ts ../logo.ts.saved
+          set +e
+          node --test tests/package-parity.test.mjs > ../task7-sensitivity.log 2>&1
+          rc=$?
+          set -e
+          cat ../task7-sensitivity.log
+          if [ "$rc" -eq 0 ]; then
+            echo '::error::Package parity test failed to detect missing Task 2 logo implementation'
+            exit 1
+          fi
+          grep -Eq 'missing shared implementation file|logo validator|src/server/validators/logo.ts' ../task7-sensitivity.log
+          mv ../logo.ts.saved src/server/validators/logo.ts
+
+      - name: Generate preview packages and run full builder gate
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run packages:generate
+          npm run test:builder
+
+      - name: Run guarded customer-ready package release
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run packages:release
+
+      - name: Final One Master parity review
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run lint
+          test "$(find d1-migrations -maxdepth 1 -type f -printf '%f\n' | sort | tail -n1)" = '0006_add_white_label_settings.sql'
+          ! grep -R -q 'brand_logo_data_uri' src functions server.ts d1-migrations scripts
+          grep -q '/api/public/branding' 'functions/api/[[path]].ts'
+          grep -q '/api/settings/logo' 'functions/api/[[path]].ts'
+          grep -q "'whiteLabel'" src/constants/planEntitlements.ts
+          for plan in demo basic standard pro; do
+            test -f "release-v14/dorm-management-system-${plan}-v14-CUSTOMER-READY.zip"
+          done
+          git diff --check
