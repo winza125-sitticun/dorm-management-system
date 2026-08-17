@@ -6,6 +6,7 @@ on:
     branches: [agent/v15-task1-white-label-contract]
     paths:
       - 'v15-task4-patches/006-task3-tests.patch.b64'
+      - 'v15-task4-patches/007-task3-impl.patch.b64'
       - '.github/workflows/v15-task4-task3-tdd.yml'
 
 permissions:
@@ -13,9 +14,9 @@ permissions:
   actions: read
 
 jobs:
-  task3-red:
+  task3-red-green:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
@@ -55,8 +56,7 @@ jobs:
 
       - name: Verify prior tasks GREEN
         working-directory: source
-        run: |
-          npx tsx --test tests/white-label-settings-ui-utils.test.ts tests/brand-theme-runtime.test.ts tests/branding-client-runtime.test.ts tests/theme-root-runtime.test.ts tests/theme-refresh-runtime.test.ts tests/theme-css-contract.test.ts
+        run: npx tsx --test tests/white-label-settings-ui-utils.test.ts tests/brand-theme-runtime.test.ts tests/branding-client-runtime.test.ts tests/theme-root-runtime.test.ts tests/theme-refresh-runtime.test.ts tests/theme-css-contract.test.ts
 
       - name: Apply Task 3 tests only
         id: tests
@@ -82,18 +82,55 @@ jobs:
           test "$rc" -ne 0
           grep -Eq 'must exist|WhiteLabelSettingsSection' ../task3-red.log
 
-      - name: Persist Task 3 RED evidence
-        if: success()
+      - name: Apply Task 3 implementation
+        id: impl
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          base64 -d ../v15-task4-patches/007-task3-impl.patch.b64 > ../task3-impl.patch
+          patch -p1 < ../task3-impl.patch
+
+      - name: Verify Task 3 GREEN
+        id: green
+        working-directory: source
+        run: npx tsx --test tests/white-label-settings-ui-utils.test.ts tests/white-label-settings-section.test.ts
+
+      - name: Lint and build
+        id: build
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run lint
+          npm run build:pages
+          npm run build:vps
+          git diff --check
+
+      - name: Persist Task 3 diagnostic evidence
+        if: always()
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p v15-task4-evidence
-          printf 'status=RED_VERIFIED\nrun_id=%s\nrun_attempt=%s\nsource_sha=%s\nmaster_sha256=%s\n' \
-            "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$GITHUB_SHA" \
-            'ea70213d83f87eaacfb9002beee1bc5b46bdc3aea158d3bf94d626ab5c0d53c2' \
-            > v15-task4-evidence/task3-red.txt
+          cat > v15-task4-evidence/task3-latest.txt <<EOF
+          run_id=$GITHUB_RUN_ID
+          run_attempt=$GITHUB_RUN_ATTEMPT
+          source_sha=$GITHUB_SHA
+          tests=${{ steps.tests.outcome }}
+          red=${{ steps.red.outcome }}
+          impl=${{ steps.impl.outcome }}
+          green=${{ steps.green.outcome }}
+          build=${{ steps.build.outcome }}
+          EOF
+          if [ "${{ steps.green.outcome }}" = success ] && [ "${{ steps.build.outcome }}" = success ]; then
+            printf 'status=RED_VERIFIED_GREEN_PASS\nrun_id=%s\nrun_attempt=%s\nsource_sha=%s\nmaster_sha256=%s\n' \
+              "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$GITHUB_SHA" \
+              'ea70213d83f87eaacfb9002beee1bc5b46bdc3aea158d3bf94d626ab5c0d53c2' \
+              > v15-task4-evidence/task3-green.txt
+          fi
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add v15-task4-evidence/task3-red.txt
-          git commit -m 'ci(v15-task4): record Task 3 RED evidence'
+          git add v15-task4-evidence/task3-latest.txt v15-task4-evidence/task3-green.txt 2>/dev/null || git add v15-task4-evidence/task3-latest.txt
+          git commit -m 'ci(v15-task4): record Task 3 diagnostic evidence' || exit 0
           git push origin HEAD:agent/v15-task1-white-label-contract
