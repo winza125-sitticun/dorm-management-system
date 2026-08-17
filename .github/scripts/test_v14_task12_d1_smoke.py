@@ -11,6 +11,12 @@ smoke = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = smoke
 spec.loader.exec_module(smoke)
 
+CONFIG_MODULE_PATH = SCRIPT_DIR / "v14_task12_wrangler_config.py"
+config_spec = importlib.util.spec_from_file_location("v14_task12_wrangler_config", CONFIG_MODULE_PATH)
+config_helper = importlib.util.module_from_spec(config_spec)
+sys.modules[config_spec.name] = config_helper
+config_spec.loader.exec_module(config_helper)
+
 
 class SmokeHelpersTest(unittest.TestCase):
     def test_extract_api_data_requires_success(self):
@@ -20,7 +26,7 @@ class SmokeHelpersTest(unittest.TestCase):
 
     def test_build_wrangler_config_replaces_only_placeholders(self):
         template = '{"name":"REPLACE_WITH_YOUR_PAGES_PROJECT","d1_databases":[{"binding":"DB","database_name":"REPLACE_WITH_YOUR_D1_DATABASE","database_id":"00000000-0000-0000-0000-000000000000"}]}'
-        rendered = smoke.build_wrangler_config(
+        rendered = config_helper.build_wrangler_config(
             template,
             "pages-test",
             "db-test",
@@ -34,7 +40,7 @@ class SmokeHelpersTest(unittest.TestCase):
 
     def test_build_wrangler_config_handles_actual_d1_name_placeholder(self):
         template = '{"name":"REPLACE_WITH_YOUR_PAGES_PROJECT","d1_databases":[{"binding":"DB","database_name":"REPLACE_WITH_YOUR_D1_DATABASE_NAME","database_id":"00000000-0000-0000-0000-000000000000"}]}'
-        rendered = smoke.build_wrangler_config(
+        rendered = config_helper.build_wrangler_config(
             template,
             "pages-test",
             "db-test",
