@@ -85,7 +85,7 @@ At initial application boot:
 
 1. ThemeProvider initializes `brandingLoading=true`.
 2. The runtime requests `GET /api/public/branding` once.
-3. The request is bounded by an approximately 3-second timeout.
+3. The request timeout is exactly `3000 ms`. Timeout expiration aborts/abandons the branding request and proceeds immediately to fallback initialization.
 4. On a valid paid-plan branding response:
    - validate/normalize the response shape,
    - derive brand tokens from `brandColor`,
@@ -100,7 +100,7 @@ At initial application boot:
    - apply safe fallback branding,
    - set `brandingLoading=false`,
    - render the application normally,
-   - do not retry in a loop that blocks UI startup.
+   - do not retry automatically during the same provider lifecycle.
 
 The application must remain usable when the public branding endpoint is unavailable.
 
@@ -130,7 +130,7 @@ Fallback branding state:
 - `logoDataUri = null`
 - `contactPhone = null`
 - `whiteLabelEnabled = false` when no trustworthy public response is available
-- `dormName` uses the existing application fallback product/dorm name already present in the candidate rather than inventing a new product identity
+- `dormName` must reuse the exact pre-Task-3 fallback product/dorm name already used by the immutable Task 2 candidate; Task 3 must not introduce a new fallback identity string
 
 Task 3 must preserve current default appearance as closely as possible when no white-label branding is available.
 
@@ -143,7 +143,9 @@ The runtime must define and apply these CSS variables:
 - `--brand-soft`
 - `--brand-contrast`
 
-A pure helper such as `deriveBrandTokens(hex)` should return these values deterministically.
+A pure helper such as `deriveBrandTokens(hex)` must return these values deterministically.
+
+All channel calculations below use integer RGB channels in `[0,255]`, calculate in floating point, then round to the nearest integer and emit uppercase `#RRGGBB`.
 
 ### 9.1 `--brand-primary`
 
@@ -151,26 +153,29 @@ The validated normalized `#RRGGBB` color, or `#1DB954` fallback.
 
 ### 9.2 `--brand-primary-hover`
 
-A deterministic darker variant of the primary color.
+Mix the primary color with black using:
 
-Implementation may use RGB/HSL math, but the exact algorithm must be fixed in code and unit tested so the same input always produces the same output.
+`hoverChannel = round(primaryChannel * 0.88)`
+
+This is equivalent to 88% primary + 12% black.
 
 ### 9.3 `--brand-soft`
 
-A deterministic low-emphasis variant suitable for subtle branded backgrounds/highlights.
+Mix the primary color with white using:
 
-It must remain visually lighter/softer than the primary and must not be used as a semantic success/warning/danger color.
+`softChannel = round(primaryChannel * 0.12 + 255 * 0.88)`
+
+This is equivalent to 12% primary + 88% white.
+
+It must not be used as a semantic success/warning/danger color.
 
 ### 9.4 `--brand-contrast`
 
-Either `#FFFFFF` or `#111111`, selected from the primary color luminance/contrast result.
+Contrast text is either `#FFFFFF` or `#111111`.
 
-At minimum:
+Use the WCAG relative-luminance calculation for the primary color, calculate contrast ratio against both candidate text colors, and choose the candidate with the higher contrast ratio. If the ratios are exactly equal, choose `#111111` as the deterministic tie-breaker.
 
-- very dark brand colors select white text,
-- very light brand colors select dark text.
-
-The calculation must be deterministic and covered by unit tests.
+Tests must include both very dark and very light primary colors.
 
 ## 10. Semantic Color Isolation
 
@@ -198,7 +203,7 @@ Public branding fetch/parsing should live in a small isolated client/helper rath
 Responsibilities:
 
 - call `/api/public/branding`,
-- apply the bounded timeout,
+- enforce the exact `3000 ms` timeout,
 - parse and validate the exact Task 2 public response contract,
 - enforce Demo masking again on the client as defense in depth,
 - return either normalized branding or a typed fallback result,
@@ -246,6 +251,7 @@ Semantic status visuals must not be migrated to brand tokens.
 - No fatal error page.
 - Use fallback branding.
 - Continue rendering the application.
+- No automatic retry during the same provider lifecycle.
 
 ### Malformed `brandColor`
 
@@ -290,8 +296,9 @@ Cover at least:
 - a red brand,
 - normalization behavior,
 - malformed/missing input fallback,
-- deterministic hover/soft values,
-- contrast selection.
+- exact 12% black hover formula,
+- exact 88% white soft formula,
+- WCAG contrast selection and tie-break behavior.
 
 ### 16.2 Semantic isolation tests
 
@@ -303,11 +310,11 @@ Cover:
 
 - valid paid branding response,
 - Demo response masking,
-- timeout fallback,
+- exactly `3000 ms` timeout behavior using fake timers or an equivalent deterministic clock,
 - HTTP error fallback,
 - malformed payload fallback,
 - malformed color fallback,
-- absence of uncontrolled retry loops.
+- no automatic retry during one provider lifecycle.
 
 ### 16.4 Provider/root tests
 
@@ -353,17 +360,22 @@ Task 3 is not complete from CI/unit tests alone.
 
 A real Pages + D1 smoke must verify at least Pro and Demo packages from the immutable Task 3 candidate.
 
+The final smoke workflow must use a headless Chromium browser against the deployed stable Pages URLs so DOM/root CSS variables are verified in the actual deployed runtime rather than inferred only from API output or static bundle text. The implementation plan must pin the browser test tooling/version used by CI so the verification is reproducible.
+
 ### Pro smoke
 
 Must prove:
 
 - migrations apply successfully with no new Task 3 migration,
 - setup and public branding endpoint work,
-- custom paid `brandColor` reaches the boot/runtime contract,
-- expected root CSS brand tokens are produced/applied by the deployed app bundle or equivalent browser/runtime verification harness,
-- public branding failure/fallback behavior is exercised in a deterministic test path where practical,
-- logo/contact public values remain consumable by context without exposing private fields,
+- custom paid `brandColor` reaches the runtime,
+- deployed browser reaches the intended application surface after boot,
+- `getComputedStyle(document.documentElement)` reports the expected `--brand-primary`, `--brand-primary-hover`, `--brand-soft`, and `--brand-contrast` values,
+- semantic token values remain unchanged while a non-default brand is active,
+- logo/contact public values are present in context/runtime without exposing private fields,
 - existing backup/restore baseline remains healthy enough to detect major runtime/package regression.
+
+Fallback behavior must also be proven deterministically in automated tests; the real smoke may use an interceptable browser request or an explicit test-only harness path if the implementation plan can do so without changing the production public API contract.
 
 ### Demo smoke
 
@@ -371,9 +383,10 @@ Must prove:
 
 - first setup dorm name remains available,
 - `whiteLabelEnabled=false`,
-- default brand is used,
+- default brand `#1DB954` is applied,
 - logo/contact paid overrides are not consumed,
-- application boots successfully on the deployed Demo package.
+- deployed browser completes boot successfully,
+- root CSS brand tokens match the default-derived token set.
 
 All temporary Cloudflare Pages and D1 resources must be cleaned up even when smoke assertions fail.
 
@@ -406,24 +419,25 @@ Task 3 is complete only when all of the following are true:
 
 1. ThemeProvider covers Login, Main App, Tenant Portal, and LINE Registration.
 2. Public branding is fetched once during normal root boot.
-3. Branding boot has an approximately 3-second bounded timeout.
-4. Network/API/malformed failures render the app with safe defaults.
+3. Branding boot timeout is exactly `3000 ms`.
+4. Network/API/malformed failures render the app with safe defaults and no automatic retry loop.
 5. Neutral boot state prevents default-brand-to-tenant-brand visual flash.
 6. `#1DB954` remains the default brand.
 7. `--brand-primary`, `--brand-primary-hover`, `--brand-soft`, and `--brand-contrast` are defined and applied centrally.
-8. Token derivation is pure, deterministic, and unit tested.
-9. Contrast selection handles both very light and very dark brand colors.
-10. Semantic success/warning/danger/info colors remain independent from the brand color.
-11. Demo masks color/logo/contact overrides and retains setup dorm name.
-12. Existing light/dark theme behavior remains functional.
-13. No new D1 migration is introduced.
-14. No Task 2 public API field expansion is introduced.
-15. No Settings branding editor is introduced in Task 3.
-16. One Master package generation remains intact for all four plans.
-17. Fresh tests, lint, types, Pages build, VPS build, package/release gates pass.
-18. Real Pro + Demo Cloudflare Pages/D1 smoke passes.
-19. Temporary Cloudflare resources are cleaned up on success and failure.
-20. Completion is recorded only after source/release evidence and real deployment evidence are available.
+8. Hover is exactly 88% primary + 12% black using rounded RGB channels.
+9. Soft is exactly 12% primary + 88% white using rounded RGB channels.
+10. Contrast uses WCAG relative luminance and chooses the better of `#FFFFFF` and `#111111`.
+11. Semantic success/warning/danger/info colors remain independent from the brand color.
+12. Demo masks color/logo/contact overrides and retains setup dorm name.
+13. Existing light/dark theme behavior remains functional.
+14. No new D1 migration is introduced.
+15. No Task 2 public API field expansion is introduced.
+16. No Settings branding editor is introduced in Task 3.
+17. One Master package generation remains intact for all four plans.
+18. Fresh tests, lint, types, Pages build, VPS build, package/release gates pass.
+19. Real Pro + Demo Cloudflare Pages/D1 smoke passes with headless-browser verification of root CSS tokens.
+20. Temporary Cloudflare resources are cleaned up on success and failure.
+21. Completion is recorded only after source/release evidence and real deployment evidence are available.
 
 ## 22. Follow-up Boundary
 
