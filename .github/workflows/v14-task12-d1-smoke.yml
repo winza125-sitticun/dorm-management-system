@@ -1,0 +1,250 @@
+# Task 12 D1 smoke gate
+name: V14 Task 12 Cloudflare D1 Smoke
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - agent/v14-task12-production-gate
+    paths:
+      - .github/workflows/v14-task12-d1-smoke.yml
+      - .github/scripts/v14_task12_d1_smoke.py
+      - .github/scripts/v14_task12_wrangler_config.py
+      - .github/scripts/test_v14_task12_d1_smoke.py
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: v14-task12-d1-smoke-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  SOURCE_GATE_RUN_ID: '31980850645'
+  SOURCE_ARTIFACT_NAME: v14-task12-candidate-pending-d1-smoke
+  PRO_CANDIDATE_ZIP: candidate-artifact/v14-work/release-v14/dorm-management-system-pro-v14-CUSTOMER-READY.zip
+  CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+  CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+jobs:
+  d1-smoke:
+    name: disposable Pages + D1 backup restore smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    environment: "fulfilling-communication / production"
+
+    steps:
+      - name: Checkout gate branch
+        uses: actions/checkout@v4
+
+      - name: Require Cloudflare GitHub Secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${CLOUDFLARE_API_TOKEN:-}" ]; then
+            echo "::error::Missing GitHub Secret CLOUDFLARE_API_TOKEN"
+            exit 1
+          fi
+          if [ -z "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then
+            echo "::error::Missing GitHub Secret CLOUDFLARE_ACCOUNT_ID"
+            exit 1
+          fi
+          echo "Cloudflare credential presence gate passed."
+
+      - name: Download immutable V14 candidate artifact
+        uses: actions/download-artifact@v5
+        with:
+          name: ${{ env.SOURCE_ARTIFACT_NAME }}
+          path: candidate-artifact
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ env.SOURCE_GATE_RUN_ID }}
+
+      - name: Verify candidate hashes and extract Pro package
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f "$PRO_CANDIDATE_ZIP"
+          test -f candidate-artifact/v14-work/TASK12_GITHUB_CANDIDATE_SHA256.txt
+          (
+            cd candidate-artifact/v14-work
+            sha256sum --check --strict TASK12_GITHUB_CANDIDATE_SHA256.txt
+          )
+          PRO_SHA256="$(sha256sum "$PRO_CANDIDATE_ZIP" | awk '{print $1}')"
+          echo "SMOKE_CANDIDATE_SHA256=$PRO_SHA256" >> "$GITHUB_ENV"
+          rm -rf smoke-work
+          mkdir smoke-work
+          unzip -q "$PRO_CANDIDATE_ZIP" -d smoke-work
+          test -f smoke-work/package.json
+          test -f smoke-work/package-lock.json
+          test -f smoke-work/wrangler.template.jsonc
+          test -d smoke-work/d1-migrations
+
+      - name: Run smoke harness unit tests
+        run: python3 .github/scripts/test_v14_task12_d1_smoke.py -v
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: smoke-work/package-lock.json
+
+      - name: Install candidate dependencies
+        working-directory: smoke-work
+        run: npm ci
+
+      - name: Allocate unique temporary resource names
+        shell: bash
+        run: |
+          set -euo pipefail
+          RUN_PART="$(printf '%s' "$GITHUB_RUN_ID" | tr -cd '0-9' | tail -c 14)"
+          ATTEMPT_PART="$(printf '%s' "$GITHUB_RUN_ATTEMPT" | tr -cd '0-9')"
+          PAGES_NAME="v14-task12-smoke-${RUN_PART}-${ATTEMPT_PART}"
+          D1_NAME="${PAGES_NAME}-db"
+          echo "SMOKE_PAGES_NAME=$PAGES_NAME" >> "$GITHUB_ENV"
+          echo "SMOKE_D1_NAME=$D1_NAME" >> "$GITHUB_ENV"
+          echo "Temporary Pages project: $PAGES_NAME"
+          echo "Temporary D1 database: $D1_NAME"
+
+      - name: Create temporary D1 database
+        working-directory: smoke-work
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx wrangler d1 create "$SMOKE_D1_NAME" --location apac
+          npx wrangler d1 info "$SMOKE_D1_NAME" --json > ../d1-info.json
+
+      - name: Resolve D1 UUID and render active Wrangler config
+        shell: bash
+        run: |
+          set -euo pipefail
+          D1_ID="$(python3 - <<'PY'
+          import importlib.util
+          import sys
+          from pathlib import Path
+
+          module_path = Path('.github/scripts/v14_task12_d1_smoke.py')
+          spec = importlib.util.spec_from_file_location('smoke', module_path)
+          smoke = importlib.util.module_from_spec(spec)
+          sys.modules[spec.name] = smoke
+          spec.loader.exec_module(smoke)
+          info = smoke.parse_wrangler_json(Path('d1-info.json').read_text(encoding='utf-8'))
+          if isinstance(info, list):
+              info = info[0] if info else {}
+          if not isinstance(info, dict):
+              raise SystemExit('D1 info JSON is not an object')
+          database_id = info.get('uuid') or info.get('id') or info.get('database_id')
+          if not database_id:
+              raise SystemExit('D1 UUID missing from wrangler d1 info --json')
+          print(database_id)
+          PY
+          )"
+          echo "SMOKE_D1_ID=$D1_ID" >> "$GITHUB_ENV"
+          export SMOKE_D1_ID="$D1_ID"
+          python3 - <<'PY'
+          import importlib.util
+          import os
+          import sys
+          from pathlib import Path
+
+          module_path = Path('.github/scripts/v14_task12_wrangler_config.py')
+          spec = importlib.util.spec_from_file_location('config_helper', module_path)
+          config_helper = importlib.util.module_from_spec(spec)
+          sys.modules[spec.name] = config_helper
+          spec.loader.exec_module(config_helper)
+          template_path = Path('smoke-work/wrangler.template.jsonc')
+          rendered = config_helper.build_wrangler_config(
+              template_path.read_text(encoding='utf-8'),
+              os.environ['SMOKE_PAGES_NAME'],
+              os.environ['SMOKE_D1_NAME'],
+              os.environ['SMOKE_D1_ID'],
+          )
+          Path('smoke-work/wrangler.jsonc').write_text(rendered, encoding='utf-8')
+          PY
+          grep -q '"binding": "DB"' smoke-work/wrangler.jsonc
+          ! grep -q 'REPLACE_WITH_YOUR' smoke-work/wrangler.jsonc
+
+      - name: Create temporary Pages project
+        working-directory: smoke-work
+        run: npx wrangler pages project create "$SMOKE_PAGES_NAME" --production-branch main
+
+      - name: Set temporary JWT secret
+        working-directory: smoke-work
+        shell: bash
+        run: |
+          set -euo pipefail
+          JWT_SECRET="$(python3 -c 'import secrets; print(secrets.token_urlsafe(48))')"
+          printf '%s\n' "$JWT_SECRET" | npx wrangler pages secret put JWT_SECRET --project-name "$SMOKE_PAGES_NAME"
+          unset JWT_SECRET
+
+      - name: Apply remote D1 migrations
+        working-directory: smoke-work
+        run: npx wrangler d1 migrations apply DB --remote --config wrangler.jsonc
+
+      - name: Build candidate Pages bundle
+        working-directory: smoke-work
+        run: npm run build:pages
+
+      - name: Deploy candidate to temporary Pages project
+        id: deploy
+        working-directory: smoke-work
+        shell: bash
+        run: |
+          set -euo pipefail
+          DEPLOY_OUTPUT="$(npx wrangler pages deploy dist --project-name "$SMOKE_PAGES_NAME" --branch main --commit-hash "$GITHUB_SHA" --commit-dirty=true)"
+          printf '%s\n' "$DEPLOY_OUTPUT"
+          DEPLOY_URL="$(printf '%s\n' "$DEPLOY_OUTPUT" | grep -Eo 'https://[A-Za-z0-9.-]+\.pages\.dev' | tail -n 1)"
+          if [ -z "$DEPLOY_URL" ]; then
+            echo "::error::Unable to resolve Pages deployment URL"
+            exit 1
+          fi
+          echo "SMOKE_BASE_URL=$DEPLOY_URL" >> "$GITHUB_ENV"
+          echo "base_url=$DEPLOY_URL" >> "$GITHUB_OUTPUT"
+
+      - name: Run real backup and restore D1 smoke
+        env:
+          SMOKE_WORKDIR: ${{ github.workspace }}/smoke-work
+          SMOKE_EVIDENCE_PATH: ${{ github.workspace }}/v14-task12-d1-smoke-evidence.json
+        run: python3 .github/scripts/v14_task12_d1_smoke.py
+
+      - name: Inspect sanitized smoke evidence
+        if: always()
+        shell: bash
+        run: |
+          if [ -f v14-task12-d1-smoke-evidence.json ]; then
+            cat v14-task12-d1-smoke-evidence.json
+          else
+            echo "No smoke evidence file was produced before the failing gate."
+          fi
+
+      - name: Cleanup temporary Cloudflare resources
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          if [ -d smoke-work ] && [ -n "${SMOKE_PAGES_NAME:-}" ]; then
+            (cd smoke-work && npx wrangler pages project delete "$SMOKE_PAGES_NAME" --yes)
+            PAGES_CLEANUP=$?
+          else
+            PAGES_CLEANUP=0
+          fi
+          if [ -d smoke-work ] && [ -n "${SMOKE_D1_NAME:-}" ]; then
+            (cd smoke-work && npx wrangler d1 delete "$SMOKE_D1_NAME" --skip-confirmation)
+            D1_CLEANUP=$?
+          else
+            D1_CLEANUP=0
+          fi
+          echo "Pages cleanup exit: $PAGES_CLEANUP"
+          echo "D1 cleanup exit: $D1_CLEANUP"
+          exit 0
+
+      - name: Upload sanitized D1 smoke evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v14-task12-d1-smoke-evidence
+          path: v14-task12-d1-smoke-evidence.json
+          if-no-files-found: warn
+          retention-days: 14

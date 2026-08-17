@@ -1,0 +1,143 @@
+name: V14 Task 12 Production Gate
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - agent/v14-task12-production-gate
+    paths:
+      - v14-input/dorm-management-system-master-v14-REVIEW-R2.zip
+      - .github/workflows/v14-task12-production-gate.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v14-task12-production-gate
+  cancel-in-progress: true
+
+env:
+  V14_SOURCE_ZIP: v14-input/dorm-management-system-master-v14-REVIEW-R2.zip
+  V14_SOURCE_SHA256: 32f89c1f27ad90b4d38515822560646d004519310948099d70812a46264c3830
+
+jobs:
+  production-gate:
+    name: npm ci + tests + lint + types + build + release
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout gate branch
+        uses: actions/checkout@v4
+
+      - name: Require and verify Master V14 R2 ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f "$V14_SOURCE_ZIP" || {
+            echo "Missing $V14_SOURCE_ZIP"
+            exit 1
+          }
+          echo "$V14_SOURCE_SHA256  $V14_SOURCE_ZIP" | sha256sum --check --strict
+
+      - name: Extract Master V14 R2
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf v14-work
+          mkdir v14-work
+          unzip -q "$V14_SOURCE_ZIP" -d v14-work
+          test -f v14-work/package.json
+          test -f v14-work/package-lock.json
+          test -f v14-work/wrangler.master.jsonc
+
+      - name: Apply Revision 3 TypeScript narrowing fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('v14-work/functions/api/[[path]].ts')
+          old = 'if (!bodyResult.ok) return errorResponse(bodyResult.code, bodyResult.message, bodyResult.status);'
+          new = 'if (bodyResult.ok === false) return errorResponse(bodyResult.code, bodyResult.message, bodyResult.status);'
+          source = path.read_text(encoding='utf-8')
+          old_count = source.count(old)
+          new_count_before = source.count(new)
+          if old_count != 2:
+              raise SystemExit(f'Expected exactly 2 R2 narrowing guards, found {old_count}')
+          source = source.replace(old, new)
+          path.write_text(source, encoding='utf-8')
+          patched = path.read_text(encoding='utf-8')
+          if patched.count(old) != 0:
+              raise SystemExit('Revision 3 old narrowing guards remain')
+          if patched.count(new) != new_count_before + old_count:
+              raise SystemExit('Revision 3 patch count verification failed')
+          PY
+
+      - name: Create immutable Master V14 R3 candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f dorm-management-system-master-v14-REVIEW-R3-CI.zip
+          (cd v14-work && zip -qr ../dorm-management-system-master-v14-REVIEW-R3-CI.zip .)
+          unzip -t dorm-management-system-master-v14-REVIEW-R3-CI.zip >/dev/null
+          sha256sum dorm-management-system-master-v14-REVIEW-R3-CI.zip | tee MASTER_V14_R3_CI_SHA256.txt
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: v14-work/package-lock.json
+
+      - name: Fresh dependency install
+        working-directory: v14-work
+        run: npm ci
+
+      - name: Full test suite
+        working-directory: v14-work
+        run: npm test
+
+      - name: TypeScript lint gate
+        working-directory: v14-work
+        run: npm run lint
+
+      - name: Cloudflare types gate
+        working-directory: v14-work
+        run: npm run check:cloudflare-types:master
+
+      - name: Production Pages build
+        working-directory: v14-work
+        run: npm run build:pages
+
+      - name: Generate PREVIEW packages
+        working-directory: v14-work
+        run: npm run packages:generate
+
+      - name: Run guarded release builder
+        working-directory: v14-work
+        run: npm run packages:release
+
+      - name: Record candidate SHA-256
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd v14-work
+          sha256sum release-v14/*.zip | tee TASK12_GITHUB_CANDIDATE_SHA256.txt
+
+      - name: Upload V14 candidate artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: v14-task12-candidate-pending-d1-smoke
+          path: |
+            dorm-management-system-master-v14-REVIEW-R3-CI.zip
+            MASTER_V14_R3_CI_SHA256.txt
+            v14-work/release-v14/**
+            v14-work/TASK12_GITHUB_CANDIDATE_SHA256.txt
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Gate notice
+        shell: bash
+        run: |
+          echo 'Source/release gate passed. These artifacts remain pending the temporary Cloudflare D1 end-to-end smoke restore required by Task 12.'
