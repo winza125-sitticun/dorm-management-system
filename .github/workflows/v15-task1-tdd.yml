@@ -43,7 +43,8 @@ jobs:
 
       - name: Apply Task 1 RED test only
         working-directory: source
-        run: git apply ../v15-patches/001-task1-test.patch
+        shell: bash
+        run: patch -p1 < ../v15-patches/001-task1-test.patch
 
       - name: Use Node.js 22
         uses: actions/setup-node@v4
@@ -73,7 +74,8 @@ jobs:
 
       - name: Apply Task 1 implementation
         working-directory: source
-        run: git apply ../v15-patches/002-task1-impl.patch
+        shell: bash
+        run: patch -p1 < ../v15-patches/002-task1-impl.patch
 
       - name: Verify Task 1 GREEN
         working-directory: source
