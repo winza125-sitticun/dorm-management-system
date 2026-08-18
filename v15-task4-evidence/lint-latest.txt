@@ -1,0 +1,8 @@
+
+> dorm-management-system-master@1.1.0 lint
+> tsc --noEmit && tsc -p tsconfig.cloudflare.json
+
+src/components/SettingsView.tsx(641,21): error TS2339: Property 'error' does not exist on type '{ ok: true; } | { ok: false; error: string; }'.
+  Property 'error' does not exist on type '{ ok: true; }'.
+src/components/SettingsView.tsx(702,28): error TS2339: Property 'error' does not exist on type 'ValidationResult<NormalizedWhiteLabelDraft>'.
+  Property 'error' does not exist on type '{ ok: true; value: NormalizedWhiteLabelDraft; }'.
