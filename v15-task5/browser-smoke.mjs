@@ -177,7 +177,7 @@ try {
   if (!menuPoint || menuPoint.width <= 0 || menuPoint.height <= 0) throw new Error(`mobile menu button not found: ${JSON.stringify(menuPoint)}`);
   await send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: menuPoint.x, y: menuPoint.y, radiusX: 2, radiusY: 2, force: 1 }] });
   await send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
-  await waitFor('document.querySelector("nav[aria-label=\"เมนูหลักบนมือถือ\"]") !== null', 'mobile drawer');
+  await waitFor(`document.querySelector('nav[aria-label="เมนูหลักบนมือถือ"]') !== null`, 'mobile drawer');
   await sleep(500);
 
   const mobileState = await evaluate(`(() => {
