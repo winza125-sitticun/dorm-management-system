@@ -205,7 +205,7 @@ jobs:
           (cd demo-work && npx wrangler d1 execute DB --remote --config wrangler.jsonc --command "UPDATE settings SET dorm_name='Task 6 Demo Dorm', brand_color='#DC2626', contact_phone='0899999999', bill_footer='Task 6 Hidden Demo Footer' WHERE user_id=${DEMO_OWNER};")
           python3 - <<'PY'
           import json
-          logo='data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Z0XcAAAAASUVORK5CYII='
+          logo='data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAFElEQVR4nGPM1bj5n4GBgYGJAQoAJJwCcQA3o6cAAAAASUVORK5CYII='
           open('pro-logo.json','w').write(json.dumps({'logoDataUri':logo}))
           PY
           PRO_TOKEN="$(cat pro-token.txt)"
