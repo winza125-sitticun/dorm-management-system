@@ -88,7 +88,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          (cd work && git apply --check ../task6.patch && git apply ../task6.patch)
+          git apply --check --directory=work task6.patch
+          git apply --directory=work task6.patch
           cp v15-task6/bill-branding-snapshot.test.ts work/tests/bill-branding-snapshot.test.ts
           echo 'eb4678e87fc1bd5aa3bd891c7ae0bd89095b28f410951ff91cc86a4825a5cb97  work/src/components/BillInvoice.tsx' | sha256sum --check --strict
           echo 'e7d2a31d71cd8615425dc50dec6b0065ba6a81523cf6fecd8a9a40cbac4acaaa  work/src/utils/billBranding.ts' | sha256sum --check --strict
