@@ -1,0 +1,12 @@
+diff --git a/src/App.tsx b/src/App.tsx
+index 35c9637..7731f39 100644
+--- a/src/App.tsx
++++ b/src/App.tsx
+@@ -1099,6 +1099,7 @@ function MainAppContent() {
+                 settings={settings}
+                 loading={settingsLoading}
+                 onUpdateSettings={updateSettings}
++                onRefreshSettings={fetchSettings}
+                 idToken={idToken}
+                 userProfile={userProfile}
+                 onRestoreSuccess={triggerRefreshData}
