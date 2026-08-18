@@ -1,0 +1,99 @@
+diff --git a/src/utils/whiteLabelSettings.ts b/src/utils/whiteLabelSettings.ts
+new file mode 100644
+index 0000000..e6d7f02
+--- /dev/null
++++ b/src/utils/whiteLabelSettings.ts
+@@ -0,0 +1,93 @@
++import { DEFAULT_BRAND_COLOR, normalizeBrandColor } from '../theme/brandTheme.ts';
++
++export const WHITE_LABEL_LOGO_MAX_BYTES = 307_200 as const;
++
++export type WhiteLabelDraft = {
++  dormName: string;
++  brandColor: string;
++  contactPhone: string;
++  billFooter: string;
++};
++
++export type NormalizedWhiteLabelDraft = {
++  dormName: string;
++  brandColor: string | null;
++  contactPhone: string | null;
++  billFooter: string | null;
++};
++
++type ValidationResult<T> = { ok: true; value: T } | { ok: false; error: string };
++
++const COLOR_RE = /^#[0-9A-Fa-f]{6}$/;
++const PHONE_RE = /^[0-9 +\-().]*$/;
++const HTML_RE = /<[^>]*>/;
++const LOGO_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp']);
++
++export function normalizeWhiteLabelDraft(input: WhiteLabelDraft): ValidationResult<NormalizedWhiteLabelDraft> {
++  const dormName = input.dormName.trim();
++  if (!dormName) return { ok: false, error: 'กรุณากรอกชื่อหอพัก' };
++  if (dormName.length > 120) return { ok: false, error: 'ชื่อหอพักต้องไม่เกิน 120 ตัวอักษร' };
++  if (HTML_RE.test(dormName)) return { ok: false, error: 'ชื่อหอพักต้องเป็นข้อความธรรมดา' };
++
++  const rawBrandColor = input.brandColor.trim();
++  if (rawBrandColor && !COLOR_RE.test(rawBrandColor)) {
++    return { ok: false, error: 'สีหลักต้องอยู่ในรูป #RRGGBB' };
++  }
++
++  const contactPhone = input.contactPhone.trim();
++  if (contactPhone.length > 32 || (contactPhone && !PHONE_RE.test(contactPhone))) {
++    return { ok: false, error: 'เบอร์โทรมีรูปแบบไม่ถูกต้อง' };
++  }
++
++  const billFooter = input.billFooter.trim();
++  if (billFooter.length > 500) return { ok: false, error: 'ข้อความท้ายบิลต้องไม่เกิน 500 ตัวอักษร' };
++  if (HTML_RE.test(billFooter)) return { ok: false, error: 'ข้อความท้ายบิลต้องเป็นข้อความธรรมดา' };
++
++  return {
++    ok: true,
++    value: {
++      dormName,
++      brandColor: rawBrandColor ? rawBrandColor.toUpperCase() : null,
++      contactPhone: contactPhone || null,
++      billFooter: billFooter || null,
++    },
++  };
++}
++
++export function validateLogoFileMeta(file: Pick<File, 'type' | 'size'>): { ok: true } | { ok: false; error: string } {
++  if (!LOGO_TYPES.has(file.type)) {
++    return { ok: false, error: 'รองรับเฉพาะ PNG, JPEG และ WebP' };
++  }
++  if (!Number.isFinite(file.size) || file.size < 1) {
++    return { ok: false, error: 'ไฟล์โลโก้ว่างหรือไม่ถูกต้อง' };
++  }
++  if (file.size > WHITE_LABEL_LOGO_MAX_BYTES) {
++    return { ok: false, error: 'โลโก้ต้องมีขนาดไม่เกิน 300 KB' };
++  }
++  return { ok: true };
++}
++
++export function effectivePreviewBranding(input: {
++  whiteLabelEnabled: boolean;
++  dormName: string;
++  brandColor: string | null | undefined;
++  contactPhone: string | null | undefined;
++  savedLogoDataUri: string | null | undefined;
++  pendingLogoDataUri: string | null | undefined;
++}): {
++  dormName: string;
++  brandColor: string;
++  contactPhone: string | null;
++  logoDataUri: string | null;
++} {
++  const dormName = input.dormName.trim() || 'หอพักของฉัน';
++  if (!input.whiteLabelEnabled) {
++    return { dormName, brandColor: DEFAULT_BRAND_COLOR, contactPhone: null, logoDataUri: null };
++  }
++  return {
++    dormName,
++    brandColor: normalizeBrandColor(input.brandColor),
++    contactPhone: input.contactPhone?.trim() || null,
++    logoDataUri: input.pendingLogoDataUri || input.savedLogoDataUri || null,
++  };
++}
