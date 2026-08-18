@@ -7,23 +7,39 @@ on:
     paths: ['.github/workflows/v15-task5-smoke-trigger.yml']
 
 permissions:
-  actions: write
-  contents: read
+  contents: write
 
 jobs:
-  dispatch:
+  trigger:
     runs-on: ubuntu-latest
     steps:
-      - name: Dispatch canonical Task 5 Cloudflare browser smoke
+      - name: Touch canonical Task 5 smoke workflow
         env:
           GH_TOKEN: ${{ github.token }}
+          BRANCH: agent/v15-task1-white-label-contract
+          TARGET: .github/workflows/v15-task5-cloudflare-browser-smoke.yml
         shell: bash
         run: |
           set -euo pipefail
-          curl --fail --silent --show-error -X POST \
+          curl --fail --silent --show-error \
             -H "Authorization: Bearer ${GH_TOKEN}" \
             -H "Accept: application/vnd.github+json" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
-            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/v15-task5-cloudflare-browser-smoke.yml/dispatches" \
-            -d '{"ref":"agent/v15-task1-white-label-contract"}'
-          echo 'Canonical Task 5 smoke dispatched.'
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/contents/${TARGET}?ref=${BRANCH}" > workflow.json
+          sha="$(jq -r '.sha' workflow.json)"
+          jq -r '.content' workflow.json | tr -d '\n' | base64 -d > workflow.yml
+          printf '\n# fresh physical-click smoke trigger: %s\n' "$GITHUB_RUN_ID" >> workflow.yml
+          base64 -w0 workflow.yml > workflow.b64
+          jq -n \
+            --arg message 'ci(v15-task5): trigger fresh physical-click smoke' \
+            --arg content "$(cat workflow.b64)" \
+            --arg sha "$sha" \
+            --arg branch "$BRANCH" \
+            '{message:$message,content:$content,sha:$sha,branch:$branch}' > update.json
+          curl --fail --silent --show-error -X PUT \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/contents/${TARGET}" \
+            --data @update.json > result.json
+          jq -r '.commit.sha' result.json
