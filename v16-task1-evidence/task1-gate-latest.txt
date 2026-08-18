@@ -1,0 +1,8 @@
+run_id=32194494469
+run_attempt=1
+source_sha=4cce33ce8e755e9cce47bdbdaf3eee2c17848fe4
+job_status=failure
+base_artifact_id=9330679827
+base_artifact_sha256=5f6e65ae856c1196fcd3a2e3dd7bcffb4da863ab212d3595839e921f0a96e1cf
+base_master_sha256=d05ee110815a29b74498e17adac1b8355dec40d5a705dd016f5ad5f849caa9e9
+customer_ready=false
