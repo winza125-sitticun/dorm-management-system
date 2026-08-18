@@ -18,7 +18,7 @@ env:
   SOURCE_ARTIFACT_ID: '9309202126'
   SOURCE_ARTIFACT_SHA256: '88fd5b025071db5437c956a731bf721d9c62d471af5853ed92d8ff7b041b4bc0'
   SOURCE_ARTIFACT_DIGEST: 'sha256:88fd5b025071db5437c956a731bf721d9c62d471af5853ed92d8ff7b041b4bc0'
-  BROWSER_HARNESS_BLOB: '3481797aa8a81a4b35130cb5f7005ac14fb3a5fb'
+  BROWSER_HARNESS_BLOB: 'f637478f9bbc4f11754ed4a7ac7ced22e9383b83'
   CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
   CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
@@ -224,7 +224,7 @@ jobs:
           assert d['brandColor'] is None and d['contactPhone'] is None and d['logoDataUri'] is None and d['whiteLabelEnabled'] is False
           PY
 
-      - name: Browser smoke Pro login, desktop shell and mobile drawer
+      - name: Browser smoke Pro login desktop and visible mobile shell
         shell: bash
         env:
           SMOKE_BASE_URL: ${{ env.PRO_URL }}
@@ -239,7 +239,7 @@ jobs:
           C="$(command -v google-chrome || command -v chromium || command -v chromium-browser || true)"; test -n "$C"
           CHROME_BIN="$C" node v15-task5/browser-smoke.mjs
 
-      - name: Browser smoke Demo masking, desktop shell and mobile drawer
+      - name: Browser smoke Demo masking desktop and visible mobile shell
         shell: bash
         env:
           SMOKE_BASE_URL: ${{ env.DEMO_URL }}
@@ -292,7 +292,8 @@ jobs:
           for f in ('pro-browser.json','demo-browser.json'):
               d=json.load(open(f)); assert d.get('overallPass') is True, (f,d)
               assert d['login']['dormVisible'] and d['desktop']['dormVisible'] and d['mobile']['dormVisible'], f
-              assert d['desktop']['activeBrandClass'] and d['mobile']['activeBrandClass'], f
+              assert d['desktop']['activeBrandClass'] and d['desktop']['activeContrastClass'], f
+              assert d['mobile']['headerVisible'] and d['mobile']['menuButtonVisible'] and d['mobile']['desktopAsideHidden'], f
           c=json.load(open('cleanup-evidence.json')); assert all(c[k]==0 for k in c), c
           PY
 
