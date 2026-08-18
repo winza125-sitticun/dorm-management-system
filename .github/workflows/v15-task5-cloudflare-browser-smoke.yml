@@ -131,10 +131,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          (cd pro-work && npm run build:pages && npx wrangler pages deploy dist --project-name "$PRO_PAGES" --branch main --commit-hash "$GITHUB_SHA" --commit-dirty=true)
-          (cd demo-work && npm run build:pages && npx wrangler pages deploy dist --project-name "$DEMO_PAGES" --branch main --commit-hash "$GITHUB_SHA" --commit-dirty=true)
-          echo "PRO_URL=https://${PRO_PAGES}.pages.dev" >> "$GITHUB_ENV"
-          echo "DEMO_URL=https://${DEMO_PAGES}.pages.dev" >> "$GITHUB_ENV"
+          (cd pro-work && npm run build:pages)
+          (cd pro-work && npx wrangler pages deploy dist --project-name "$PRO_PAGES" --branch main --commit-hash "$GITHUB_SHA" --commit-dirty=true) | tee pro-deploy.log
+          (cd demo-work && npm run build:pages)
+          (cd demo-work && npx wrangler pages deploy dist --project-name "$DEMO_PAGES" --branch main --commit-hash "$GITHUB_SHA" --commit-dirty=true) | tee demo-deploy.log
+          PRO_DEPLOY_URL="$(grep -Eo 'https://[^[:space:]]+\.pages\.dev' pro-deploy.log | tail -n1)"
+          DEMO_DEPLOY_URL="$(grep -Eo 'https://[^[:space:]]+\.pages\.dev' demo-deploy.log | tail -n1)"
+          test -n "$PRO_DEPLOY_URL" && test -n "$DEMO_DEPLOY_URL"
+          case "$PRO_DEPLOY_URL" in https://*.$PRO_PAGES.pages.dev) ;; *) echo "unexpected Pro deployment URL: $PRO_DEPLOY_URL" >&2; exit 1;; esac
+          case "$DEMO_DEPLOY_URL" in https://*.$DEMO_PAGES.pages.dev) ;; *) echo "unexpected Demo deployment URL: $DEMO_DEPLOY_URL" >&2; exit 1;; esac
+          echo "PRO_URL=$PRO_DEPLOY_URL" >> "$GITHUB_ENV"
+          echo "DEMO_URL=$DEMO_DEPLOY_URL" >> "$GITHUB_ENV"
 
       - name: Create real Pro and Demo owners and verify login
         shell: bash
@@ -153,9 +160,9 @@ jobs:
           PY
           for kind in pro demo; do
             urlvar="${kind^^}_URL"; url="${!urlvar}"
-            curl --fail --silent --show-error --retry 8 --retry-all-errors --retry-delay 2 \
+            curl --fail --silent --show-error --retry 12 --retry-all-errors --retry-delay 2 \
               -H 'Content-Type: application/json' --data "@$kind-setup-request.json" "$url/api/setup/init" > "$kind-setup.json"
-            curl --fail --silent --show-error --retry 8 --retry-all-errors --retry-delay 2 \
+            curl --fail --silent --show-error --retry 12 --retry-all-errors --retry-delay 2 \
               -H 'Content-Type: application/json' --data "@$kind-login-request.json" "$url/api/auth/login" > "$kind-login.json"
           done
           python3 - <<'PY'
