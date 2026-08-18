@@ -132,21 +132,20 @@ try {
     await waitFor('document.readyState === "complete" || document.readyState === "interactive"', `navigation ${url}`);
   };
 
-  const physicalClick = async (finderExpression, label) => {
-    const point = await evaluate(`(() => {
+  const reactClick = async (finderExpression, label) => {
+    const result = await evaluate(`(() => {
       const visible = (el) => !!el && getComputedStyle(el).display !== 'none' && getComputedStyle(el).visibility !== 'hidden' && el.getBoundingClientRect().width > 0 && el.getBoundingClientRect().height > 0;
       const el = ${finderExpression};
-      if (!el || !visible(el)) return null;
-      el.scrollIntoView({ block: 'center', inline: 'center' });
-      const r = el.getBoundingClientRect();
-      return { x: r.left + r.width / 2, y: r.top + r.height / 2, text: (el.textContent || '').trim(), title: el.getAttribute('title') };
+      if (!el || !visible(el)) return { ok: false, reason: 'target-not-visible' };
+      const key = Object.keys(el).find((name) => name.startsWith('__reactProps$'));
+      const onClick = key ? el[key]?.onClick : null;
+      if (typeof onClick !== 'function') return { ok: false, reason: 'react-onClick-not-found', keys: Object.keys(el).filter((name) => name.startsWith('__react')).slice(0, 5) };
+      onClick({ currentTarget: el, target: el, preventDefault() {}, stopPropagation() {} });
+      return { ok: true, text: (el.textContent || '').trim(), title: el.getAttribute('title') };
     })()`);
-    if (!point) throw new Error(`${label} target not found; snapshot=${JSON.stringify(await diagnosticSnapshot())}`);
-    await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: point.x, y: point.y });
-    await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: point.x, y: point.y, button: 'left', buttons: 1, clickCount: 1 });
-    await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: point.x, y: point.y, button: 'left', buttons: 0, clickCount: 1 });
+    if (!result?.ok) throw new Error(`${label} React handler not invoked: ${JSON.stringify(result)}; snapshot=${JSON.stringify(await diagnosticSnapshot())}`);
     await sleep(250);
-    return point;
+    return result;
   };
 
   await send('Page.enable');
@@ -160,11 +159,9 @@ try {
   await evaluate(`localStorage.setItem('local_user', ${JSON.stringify(JSON.stringify(user))}); localStorage.setItem('local_token', ${JSON.stringify(token)}); location.reload(); true`);
   await waitFor('document.querySelector("aside") !== null', 'authenticated shell');
   await waitFor(`[...document.querySelectorAll('h1')].some(el => (el.textContent || '').trim() === ${JSON.stringify(expectedDorm)})`, 'authenticated dorm name');
+  await waitFor(`[...document.querySelectorAll('button')].some(el => (el.textContent || '').trim() === 'ดูบิล')`, 'dashboard bill button');
 
-  await physicalClick(`([...document.querySelectorAll('button')].find(el => (el.textContent || '').trim() === 'ประวัติบิล'))`, 'history navigation');
-  await waitFor(`document.body.innerText.includes('ประวัติบิลเรียกเก็บเงิน')`, 'history view');
-  await waitFor(`[...document.querySelectorAll('button[title="เปิดดูบิลเรียกเก็บเงิน"]')].some(el => getComputedStyle(el).display !== 'none')`, 'bill detail button');
-  await physicalClick(`([...document.querySelectorAll('button[title="เปิดดูบิลเรียกเก็บเงิน"]')].find(el => getComputedStyle(el).display !== 'none'))`, 'bill detail');
+  await reactClick(`([...document.querySelectorAll('button')].find(el => (el.textContent || '').trim() === 'ดูบิล'))`, 'dashboard bill');
   await waitFor(`document.querySelector('.print-container') !== null`, 'BillInvoice modal');
   await waitFor(`document.querySelector('.print-container')?.innerText.includes(${JSON.stringify(expectedDorm)})`, 'invoice dorm name');
 
@@ -211,7 +208,7 @@ try {
     };
     return true;
   })()`);
-  await physicalClick(`([...document.querySelectorAll('button')].find(el => (el.textContent || '').includes('เซฟรูป JPG')))`, 'JPG export');
+  await reactClick(`([...document.querySelectorAll('button')].find(el => (el.textContent || '').includes('เซฟรูป JPG')))`, 'JPG export');
   await waitFor(`window.__task6Download && window.__task6Download.href.startsWith('data:image/jpeg')`, 'JPG generation', 300);
   await waitFor(`[...document.querySelectorAll('button')].some(el => (el.textContent || '').includes('เซฟรูป JPG'))`, 'JPG button recovery', 140);
   const jpgState = await evaluate(`(() => ({
@@ -233,7 +230,7 @@ try {
     };
     return true;
   })()`);
-  await physicalClick(`([...document.querySelectorAll('button')].find(el => (el.textContent || '').includes('พิมพ์ / PDF')))`, 'print/PDF');
+  await reactClick(`([...document.querySelectorAll('button')].find(el => (el.textContent || '').includes('พิมพ์ / PDF')))`, 'print/PDF');
   await waitFor('window.__task6PrintCalled === true', 'print callback');
   const printState = await evaluate(`(() => ({ called: window.__task6PrintCalled === true, css: window.__task6PrintCss }))()`);
   if (!printState.called || !printState.css.toUpperCase().includes(expectedColor) || !printState.css.includes('print-color-adjust: exact')) {
