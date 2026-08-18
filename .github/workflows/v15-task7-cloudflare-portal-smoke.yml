@@ -1,0 +1,315 @@
+name: V15 Task 7 Cloudflare Tenant Portal Smoke
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [agent/v15-task1-white-label-contract]
+    paths: ['.github/workflows/v15-task7-cloudflare-portal-smoke.yml']
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: v15-task7-cloudflare-portal-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  SOURCE_ARTIFACT_ID: '9317174783'
+  SOURCE_ARTIFACT_SHA256: '2f475ac6daaae661442b3cb13b60b8d4ed82c74570c2e67ed70a8242bbbf0d3e'
+  SOURCE_ARTIFACT_DIGEST: 'sha256:2f475ac6daaae661442b3cb13b60b8d4ed82c74570c2e67ed70a8242bbbf0d3e'
+  PRO_ZIP_SHA256: '5fe906c99f22a92325015b7800079af6d68b3c08f13d3285e7093791bccf1916'
+  DEMO_ZIP_SHA256: 'ad02052c10fb50eb4d48c13caa5cdc3e553a85b28689b4255a519a7c4d703946'
+  BROWSER_HARNESS_BLOB: '8d471b91f84f0559ce6bc00652a17cdadb2aca4e'
+  CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+  CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 80
+    environment: "fulfilling-communication / production"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/v15-task1-white-label-contract
+
+      - name: Verify harness and Cloudflare secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${CLOUDFLARE_API_TOKEN:-}"
+          test -n "${CLOUDFLARE_ACCOUNT_ID:-}"
+          test "$(git hash-object v15-task7/portal-branding-smoke.mjs)" = "$BROWSER_HARNESS_BLOB"
+          node --check v15-task7/portal-branding-smoke.mjs
+
+      - name: Download and verify immutable Task 7 candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 8 --retry-all-errors --retry-delay 3 \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${SOURCE_ARTIFACT_ID}/zip" \
+            -o candidate.zip
+          echo "$SOURCE_ARTIFACT_SHA256  candidate.zip" | sha256sum --check --strict
+          rm -rf candidate-artifact pro-work demo-work
+          mkdir candidate-artifact
+          unzip -q candidate.zip -d candidate-artifact
+          (cd candidate-artifact && sha256sum --check --strict MASTER_V15_TASK7_CI_SHA256.txt)
+          (cd candidate-artifact && sha256sum --check --strict work/V15_TASK7_CANDIDATE_SHA256.txt)
+          PRO_ZIP="candidate-artifact/work/release-v15-task7/dorm-management-system-pro-v15-TASK7-CANDIDATE.zip"
+          DEMO_ZIP="candidate-artifact/work/release-v15-task7/dorm-management-system-demo-v15-TASK7-CANDIDATE.zip"
+          echo "$PRO_ZIP_SHA256  $PRO_ZIP" | sha256sum --check --strict
+          echo "$DEMO_ZIP_SHA256  $DEMO_ZIP" | sha256sum --check --strict
+          mkdir pro-work demo-work
+          unzip -q "$PRO_ZIP" -d pro-work
+          unzip -q "$DEMO_ZIP" -d demo-work
+          for d in pro-work demo-work; do
+            grep -Fq "import { useTheme } from '../context/ThemeContext.tsx';" "$d/src/components/TenantPortalView.tsx"
+            grep -Fq 'logoDataUri ? (' "$d/src/components/TenantPortalView.tsx"
+            ! grep -Fq 'settings?.dormName' "$d/src/components/TenantPortalView.tsx"
+            test "$(find "$d/d1-migrations" -maxdepth 1 -type f -printf '%f\n' | sort | tail -n1)" = '0006_add_white_label_settings.sql'
+          done
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install candidate dependencies
+        run: |
+          (cd pro-work && npm ci)
+          (cd demo-work && npm ci)
+
+      - name: Allocate temporary Cloudflare resources
+        shell: bash
+        run: |
+          set -euo pipefail
+          P="$(printf '%s' "$GITHUB_RUN_ID" | tr -cd '0-9' | tail -c 10)-${GITHUB_RUN_ATTEMPT}"
+          echo "RUN_MARKER=$P" >> "$GITHUB_ENV"
+          echo "PRO_PAGES=v15-t7-pro-${P}" >> "$GITHUB_ENV"
+          echo "PRO_D1=v15-t7-pro-${P}-db" >> "$GITHUB_ENV"
+          echo "DEMO_PAGES=v15-t7-demo-${P}" >> "$GITHUB_ENV"
+          echo "DEMO_D1=v15-t7-demo-${P}-db" >> "$GITHUB_ENV"
+
+      - name: Create D1 and render configs
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd pro-work && npx wrangler d1 create "$PRO_D1" --location apac && npx wrangler d1 info "$PRO_D1" --json > ../pro-d1.json)
+          (cd demo-work && npx wrangler d1 create "$DEMO_D1" --location apac && npx wrangler d1 info "$DEMO_D1" --json > ../demo-d1.json)
+          python3 - <<'PY'
+          import importlib.util, os, sys
+          from pathlib import Path
+          def load(path,name):
+              s=importlib.util.spec_from_file_location(name,Path(path)); m=importlib.util.module_from_spec(s); sys.modules[name]=m; s.loader.exec_module(m); return m
+          h=load('.github/scripts/v14_task12_d1_smoke.py','h7'); c=load('.github/scripts/v14_task12_wrangler_config.py','c7')
+          for p,d,i in [('PRO',Path('pro-work'),Path('pro-d1.json')),('DEMO',Path('demo-work'),Path('demo-d1.json'))]:
+              x=h.parse_wrangler_json(i.read_text()); x=x[0] if isinstance(x,list) else x
+              uid=x.get('uuid') or x.get('id') or x.get('database_id'); assert uid
+              text=c.build_wrangler_config((d/'wrangler.template.jsonc').read_text(),os.environ[p+'_PAGES'],os.environ[p+'_D1'],str(uid))
+              (d/'wrangler.jsonc').write_text(text)
+          PY
+
+      - name: Create Pages secrets and migrate
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd pro-work && npx wrangler pages project create "$PRO_PAGES" --production-branch main)
+          (cd demo-work && npx wrangler pages project create "$DEMO_PAGES" --production-branch main)
+          S1="$(python3 -c 'import secrets;print(secrets.token_urlsafe(48))')"; S2="$(python3 -c 'import secrets;print(secrets.token_urlsafe(48))')"
+          printf '%s\n' "$S1" | (cd pro-work && npx wrangler pages secret put JWT_SECRET --project-name "$PRO_PAGES")
+          printf '%s\n' "$S2" | (cd demo-work && npx wrangler pages secret put JWT_SECRET --project-name "$DEMO_PAGES")
+          unset S1 S2
+          (cd pro-work && npx wrangler d1 migrations apply DB --remote --config wrangler.jsonc)
+          (cd demo-work && npx wrangler d1 migrations apply DB --remote --config wrangler.jsonc)
+
+      - name: Build and deploy candidates
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd pro-work && npm run build:pages)
+          (cd pro-work && npx wrangler pages deploy dist --project-name "$PRO_PAGES" --branch main --commit-hash "$GITHUB_SHA" --commit-dirty=true) | tee pro-deploy.log
+          (cd demo-work && npm run build:pages)
+          (cd demo-work && npx wrangler pages deploy dist --project-name "$DEMO_PAGES" --branch main --commit-hash "$GITHUB_SHA" --commit-dirty=true) | tee demo-deploy.log
+          PRO_DEPLOY_URL="$(grep -Eo 'https://[^[:space:]]+\.pages\.dev' pro-deploy.log | tail -n1)"
+          DEMO_DEPLOY_URL="$(grep -Eo 'https://[^[:space:]]+\.pages\.dev' demo-deploy.log | tail -n1)"
+          test -n "$PRO_DEPLOY_URL" && test -n "$DEMO_DEPLOY_URL"
+          echo "PRO_URL=$PRO_DEPLOY_URL" >> "$GITHUB_ENV"
+          echo "DEMO_URL=$DEMO_DEPLOY_URL" >> "$GITHUB_ENV"
+
+      - name: Wait for Pages edge readiness
+        shell: bash
+        run: |
+          set -euo pipefail
+          wait_ready() {
+            local label="$1" url="$2"
+            for attempt in $(seq 1 120); do
+              if curl --fail --silent --show-error --connect-timeout 5 --max-time 10 "$url/" -o /dev/null; then
+                echo "$label deployment ready on attempt $attempt: $url"
+                return 0
+              fi
+              sleep 2
+            done
+            echo "$label deployment never became TLS/HTTP ready: $url" >&2
+            return 1
+          }
+          wait_ready Pro "$PRO_URL"
+          wait_ready Demo "$DEMO_URL"
+
+      - name: Create real Pro and Demo owners
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os
+          p=os.environ['RUN_MARKER']
+          cases={
+            'pro': {'email':f'v15-task7-pro-{p}@example.invalid','password':f'V15T7!ProAa12345{p[-2:]}','displayName':'V15 Task 7 Pro Smoke','dormName':'Task 7 Pro Dorm'},
+            'demo':{'email':f'v15-task7-demo-{p}@example.invalid','password':f'V15T7!DemoAa12345{p[-2:]}','displayName':'V15 Task 7 Demo Smoke','dormName':'Task 7 Demo Dorm'},
+          }
+          for name,data in cases.items():
+            open(f'{name}-setup-request.json','w').write(json.dumps(data))
+            open(f'{name}-login-request.json','w').write(json.dumps({'username':data['email'],'password':data['password']}))
+          PY
+          for kind in pro demo; do
+            urlvar="${kind^^}_URL"; url="${!urlvar}"
+            curl --fail --silent --show-error --retry 12 --retry-all-errors --retry-delay 2 -H 'Content-Type: application/json' --data "@$kind-setup-request.json" "$url/api/setup/init" > "$kind-setup.json"
+            curl --fail --silent --show-error --retry 12 --retry-all-errors --retry-delay 2 -H 'Content-Type: application/json' --data "@$kind-login-request.json" "$url/api/auth/login" > "$kind-login.json"
+          done
+          python3 - <<'PY'
+          import json
+          for kind in ('pro','demo'):
+            setup=json.load(open(f'{kind}-setup.json')); login=json.load(open(f'{kind}-login.json'))
+            sd=setup.get('data',setup); ld=login.get('data',login)
+            assert isinstance(sd.get('user'),dict) and sd.get('token')
+            assert isinstance(ld.get('user'),dict) and ld.get('token')
+            open(f'{kind}-owner.txt','w').write(str(sd['user']['id']))
+            open(f'{kind}-token.txt','w').write(str(ld['token']))
+          PY
+
+      - name: Set deterministic Pro and dormant Demo branding
+        shell: bash
+        run: |
+          set -euo pipefail
+          PRO_OWNER="$(cat pro-owner.txt)"; DEMO_OWNER="$(cat demo-owner.txt)"
+          (cd pro-work && npx wrangler d1 execute DB --remote --config wrangler.jsonc --command "UPDATE settings SET subscription_plan='pro', dorm_name='Task 7 Pro Dorm', brand_color='#6D28D9', contact_phone='0812345678' WHERE user_id=${PRO_OWNER};")
+          (cd demo-work && npx wrangler d1 execute DB --remote --config wrangler.jsonc --command "UPDATE settings SET dorm_name='Task 7 Demo Dorm', brand_color='#DC2626', contact_phone='0899999999' WHERE user_id=${DEMO_OWNER};")
+          python3 - <<'PY'
+          import json
+          logo='data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAFElEQVR4nGPM1bj5n4GBgYGJAQoAJJwCcQA3o6cAAAAASUVORK5CYII='
+          open('pro-logo.json','w').write(json.dumps({'logoDataUri':logo}))
+          PY
+          PRO_TOKEN="$(cat pro-token.txt)"
+          curl --fail --silent --show-error -X PUT -H "Authorization: Bearer $PRO_TOKEN" -H 'Content-Type: application/json' --data @pro-logo.json "$PRO_URL/api/settings/logo" > /dev/null
+          curl --fail --silent --show-error "$PRO_URL/api/public/branding" > pro-branding.json
+          curl --fail --silent --show-error "$DEMO_URL/api/public/branding" > demo-branding.json
+          python3 - <<'PY'
+          import json
+          p=json.load(open('pro-branding.json')); d=json.load(open('demo-branding.json'))
+          assert p['dormName']=='Task 7 Pro Dorm' and p['brandColor']=='#6D28D9' and p['whiteLabelEnabled'] is True and str(p.get('logoDataUri','')).startswith('data:image/png;base64,')
+          assert d['dormName']=='Task 7 Demo Dorm' and d['brandColor'] is None and d['logoDataUri'] is None and d['whiteLabelEnabled'] is False
+          PY
+
+      - name: Create real occupied rooms through API
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          for kind, room in [('pro','T7-PRO-101'),('demo','T7-DEMO-101')]:
+            open(f'{kind}-room-request.json','w').write(json.dumps({'roomNumber':room,'monthlyRent':4500,'status':'occupied','tenantName':'Task 7 Tenant','tenantPhone':'0800000000'}))
+          PY
+          for kind in pro demo; do
+            urlvar="${kind^^}_URL"; url="${!urlvar}"; token="$(cat $kind-token.txt)"
+            curl --fail --silent --show-error -H "Authorization: Bearer $token" -H 'Content-Type: application/json' --data "@$kind-room-request.json" "$url/api/rooms" > "$kind-room.json"
+          done
+
+      - name: Browser smoke Pro tenant portal
+        env:
+          CHROME_BIN: /usr/bin/google-chrome
+          SMOKE_BASE_URL: ${{ env.PRO_URL }}
+          SMOKE_EXPECTED_DORM: Task 7 Pro Dorm
+          SMOKE_EXPECTED_COLOR: '#6D28D9'
+          SMOKE_ROOM_NUMBER: T7-PRO-101
+          SMOKE_TENANT_PHONE: '0800000000'
+          SMOKE_EXPECT_LOGO: 'true'
+          SMOKE_OUTPUT: pro-portal-smoke.json
+        run: node v15-task7/portal-branding-smoke.mjs
+
+      - name: Browser smoke Demo masking
+        env:
+          CHROME_BIN: /usr/bin/google-chrome
+          SMOKE_BASE_URL: ${{ env.DEMO_URL }}
+          SMOKE_EXPECTED_DORM: Task 7 Demo Dorm
+          SMOKE_EXPECTED_COLOR: '#1DB954'
+          SMOKE_ROOM_NUMBER: T7-DEMO-101
+          SMOKE_TENANT_PHONE: '0800000000'
+          SMOKE_EXPECT_LOGO: 'false'
+          SMOKE_OUTPUT: demo-portal-smoke.json
+        run: node v15-task7/portal-branding-smoke.mjs
+
+      - name: Cleanup temporary Cloudflare resources
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          A=99;B=99;C=99;D=99
+          [ -d pro-work ] && [ -n "${PRO_PAGES:-}" ] && (cd pro-work && npx wrangler pages project delete "$PRO_PAGES" --yes); A=$?
+          [ -d pro-work ] && [ -n "${PRO_D1:-}" ] && (cd pro-work && npx wrangler d1 delete "$PRO_D1" --skip-confirmation); B=$?
+          [ -d demo-work ] && [ -n "${DEMO_PAGES:-}" ] && (cd demo-work && npx wrangler pages project delete "$DEMO_PAGES" --yes); C=$?
+          [ -d demo-work ] && [ -n "${DEMO_D1:-}" ] && (cd demo-work && npx wrangler d1 delete "$DEMO_D1" --skip-confirmation); D=$?
+          printf '{"proPagesExit":%s,"proD1Exit":%s,"demoPagesExit":%s,"demoD1Exit":%s}\n' "$A" "$B" "$C" "$D" > cleanup-evidence.json
+          rm -f *-token.txt *-owner.txt *-setup-request.json *-login-request.json *-setup.json *-login.json *-room-request.json *-room.json pro-logo.json
+
+      - name: Upload Task 7 portal smoke evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v15-task7-cloudflare-portal-smoke-evidence
+          path: |
+            pro-branding.json
+            demo-branding.json
+            pro-portal-smoke.json
+            demo-portal-smoke.json
+            cleanup-evidence.json
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Assert Task 7 portal smoke and cleanup
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          p=json.load(open('pro-portal-smoke.json')); d=json.load(open('demo-portal-smoke.json'))
+          assert p.get('overallPass') is True and d.get('overallPass') is True
+          assert p['expectedColor']=='#6D28D9' and p['expectLogo'] is True and p['lookup']['logoVisible'] and p['active']['logoVisible']
+          assert d['expectedColor']=='#1DB954' and d['expectLogo'] is False and not d['lookup']['logoVisible'] and not d['active']['logoVisible']
+          assert p['active']['successSemantic'] and p['active']['repairSemantic']
+          assert d['active']['successSemantic'] and d['active']['repairSemantic']
+          c=json.load(open('cleanup-evidence.json')); assert all(c[k]==0 for k in c), c
+          PY
+
+      - name: Persist Task 7 Cloudflare portal smoke evidence pointer
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p v15-task7-evidence
+          cat > v15-task7-evidence/cloudflare-portal-smoke-latest.txt <<EOF
+          run_id=$GITHUB_RUN_ID
+          run_attempt=$GITHUB_RUN_ATTEMPT
+          source_sha=$GITHUB_SHA
+          source_artifact_id=$SOURCE_ARTIFACT_ID
+          source_artifact_digest=$SOURCE_ARTIFACT_DIGEST
+          assert_smoke=${{ job.status }}
+          EOF
+          if [ '${{ job.status }}' = 'success' ]; then sed -i 's/assert_smoke=success/assert_smoke=success/' v15-task7-evidence/cloudflare-portal-smoke-latest.txt; else sed -i 's/assert_smoke=.*/assert_smoke=failure/' v15-task7-evidence/cloudflare-portal-smoke-latest.txt; fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add v15-task7-evidence/cloudflare-portal-smoke-latest.txt
+          git commit -m 'ci(v15-task7): record Cloudflare portal smoke evidence' || exit 0
+          git push origin HEAD:agent/v15-task1-white-label-contract
