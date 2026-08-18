@@ -1,0 +1,53 @@
+diff --git a/src/context/ThemeContext.tsx b/src/context/ThemeContext.tsx
+index 82e6fb8..6e324dd 100644
+--- a/src/context/ThemeContext.tsx
++++ b/src/context/ThemeContext.tsx
+@@ -14,6 +14,7 @@ interface ThemeContextType {
+   logoDataUri: string | null;
+   whiteLabelEnabled: boolean;
+   brandingLoading: boolean;
++  refreshBranding: () => Promise<boolean>;
+ }
+ 
+ const ThemeContext = createContext<ThemeContextType | undefined>(undefined);
+@@ -37,12 +38,16 @@ export const ThemeProvider: React.FC<{ children: React.ReactNode }> = ({ childre
+     }
+   }, [theme]);
+ 
++  const applyRuntimeBranding = (resolvedBranding: RuntimeBranding) => {
++    applyBrandTokens(document.documentElement.style, deriveBrandTokens(resolvedBranding.brandColor));
++    setBranding(resolvedBranding);
++  };
++
+   useEffect(() => {
+     let cancelled = false;
+     fetchPublicBranding().then((resolvedBranding) => {
+       if (cancelled) return;
+-      applyBrandTokens(document.documentElement.style, deriveBrandTokens(resolvedBranding.brandColor));
+-      setBranding(resolvedBranding);
++      applyRuntimeBranding(resolvedBranding);
+       setBrandingLoading(false);
+     });
+     return () => {
+@@ -50,6 +55,13 @@ export const ThemeProvider: React.FC<{ children: React.ReactNode }> = ({ childre
+     };
+   }, []);
+ 
++  const refreshBranding = async (): Promise<boolean> => {
++    const resolvedBranding = await fetchPublicBranding();
++    if (resolvedBranding.source !== 'public') return false;
++    applyRuntimeBranding(resolvedBranding);
++    return true;
++  };
++
+   const toggleTheme = () => {
+     setThemeState((prev) => (prev === 'light' ? 'dark' : 'light'));
+   };
+@@ -69,6 +81,7 @@ export const ThemeProvider: React.FC<{ children: React.ReactNode }> = ({ childre
+       logoDataUri: branding.logoDataUri,
+       whiteLabelEnabled: branding.whiteLabelEnabled,
+       brandingLoading,
++      refreshBranding,
+     }}>
+       {children}
+     </ThemeContext.Provider>
