@@ -115,6 +115,7 @@ try {
     }));
     throw new Error(`timeout waiting for ${label}; snapshot=${JSON.stringify(snapshot)}; events=${JSON.stringify(eventSummary)}; chrome=${stderr.slice(-800)}`);
   };
+  const dormHeadingExpression = `[...document.querySelectorAll('h1')].some(el => (el.textContent || '').trim() === ${JSON.stringify(expectedDorm)})`;
   const navigate = async (url) => {
     const result = await send('Page.navigate', { url });
     if (result?.errorText) throw new Error(`navigation failed ${url}: ${result.errorText}`);
@@ -128,11 +129,11 @@ try {
   await navigate(`${baseUrl}/`);
   await waitFor('document.body && document.body.innerText.length > 0', 'login body');
   await waitFor('getComputedStyle(document.documentElement).getPropertyValue("--brand-primary").trim().length > 0', 'branding token');
-  await waitFor(`document.body.innerText.includes(${JSON.stringify(expectedDorm)})`, 'runtime dorm name on login');
+  await waitFor(dormHeadingExpression, 'runtime dorm name on login');
 
   const loginState = await evaluate(`(() => ({
     brand: getComputedStyle(document.documentElement).getPropertyValue('--brand-primary').trim().toUpperCase(),
-    dormVisible: document.body.innerText.includes(${JSON.stringify(expectedDorm)}),
+    dormVisible: [...document.querySelectorAll('h1')].some(el => (el.textContent || '').trim() === ${JSON.stringify(expectedDorm)}),
     logoVisible: [...document.querySelectorAll('img')].some(el => el.alt === ${JSON.stringify(`${expectedDorm} logo`)} && getComputedStyle(el).display !== 'none'),
     loginVisible: document.body.innerText.includes('เข้าสู่ระบบ'),
     bootLoading: document.documentElement.dataset.brandingBoot === 'loading'
@@ -143,13 +144,13 @@ try {
 
   await evaluate(`localStorage.setItem('local_user', ${JSON.stringify(JSON.stringify(user))}); localStorage.setItem('local_token', ${JSON.stringify(token)}); location.reload(); true`);
   await waitFor('document.querySelector("aside") !== null', 'authenticated desktop shell', 160);
-  await waitFor(`document.body.innerText.includes(${JSON.stringify(expectedDorm)})`, 'authenticated dorm name', 160);
+  await waitFor(dormHeadingExpression, 'authenticated dorm name', 160);
 
   const desktopState = await evaluate(`(() => {
     const visible = (el) => !!el && getComputedStyle(el).display !== 'none' && el.getBoundingClientRect().width > 0 && el.getBoundingClientRect().height > 0;
     const aside = [...document.querySelectorAll('aside')].find(visible);
     const active = aside?.querySelector('button[aria-current="page"]');
-    const dorm = [...document.querySelectorAll('h1')].find(el => visible(el) && el.textContent.trim() === ${JSON.stringify(expectedDorm)});
+    const dorm = [...document.querySelectorAll('h1')].find(el => visible(el) && (el.textContent || '').trim() === ${JSON.stringify(expectedDorm)});
     return {
       brand: getComputedStyle(document.documentElement).getPropertyValue('--brand-primary').trim().toUpperCase(),
       asideVisible: visible(aside), dormVisible: !!dorm,
@@ -183,7 +184,7 @@ try {
     const header = [...document.querySelectorAll('header')].find(visible);
     const nav = [...document.querySelectorAll('nav[aria-label="เมนูหลักบนมือถือ"]')].find(visible);
     const active = nav?.querySelector('button[aria-current="page"]');
-    const dormVisible = [...document.querySelectorAll('h1')].some(el => visible(el) && el.textContent.trim() === ${JSON.stringify(expectedDorm)});
+    const dormVisible = [...document.querySelectorAll('h1')].some(el => visible(el) && (el.textContent || '').trim() === ${JSON.stringify(expectedDorm)});
     return {
       brand: getComputedStyle(document.documentElement).getPropertyValue('--brand-primary').trim().toUpperCase(),
       headerVisible: visible(header), drawerVisible: visible(nav), dormVisible,
