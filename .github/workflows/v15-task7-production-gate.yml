@@ -1,0 +1,226 @@
+name: V15 Task 7 Production Gate
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [agent/v15-task1-white-label-contract]
+    paths:
+      - '.github/workflows/v15-task7-production-gate.yml'
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: v15-task7-production-gate
+  cancel-in-progress: true
+
+env:
+  TASK6_ARTIFACT_ID: '9315194299'
+  TASK6_ARTIFACT_SHA256: 'f0bec7ca2f263938df722e9eca3d0fa7a649beee09191dc14dea15bc6d11447c'
+  TASK6_MASTER_SHA256: '309b987cf7394b960b70f273ff363de32ee2b2dc9b042dad2f4b99033b822d1a'
+  PATCH_B64_SHA256: 'ba5289cc0cbc1b64e8efd22e3d652f6f2ac520612d3b9a7aeb10c1bcf5347500'
+  PATCH_SHA256: '3c13f2a96384bfdcceaacccc418b3046e2e21bc7000a7e7261aa537587dbdfbd'
+  SOURCE_TEST_SHA256: 'c56576e15258032711064216c745cf42dbd5352a1734cc6b31bb7523ccc337c5'
+
+jobs:
+  production-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 80
+    steps:
+      - name: Checkout Task 7 branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/v15-task1-white-label-contract
+
+      - name: Verify pinned Task 7 sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "$PATCH_B64_SHA256  v15-task7/task7.patch.gz.b64" | sha256sum --check --strict
+          echo "$SOURCE_TEST_SHA256  v15-task7/task7-tenant-portal-branding.test.mjs" | sha256sum --check --strict
+          base64 -d v15-task7/task7.patch.gz.b64 | gzip -d > task7.patch
+          echo "$PATCH_SHA256  task7.patch" | sha256sum --check --strict
+
+      - name: Download immutable Task 6 candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 8 --retry-all-errors --retry-delay 3 \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${TASK6_ARTIFACT_ID}/zip" \
+            -o task6-artifact.zip
+          echo "$TASK6_ARTIFACT_SHA256  task6-artifact.zip" | sha256sum --check --strict
+          rm -rf candidate && mkdir candidate
+          unzip -q task6-artifact.zip -d candidate
+
+      - name: Verify and extract exact Task 6 master
+        shell: bash
+        run: |
+          set -euo pipefail
+          MASTER_ZIP="$(find candidate -type f -name 'dorm-management-system-master-v15-task6-REVIEW-CI.zip' -print -quit)"
+          test -n "$MASTER_ZIP"
+          echo "$TASK6_MASTER_SHA256  $MASTER_ZIP" | sha256sum --check --strict
+          rm -rf work && mkdir work
+          unzip -q "$MASTER_ZIP" -d work
+          echo 'd8aa3ced46b96a501342d4f85ceaf07993f2969d2be0af0c3bfc271d4178bb2d  work/src/components/TenantPortalView.tsx' | sha256sum --check --strict
+          test "$(find work/d1-migrations -maxdepth 1 -type f -printf '%f\n' | sort | tail -n1)" = '0006_add_white_label_settings.sql'
+
+      - name: Prove RED on immutable Task 6
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp v15-task7/task7-tenant-portal-branding.test.mjs work/tests/task7-tenant-portal-branding.test.mjs
+          set +e
+          (cd work && node --test tests/task7-tenant-portal-branding.test.mjs)
+          code=$?
+          set -e
+          test "$code" -ne 0
+
+      - name: Apply deterministic Task 7 patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git apply --check --directory=work task7.patch
+          git apply --directory=work task7.patch
+          echo 'c083b67c179676440617044444e4d3a0924ea000b1961946e0e9d11c483350d1  work/src/components/TenantPortalView.tsx' | sha256sum --check --strict
+          grep -Fq "import { useTheme } from '../context/ThemeContext.tsx';" work/src/components/TenantPortalView.tsx
+          grep -Fq '{dormName}' work/src/components/TenantPortalView.tsx
+          grep -Fq 'logoDataUri ? (' work/src/components/TenantPortalView.tsx
+          ! grep -Fq 'settings?.dormName' work/src/components/TenantPortalView.tsx
+          test "$(find work/d1-migrations -maxdepth 1 -type f -printf '%f\n' | sort | tail -n1)" = '0006_add_white_label_settings.sql'
+
+      - name: Prove GREEN on Task 7 source contract
+        working-directory: work
+        run: node --test tests/task7-tenant-portal-branding.test.mjs
+
+      - name: Create immutable Task 7 master candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f dorm-management-system-master-v15-task7-REVIEW-CI.zip
+          (cd work && zip -qr ../dorm-management-system-master-v15-task7-REVIEW-CI.zip .)
+          unzip -t dorm-management-system-master-v15-task7-REVIEW-CI.zip >/dev/null
+          sha256sum dorm-management-system-master-v15-task7-REVIEW-CI.zip | tee MASTER_V15_TASK7_CI_SHA256.txt
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: work/package-lock.json
+
+      - name: Fresh dependency install
+        working-directory: work
+        run: npm ci
+
+      - name: Focused Task 7 contracts
+        working-directory: work
+        run: |
+          node --test tests/task7-tenant-portal-branding.test.mjs
+          node --test tests/task5-login-app-shell-branding.test.mjs
+          npx tsx --test tests/public-branding.test.ts tests/branding-client-runtime.test.ts tests/theme-root-runtime.test.ts tests/theme-refresh-runtime.test.ts
+
+      - name: Backup regression
+        working-directory: work
+        run: npm run test:backup
+
+      - name: Full test suite
+        working-directory: work
+        run: npm test
+
+      - name: TypeScript lint
+        working-directory: work
+        run: npm run lint
+
+      - name: Cloudflare types
+        working-directory: work
+        run: npm run check:cloudflare-types:master
+
+      - name: Pages production build
+        working-directory: work
+        run: npm run build:pages
+
+      - name: VPS production build
+        working-directory: work
+        run: npm run build:vps
+
+      - name: Generate PREVIEW and guarded release packages
+        working-directory: work
+        run: |
+          npm run packages:generate
+          npm run test:builder
+          npm run packages:release
+
+      - name: Materialize Task 7 candidate packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p work/release-v15-task7
+          for plan in demo basic standard pro; do
+            src="work/release-v14/dorm-management-system-${plan}-v14-CUSTOMER-READY.zip"
+            dst="work/release-v15-task7/dorm-management-system-${plan}-v15-TASK7-CANDIDATE.zip"
+            test -f "$src"
+            cp "$src" "$dst"
+            unzip -t "$dst" >/dev/null
+          done
+          sha256sum work/release-v15-task7/*.zip | tee work/V15_TASK7_CANDIDATE_SHA256.txt
+
+      - name: One Master and package parity audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf audit && mkdir audit
+          unzip -Z1 dorm-management-system-master-v15-task7-REVIEW-CI.zip > audit/master.txt
+          grep -Fx 'src/components/TenantPortalView.tsx' audit/master.txt
+          grep -Fx 'tests/task7-tenant-portal-branding.test.mjs' audit/master.txt
+          ! grep -Fq 'node_modules/' audit/master.txt
+          for plan in demo basic standard pro; do
+            z="work/release-v15-task7/dorm-management-system-${plan}-v15-TASK7-CANDIDATE.zip"
+            unzip -p "$z" src/components/TenantPortalView.tsx > "audit/${plan}-portal.tsx"
+            unzip -p "$z" tests/task7-tenant-portal-branding.test.mjs > "audit/${plan}-task7-test.mjs"
+            grep -Fq "import { useTheme } from '../context/ThemeContext.tsx';" "audit/${plan}-portal.tsx"
+            grep -Fq 'logoDataUri ? (' "audit/${plan}-portal.tsx"
+            ! grep -Fq 'settings?.dormName' "audit/${plan}-portal.tsx"
+            test "$(unzip -Z1 "$z" | grep '^d1-migrations/.*\.sql$' | sed 's#d1-migrations/##' | sort | tail -n1)" = '0006_add_white_label_settings.sql'
+          done
+          for plan in demo basic standard; do
+            cmp "audit/${plan}-portal.tsx" audit/pro-portal.tsx
+            cmp "audit/${plan}-task7-test.mjs" audit/pro-task7-test.mjs
+          done
+
+      - name: Upload Task 7 candidate artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: v15-task7-candidate-pending-portal-browser-smoke
+          path: |
+            dorm-management-system-master-v15-task7-REVIEW-CI.zip
+            MASTER_V15_TASK7_CI_SHA256.txt
+            work/release-v15-task7/**
+            work/V15_TASK7_CANDIDATE_SHA256.txt
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Persist Task 7 production evidence
+        if: always()
+        shell: bash
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          set -euo pipefail
+          mkdir -p v15-task7-evidence
+          cat > v15-task7-evidence/production-gate-latest.txt <<EOT
+          run_id=$GITHUB_RUN_ID
+          run_attempt=$GITHUB_RUN_ATTEMPT
+          source_sha=$GITHUB_SHA
+          source_task6_artifact_id=$TASK6_ARTIFACT_ID
+          source_task6_artifact_sha256=$TASK6_ARTIFACT_SHA256
+          job_status=$JOB_STATUS
+          EOT
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add v15-task7-evidence/production-gate-latest.txt
+          git commit -m 'ci(v15-task7): record production gate evidence' || exit 0
+          git push origin HEAD:agent/v15-task1-white-label-contract
