@@ -13,11 +13,13 @@ jobs:
   trigger:
     runs-on: ubuntu-latest
     steps:
-      - name: Touch canonical Task 5 smoke workflow
+      - name: Pin syntax-fixed Task 5 browser harness
         env:
           GH_TOKEN: ${{ github.token }}
           BRANCH: agent/v15-task1-white-label-contract
           TARGET: .github/workflows/v15-task5-cloudflare-browser-smoke.yml
+          OLD_PIN: 1b3779d3c142eeb23d72f6bf54f57c45e0a4780c
+          NEW_PIN: 3fff5e6791b37b0f2ddb13897aa34d1c0724f643
         shell: bash
         run: |
           set -euo pipefail
@@ -28,10 +30,22 @@ jobs:
             "https://api.github.com/repos/${GITHUB_REPOSITORY}/contents/${TARGET}?ref=${BRANCH}" > workflow.json
           sha="$(jq -r '.sha' workflow.json)"
           jq -r '.content' workflow.json | tr -d '\n' | base64 -d > workflow.yml
-          printf '\n# fresh physical-click smoke trigger: %s\n' "$GITHUB_RUN_ID" >> workflow.yml
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          path = Path('workflow.yml')
+          text = path.read_text()
+          old = os.environ['OLD_PIN']
+          new = os.environ['NEW_PIN']
+          needle = f"BROWSER_HARNESS_BLOB: '{old}'"
+          replacement = f"BROWSER_HARNESS_BLOB: '{new}'"
+          assert text.count(needle) == 1, f'expected one old harness pin, found {text.count(needle)}'
+          text = text.replace(needle, replacement)
+          path.write_text(text)
+          PY
           base64 -w0 workflow.yml > workflow.b64
           jq -n \
-            --arg message 'ci(v15-task5): trigger fresh physical-click smoke' \
+            --arg message 'ci(v15-task5): pin syntax-fixed browser harness' \
             --arg content "$(cat workflow.b64)" \
             --arg sha "$sha" \
             --arg branch "$BRANCH" \
