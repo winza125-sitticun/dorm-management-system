@@ -178,7 +178,7 @@ try {
     const visible = (el) => !!el && getComputedStyle(el).display !== 'none' && el.getBoundingClientRect().width > 0 && el.getBoundingClientRect().height > 0;
     const header = [...document.querySelectorAll('header')].find(el => visible(el) && el.classList.contains('md:hidden'));
     const dorm = [...document.querySelectorAll('h1')].find(el => visible(el) && (el.textContent || '').trim() === ${JSON.stringify(expectedDorm)});
-    const menuButton = [...document.querySelectorAll('button[aria-label="เปิดเมนู"]')].find(visible);
+    const menuButton = header ? [...header.querySelectorAll('button')].find(el => visible(el) && !!el.querySelector('svg') && !el.querySelector('h1')) : null;
     return {
       brand: getComputedStyle(document.documentElement).getPropertyValue('--brand-primary').trim().toUpperCase(),
       headerVisible: visible(header),
