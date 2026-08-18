@@ -172,7 +172,9 @@ try {
     const heading = [...invoice.querySelectorAll('h4')].find(el => (el.textContent || '').trim() === ${JSON.stringify(expectedDorm)});
     const logo = invoice.querySelector('img[alt=${JSON.stringify(`${expectedDorm} logo`)}]');
     const totalLabel = [...invoice.querySelectorAll('*')].find(el => (el.textContent || '').trim() === 'ยอดรวมที่ต้องชำระ');
-    const totalBox = totalLabel?.closest('div.rounded-\\[1rem\\]');
+    let totalBox = totalLabel;
+    while (totalBox && totalBox !== invoice && !totalBox.classList?.contains('rounded-[1rem]')) totalBox = totalBox.parentElement;
+    if (totalBox === invoice) totalBox = null;
     const tableHead = invoice.querySelector('thead tr');
     return {
       rootBrand: getComputedStyle(document.documentElement).getPropertyValue('--brand-primary').trim().toUpperCase(),
@@ -219,6 +221,7 @@ try {
   })()`);
   if (!clickedJpg) throw new Error('JPG button not found');
   await waitFor(`window.__task6Download && window.__task6Download.href.startsWith('data:image/jpeg')`, 'JPG generation', 260);
+  await waitFor(`[...document.querySelectorAll('button')].some(el => (el.textContent || '').includes('เซฟรูป JPG'))`, 'JPG button recovery', 120);
   const jpgState = await evaluate(`(() => ({
     mimeOk: window.__task6Download.href.startsWith('data:image/jpeg'),
     length: window.__task6Download.href.length,
