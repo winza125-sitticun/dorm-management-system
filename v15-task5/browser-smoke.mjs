@@ -166,8 +166,17 @@ try {
   await writeFile(output, `${JSON.stringify(evidence, null, 2)}\n`);
 } finally {
   try { ws?.close(); } catch {}
-  proc.kill('SIGTERM');
-  await Promise.race([new Promise((resolve) => proc.once('exit', resolve)), sleep(1500)]);
-  if (proc.exitCode === null) proc.kill('SIGKILL');
-  await rm(profile, { recursive: true, force: true });
+  if (proc.exitCode === null) {
+    proc.kill('SIGTERM');
+    await Promise.race([new Promise((resolve) => proc.once('exit', resolve)), sleep(1500)]);
+  }
+  if (proc.exitCode === null) {
+    proc.kill('SIGKILL');
+    await Promise.race([new Promise((resolve) => proc.once('exit', resolve)), sleep(1500)]);
+  }
+  try {
+    await rm(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+  } catch (cleanupError) {
+    console.error('[task5-browser-smoke] profile cleanup warning:', cleanupError);
+  }
 }
