@@ -166,22 +166,26 @@ try {
 
   await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
   await sleep(400);
-  const clicked = await evaluate(`(() => {
+  const menuPoint = await evaluate(`(() => {
     const visible = (el) => !!el && getComputedStyle(el).display !== 'none' && el.getBoundingClientRect().width > 0 && el.getBoundingClientRect().height > 0;
-    const header = [...document.querySelectorAll('header')].find(visible);
-    if (!header) return false;
-    const buttons = [...header.querySelectorAll('button')].filter(visible);
-    if (buttons.length < 2) return false;
-    buttons.at(-1).click();
-    return true;
+    const header = [...document.querySelectorAll('header')].find(el => visible(el) && el.classList.contains('md:hidden'));
+    if (!header) return null;
+    const buttons = [...header.querySelectorAll(':scope > button')].filter(visible);
+    if (buttons.length < 2) return null;
+    const button = buttons.at(-1);
+    const rect = button.getBoundingClientRect();
+    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, width: rect.width, height: rect.height };
   })()`);
-  if (!clicked) throw new Error('mobile menu button not found');
+  if (!menuPoint || menuPoint.width <= 0 || menuPoint.height <= 0) throw new Error(`mobile menu button not found: ${JSON.stringify(menuPoint)}`);
+  await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: menuPoint.x, y: menuPoint.y });
+  await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: menuPoint.x, y: menuPoint.y, button: 'left', clickCount: 1 });
+  await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: menuPoint.x, y: menuPoint.y, button: 'left', clickCount: 1 });
   await waitFor('document.querySelector("nav[aria-label=\"เมนูหลักบนมือถือ\"]") !== null', 'mobile drawer');
   await sleep(500);
 
   const mobileState = await evaluate(`(() => {
     const visible = (el) => !!el && getComputedStyle(el).display !== 'none' && el.getBoundingClientRect().width > 0 && el.getBoundingClientRect().height > 0;
-    const header = [...document.querySelectorAll('header')].find(visible);
+    const header = [...document.querySelectorAll('header')].find(el => visible(el) && el.classList.contains('md:hidden'));
     const nav = [...document.querySelectorAll('nav[aria-label="เมนูหลักบนมือถือ"]')].find(visible);
     const active = nav?.querySelector('button[aria-current="page"]');
     const dormVisible = [...document.querySelectorAll('h1')].some(el => visible(el) && (el.textContent || '').trim() === ${JSON.stringify(expectedDorm)});
