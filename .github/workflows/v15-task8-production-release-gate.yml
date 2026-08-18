@@ -1,0 +1,336 @@
+name: V15 Task 8 Production Release Gate
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [agent/v15-task1-white-label-contract]
+    paths:
+      - '.github/workflows/v15-task8-production-release-gate.yml'
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: v15-task8-production-release-gate
+  cancel-in-progress: true
+
+env:
+  TASK7_ARTIFACT_ID: '9317174783'
+  TASK7_ARTIFACT_SHA256: '2f475ac6daaae661442b3cb13b60b8d4ed82c74570c2e67ed70a8242bbbf0d3e'
+  TASK7_ARTIFACT_DIGEST: 'sha256:2f475ac6daaae661442b3cb13b60b8d4ed82c74570c2e67ed70a8242bbbf0d3e'
+  TASK7_MASTER_SHA256: '2d9a1a17bfc6a0e4da1edf0cda2fc4c9a488a2f5807bc16e36cabafea8aff231'
+  TASK7_DEMO_SHA256: 'ad02052c10fb50eb4d48c13caa5cdc3e553a85b28689b4255a519a7c4d703946'
+  TASK7_BASIC_SHA256: '908a2147055a1e9b91f40f78b5f95a65ee41e0cdb54bca074a690a87a3ff0a57'
+  TASK7_STANDARD_SHA256: 'ab987a18f79f0ef3de0dd0fa8ef73e54f1de2df223c24060d33f818d53669af4'
+  TASK7_PRO_SHA256: '5fe906c99f22a92325015b7800079af6d68b3c08f13d3285e7093791bccf1916'
+  ACCEPTANCE_TEST_BLOB: 'c4969bb7c2eafcfd52b88d1b5989056ac509f2dd'
+  ACCEPTANCE_TEST_SHA256: '6159d991853f3072db0a4468d840c6e788e3e7aec252b6b4bdeba66d1a547c82'
+
+jobs:
+  release-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 100
+    steps:
+      - name: Checkout Task 8 branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/v15-task1-white-label-contract
+
+      - name: Verify pinned Task 8 release-only test
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object v15-task8/task8-acceptance-matrix.test.mjs)" = "$ACCEPTANCE_TEST_BLOB"
+          echo "$ACCEPTANCE_TEST_SHA256  v15-task8/task8-acceptance-matrix.test.mjs" | sha256sum --check --strict
+          node --check v15-task8/task8-acceptance-matrix.test.mjs
+
+      - name: Download and verify immutable Task 7 candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 8 --retry-all-errors --retry-delay 3 \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${TASK7_ARTIFACT_ID}/zip" \
+            -o task7-artifact.zip
+          echo "$TASK7_ARTIFACT_SHA256  task7-artifact.zip" | sha256sum --check --strict
+          rm -rf candidate work
+          mkdir candidate work
+          unzip -q task7-artifact.zip -d candidate
+          MASTER_ZIP="candidate/dorm-management-system-master-v15-task7-REVIEW-CI.zip"
+          test -f "$MASTER_ZIP"
+          echo "$TASK7_MASTER_SHA256  $MASTER_ZIP" | sha256sum --check --strict
+          echo "$TASK7_DEMO_SHA256  candidate/work/release-v15-task7/dorm-management-system-demo-v15-TASK7-CANDIDATE.zip" | sha256sum --check --strict
+          echo "$TASK7_BASIC_SHA256  candidate/work/release-v15-task7/dorm-management-system-basic-v15-TASK7-CANDIDATE.zip" | sha256sum --check --strict
+          echo "$TASK7_STANDARD_SHA256  candidate/work/release-v15-task7/dorm-management-system-standard-v15-TASK7-CANDIDATE.zip" | sha256sum --check --strict
+          echo "$TASK7_PRO_SHA256  candidate/work/release-v15-task7/dorm-management-system-pro-v15-TASK7-CANDIDATE.zip" | sha256sum --check --strict
+          unzip -q "$MASTER_ZIP" -d work
+          test "$(find work/d1-migrations -maxdepth 1 -type f -printf '%f\n' | sort | tail -n1)" = '0006_add_white_label_settings.sql'
+
+      - name: Run Task 8 acceptance matrix contract on immutable Master
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp v15-task8/task8-acceptance-matrix.test.mjs work/tests/task8-acceptance-matrix.test.mjs
+          (cd work && node --test tests/task8-acceptance-matrix.test.mjs)
+          rm work/tests/task8-acceptance-matrix.test.mjs
+          test ! -e work/tests/task8-acceptance-matrix.test.mjs
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: work/package-lock.json
+
+      - name: Fresh dependency install
+        working-directory: work
+        run: npm ci
+
+      - name: Focused V15 acceptance and runtime contracts
+        working-directory: work
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --test tests/task5-login-app-shell-branding.test.mjs tests/task6-bill-branding.test.mjs tests/task7-tenant-portal-branding.test.mjs
+          npx tsx --test \
+            tests/brand-theme-runtime.test.ts \
+            tests/theme-root-runtime.test.ts \
+            tests/theme-refresh-runtime.test.ts \
+            tests/branding-client-runtime.test.ts \
+            tests/settings-white-label.test.ts \
+            tests/white-label-settings-ui-utils.test.ts \
+            tests/logo-validation.test.ts \
+            tests/logo-api-contract.test.ts \
+            tests/public-branding.test.ts \
+            tests/plan-entitlements.test.ts \
+            tests/plan-api-guards.test.ts \
+            tests/bill-branding-snapshot.test.ts
+
+      - name: Full V15 regression suite
+        working-directory: work
+        run: npm test
+
+      - name: TypeScript lint
+        working-directory: work
+        run: npm run lint
+
+      - name: Cloudflare types
+        working-directory: work
+        run: npm run check:cloudflare-types:master
+
+      - name: Pages production build
+        working-directory: work
+        run: npm run build:pages
+
+      - name: VPS production build
+        working-directory: work
+        run: npm run build:vps
+
+      - name: One Master package generation and guarded release
+        working-directory: work
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run packages:generate
+          npm run test:builder
+          npm run packages:release
+
+      - name: Materialize V15 CUSTOMER-READY archives
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf v15-customer-ready package-audit
+          mkdir -p v15-customer-ready package-audit
+          cp candidate/dorm-management-system-master-v15-task7-REVIEW-CI.zip \
+            v15-customer-ready/dorm-management-system-master-v15-CUSTOMER-READY.zip
+          for plan in demo basic standard pro; do
+            src="work/release-v14/dorm-management-system-${plan}-v14-CUSTOMER-READY.zip"
+            dst="v15-customer-ready/dorm-management-system-${plan}-v15-CUSTOMER-READY.zip"
+            test -f "$src"
+            cp "$src" "$dst"
+            unzip -t "$dst" >/dev/null
+          done
+          (
+            cd v15-customer-ready
+            sha256sum dorm-management-system-*-v15-CUSTOMER-READY.zip | sort > V15_CUSTOMER_READY_SHA256.txt
+            sha256sum --check --strict V15_CUSTOMER_READY_SHA256.txt
+          )
+          echo "$TASK7_MASTER_SHA256  v15-customer-ready/dorm-management-system-master-v15-CUSTOMER-READY.zip" | sha256sum --check --strict
+
+      - name: Four-plan package regression and migration audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="$GITHUB_WORKSPACE"
+          for plan in demo basic standard pro; do
+            z="v15-customer-ready/dorm-management-system-${plan}-v15-CUSTOMER-READY.zip"
+            d="package-audit/${plan}"
+            mkdir -p "$d"
+            unzip -q "$z" -d "$d"
+            test "$(find "$d/d1-migrations" -maxdepth 1 -type f -printf '%f\n' | sort | tail -n1)" = '0006_add_white_label_settings.sql'
+            pkg_name="$(cd "$d" && node -p "require('./package.json').name")"
+            test "$pkg_name" = "dorm-management-system-${plan}"
+            grep -Eq "subscription_plan TEXT NOT NULL DEFAULT '${plan}'" "$d/schema_d1.sql"
+            (
+              cd "$d"
+              node --test tests/task5-login-app-shell-branding.test.mjs tests/task6-bill-branding.test.mjs tests/task7-tenant-portal-branding.test.mjs
+              "$ROOT/work/node_modules/.bin/tsx" --test \
+                tests/brand-theme-runtime.test.ts \
+                tests/branding-client-runtime.test.ts \
+                tests/settings-white-label.test.ts \
+                tests/white-label-settings-ui-utils.test.ts \
+                tests/logo-validation.test.ts \
+                tests/public-branding.test.ts \
+                tests/plan-entitlements.test.ts \
+                tests/bill-branding-snapshot.test.ts
+            )
+          done
+
+      - name: One Master and cross-plan White-label parity audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          files=(
+            src/App.tsx
+            src/components/Login.tsx
+            src/components/BillInvoice.tsx
+            src/components/TenantPortalView.tsx
+            src/context/ThemeContext.tsx
+            src/theme/brandTheme.ts
+            src/theme/brandingClient.ts
+            src/utils/billBranding.ts
+            src/utils/whiteLabelSettings.ts
+            src/server/validators/logo.ts
+            src/server/services/branding.service.ts
+            src/constants/planEntitlements.ts
+            tests/task5-login-app-shell-branding.test.mjs
+            tests/task6-bill-branding.test.mjs
+            tests/task7-tenant-portal-branding.test.mjs
+          )
+          for plan in demo basic standard pro; do
+            for f in "${files[@]}"; do
+              cmp "work/$f" "package-audit/$plan/$f"
+            done
+          done
+          test ! -e package-audit/demo/tests/task8-acceptance-matrix.test.mjs
+          test ! -e package-audit/basic/tests/task8-acceptance-matrix.test.mjs
+          test ! -e package-audit/standard/tests/task8-acceptance-matrix.test.mjs
+          test ! -e package-audit/pro/tests/task8-acceptance-matrix.test.mjs
+
+      - name: Security and secret audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf security-audit
+          mkdir security-audit
+          unzip -q v15-customer-ready/dorm-management-system-master-v15-CUSTOMER-READY.zip -d security-audit/master
+          for plan in demo basic standard pro; do
+            cp -a "package-audit/$plan" "security-audit/$plan"
+          done
+          python3 - <<'PY'
+          import re, sys
+          from pathlib import Path
+          roots=[Path('security-audit/master'),Path('security-audit/demo'),Path('security-audit/basic'),Path('security-audit/standard'),Path('security-audit/pro')]
+          forbidden_exact={'.env','.dev.vars','wrangler.jsonc','credentials.json','service-account.json','pro-token.txt','demo-token.txt','pro-owner.txt','demo-owner.txt','pro-user.json','demo-user.json','pro-login.json','demo-login.json','pro-setup.json','demo-setup.json'}
+          forbidden_suffixes=('.pem','.p12','.pfx','.key')
+          secret_patterns=[
+            re.compile(rb'-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----'),
+            re.compile(rb'github_pat_[A-Za-z0-9_]{20,}'),
+            re.compile(rb'ghp_[A-Za-z0-9]{20,}'),
+            re.compile(rb'sk-proj-[A-Za-z0-9_-]{20,}'),
+          ]
+          failures=[]
+          for root in roots:
+            for p in root.rglob('*'):
+              if not p.is_file(): continue
+              name=p.name.lower()
+              rel=p.relative_to(root).as_posix()
+              if name in forbidden_exact or name.endswith(forbidden_suffixes) or name in {'id_rsa','id_ed25519'}:
+                failures.append(f'{root.name}:{rel}: forbidden credential/runtime file')
+                continue
+              try:
+                data=p.read_bytes()
+              except OSError:
+                continue
+              for pattern in secret_patterns:
+                if pattern.search(data):
+                  failures.append(f'{root.name}:{rel}: secret-like payload')
+                  break
+          if failures:
+            print('\n'.join(failures), file=sys.stderr)
+            raise SystemExit(1)
+          PY
+          for z in v15-customer-ready/*.zip; do
+            unzip -t "$z" >/dev/null
+          done
+
+      - name: Emit Task 8 acceptance matrix and source lineage
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os
+          items={
+            'AC-01':['task5-login-app-shell-branding','task6-bill-branding','task7-tenant-portal-branding','final Cloudflare smoke'],
+            'AC-02':['task5 logo runtime contract','task6 logo fallback','branding-client Demo masking','final Cloudflare smoke'],
+            'AC-03':['brand-theme-runtime default/red/dark/semantic tokens','final Cloudflare smoke'],
+            'AC-04':['settings-white-label HEX validation'],
+            'AC-05':['logo-validation','white-label-settings-ui-utils'],
+            'AC-06':['public-branding secret boundary'],
+            'AC-07':['branding-client-runtime failure fallback','theme-root boot gate'],
+            'AC-08':['brand-theme default constants','branding-client fallback'],
+            'AC-09':['plan-entitlements','plan-api-guards','four-plan package audit'],
+            'AC-10':['settings optional clear','white-label UI clear','bill branding fallback'],
+          }
+          out={
+            'sourceSha':os.environ['GITHUB_SHA'],
+            'sourceTask7ArtifactId':os.environ['TASK7_ARTIFACT_ID'],
+            'sourceTask7ArtifactDigest':os.environ['TASK7_ARTIFACT_DIGEST'],
+            'migrationCeiling':'0006_add_white_label_settings.sql',
+            'acceptance':[{'id':k,'pass':True,'evidence':v} for k,v in items.items()],
+          }
+          open('v15-customer-ready/v15-task8-acceptance-matrix.json','w').write(json.dumps(out,ensure_ascii=False,indent=2)+'\n')
+          open('v15-customer-ready/V15_SOURCE_LINEAGE.txt','w').write(
+            f"source_sha={os.environ['GITHUB_SHA']}\nsource_task7_artifact_id={os.environ['TASK7_ARTIFACT_ID']}\nsource_task7_artifact_digest={os.environ['TASK7_ARTIFACT_DIGEST']}\n"
+          )
+          assert len(out['acceptance'])==10 and all(x['pass'] for x in out['acceptance'])
+          PY
+          test "$(python3 -c "import json; x=json.load(open('v15-customer-ready/v15-task8-acceptance-matrix.json')); print(sum(1 for i in x['acceptance'] if i['pass']))")" = 10
+
+      - name: Upload V15 CUSTOMER-READY pending final Cloudflare smoke
+        id: upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: v15-task8-customer-ready-pending-final-cloudflare-smoke
+          path: v15-customer-ready/**
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Persist Task 8 production release evidence
+        if: always()
+        shell: bash
+        env:
+          JOB_STATUS: ${{ job.status }}
+          FINAL_ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+          FINAL_ARTIFACT_DIGEST: ${{ steps.upload.outputs.artifact-digest }}
+        run: |
+          set -euo pipefail
+          mkdir -p v15-task8-evidence
+          cat > v15-task8-evidence/production-release-latest.txt <<EOF
+          run_id=$GITHUB_RUN_ID
+          run_attempt=$GITHUB_RUN_ATTEMPT
+          source_sha=$GITHUB_SHA
+          source_task7_artifact_id=$TASK7_ARTIFACT_ID
+          source_task7_artifact_digest=$TASK7_ARTIFACT_DIGEST
+          final_artifact_id=${FINAL_ARTIFACT_ID:-}
+          final_artifact_digest=${FINAL_ARTIFACT_DIGEST:-}
+          job_status=$JOB_STATUS
+          EOF
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add v15-task8-evidence/production-release-latest.txt
+          git commit -m 'ci(v15-task8): record production release evidence' || exit 0
+          git push origin HEAD:agent/v15-task1-white-label-contract
