@@ -6,6 +6,7 @@ on:
     branches: [agent/v15-task1-white-label-contract]
     paths:
       - 'v15-task4-patches/008-task4-tests.patch.b64'
+      - 'v15-task4-patches/009-task4-impl.patch.b64'
       - '.github/workflows/v15-task4-task4-tdd.yml'
 
 permissions:
@@ -13,9 +14,9 @@ permissions:
   actions: read
 
 jobs:
-  task4-red:
+  task4-red-green:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
         with:
@@ -69,6 +70,26 @@ jobs:
           cat ../task4-red.log
           test "$rc" -ne 0
           grep -Eq 'whiteLabel|WhiteLabelSettingsSection|refreshBranding|missing payload' ../task4-red.log
+      - name: Apply Task 4 implementation
+        id: impl
+        working-directory: source
+        run: |
+          base64 -d ../v15-task4-patches/009-task4-impl.patch.b64 > ../task4-impl.patch
+          patch -p1 < ../task4-impl.patch
+      - name: Verify focused Task 4 GREEN
+        id: green
+        working-directory: source
+        run: npx tsx --test tests/white-label-settings-ui-utils.test.ts tests/white-label-settings-section.test.ts tests/white-label-settings-view-integration.test.ts tests/settings-white-label.test.ts tests/logo-api-contract.test.ts tests/plan-entitlements.test.ts tests/theme-refresh-runtime.test.ts
+      - name: Lint and build
+        id: build
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run lint
+          npm run build:pages
+          npm run build:vps
+          git diff --check
       - name: Persist Task 4 diagnostic evidence
         if: always()
         shell: bash
@@ -84,12 +105,15 @@ jobs:
           prior=${{ steps.prior.outcome }}
           tests=${{ steps.tests.outcome }}
           red=${{ steps.red.outcome }}
+          impl=${{ steps.impl.outcome }}
+          green=${{ steps.green.outcome }}
+          build=${{ steps.build.outcome }}
           EOF
-          if [ "${{ steps.red.outcome }}" = success ]; then
-            printf 'status=RED_VERIFIED\nrun_id=%s\nrun_attempt=%s\nsource_sha=%s\nmaster_sha256=%s\n' "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$GITHUB_SHA" 'ea70213d83f87eaacfb9002beee1bc5b46bdc3aea158d3bf94d626ab5c0d53c2' > v15-task4-evidence/task4-red.txt
+          if [ "${{ steps.green.outcome }}" = success ] && [ "${{ steps.build.outcome }}" = success ]; then
+            printf 'status=RED_VERIFIED_GREEN_PASS\nrun_id=%s\nrun_attempt=%s\nsource_sha=%s\nmaster_sha256=%s\n' "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$GITHUB_SHA" 'ea70213d83f87eaacfb9002beee1bc5b46bdc3aea158d3bf94d626ab5c0d53c2' > v15-task4-evidence/task4-green.txt
           fi
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add v15-task4-evidence/task4-latest.txt v15-task4-evidence/task4-red.txt 2>/dev/null || git add v15-task4-evidence/task4-latest.txt
+          git add v15-task4-evidence/task4-latest.txt v15-task4-evidence/task4-green.txt 2>/dev/null || git add v15-task4-evidence/task4-latest.txt
           git commit -m 'ci(v15-task4): record Task 4 diagnostic evidence' || exit 0
           git push origin HEAD:agent/v15-task1-white-label-contract
