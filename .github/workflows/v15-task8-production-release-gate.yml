@@ -205,7 +205,6 @@ jobs:
             src/utils/whiteLabelSettings.ts
             src/server/validators/logo.ts
             src/server/services/branding.service.ts
-            src/constants/planEntitlements.ts
             tests/task5-login-app-shell-branding.test.mjs
             tests/task6-bill-branding.test.mjs
             tests/task7-tenant-portal-branding.test.mjs
@@ -215,6 +214,22 @@ jobs:
               cmp "work/$f" "package-audit/$plan/$f"
             done
           done
+          # Master Builder intentionally rewrites only normalizePlan() fallback
+          # from pro to the generated package plan. Verify that exact transform.
+          python3 - <<'PY'
+          from pathlib import Path
+          master = Path('work/src/constants/planEntitlements.ts').read_text()
+          marker = "    : 'pro';\n}\n\nexport function getPlanEntitlements"
+          assert master.count(marker) == 1, 'unexpected Master plan fallback shape'
+          for plan in ('demo','basic','standard','pro'):
+              actual = Path(f'package-audit/{plan}/src/constants/planEntitlements.ts').read_text()
+              expected = master if plan == 'pro' else master.replace(
+                  marker,
+                  f"    : '{plan}';\n}}\n\nexport function getPlanEntitlements",
+                  1,
+              )
+              assert actual == expected, f'{plan}: unexpected planEntitlements transform'
+          PY
           test ! -e package-audit/demo/tests/task8-acceptance-matrix.test.mjs
           test ! -e package-audit/basic/tests/task8-acceptance-matrix.test.mjs
           test ! -e package-audit/standard/tests/task8-acceptance-matrix.test.mjs
