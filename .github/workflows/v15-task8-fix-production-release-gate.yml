@@ -1,0 +1,399 @@
+name: V15 Task 8 Bill Fallback Fix Release Gate
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [agent/v15-task1-white-label-contract]
+    paths:
+      - '.github/workflows/v15-task8-fix-production-release-gate.yml'
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: v15-task8-fix-production-release-gate
+  cancel-in-progress: true
+
+env:
+  BASE_ARTIFACT_ID: '9326820971'
+  BASE_ARTIFACT_SHA256: '25a402520dd01cb8c460a727208015b3dc06ad32c7a03dff90cc4f806d37f8b7'
+  BASE_ARTIFACT_DIGEST: 'sha256:25a402520dd01cb8c460a727208015b3dc06ad32c7a03dff90cc4f806d37f8b7'
+  BASE_RELEASE_SHA: 'c55367afa61227ea6fa09c501ec52f07933009a5'
+  BASE_MASTER_SHA256: '2d9a1a17bfc6a0e4da1edf0cda2fc4c9a488a2f5807bc16e36cabafea8aff231'
+  FIX_TEST_BLOB: '156a2a676121890a143e9b85e80660cee141d781'
+  FIX_TEST_SHA256: '2d09b285e51b596f2fd3f1e9af8e40a66c514554be3eda52955801479e74205c'
+  FIX_PATCH_BLOB: '66aec232b10a7199e90516f584dc0c6df934b163'
+  FIX_PATCH_SHA256: '17f4f5ab07781583ace3b001d335a027193e96edeca6eec6bb015b723df1376c'
+  ACCEPTANCE_TEST_BLOB: 'c4969bb7c2eafcfd52b88d1b5989056ac509f2dd'
+  ACCEPTANCE_TEST_SHA256: '6159d991853f3072db0a4468d840c6e788e3e7aec252b6b4bdeba66d1a547c82'
+  FIXED_APP_SHA256: '70769ae729b1390e7aa3adfd5e4588a13f2e95ba6dd1a9e8c27deee83d5c137e'
+  FIXED_HELPER_SHA256: '7595afe39a3709791c896af62567cc2a7e8c682af98b6ad8fdd2b450b49dcfa5'
+
+jobs:
+  release-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 100
+    steps:
+      - name: Checkout release branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/v15-task1-white-label-contract
+
+      - name: Verify pinned fix assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object v15-task8-fix/bill-api-fallback.test.mjs)" = "$FIX_TEST_BLOB"
+          test "$(git hash-object v15-task8-fix/apply_bill_fallback_fix.py)" = "$FIX_PATCH_BLOB"
+          test "$(git hash-object v15-task8/task8-acceptance-matrix.test.mjs)" = "$ACCEPTANCE_TEST_BLOB"
+          echo "$FIX_TEST_SHA256  v15-task8-fix/bill-api-fallback.test.mjs" | sha256sum --check --strict
+          echo "$FIX_PATCH_SHA256  v15-task8-fix/apply_bill_fallback_fix.py" | sha256sum --check --strict
+          echo "$ACCEPTANCE_TEST_SHA256  v15-task8/task8-acceptance-matrix.test.mjs" | sha256sum --check --strict
+          node --check v15-task8-fix/bill-api-fallback.test.mjs
+          python3 -m py_compile v15-task8-fix/apply_bill_fallback_fix.py
+
+      - name: Download and verify blocked Task 8 artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 8 --retry-all-errors --retry-delay 3 \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${BASE_ARTIFACT_ID}/zip" \
+            -o base-artifact.zip
+          echo "$BASE_ARTIFACT_SHA256  base-artifact.zip" | sha256sum --check --strict
+          rm -rf base-artifact work
+          mkdir base-artifact work
+          unzip -q base-artifact.zip -d base-artifact
+          test "$(grep '^source_sha=' base-artifact/V15_SOURCE_LINEAGE.txt | cut -d= -f2)" = "$BASE_RELEASE_SHA"
+          (cd base-artifact && sha256sum --check --strict V15_CUSTOMER_READY_SHA256.txt)
+          MASTER_ZIP="base-artifact/dorm-management-system-master-v15-CUSTOMER-READY.zip"
+          echo "$BASE_MASTER_SHA256  $MASTER_ZIP" | sha256sum --check --strict
+          unzip -q "$MASTER_ZIP" -d work
+          test "$(find work/d1-migrations -maxdepth 1 -type f -printf '%f\n' | sort | tail -n1)" = '0006_add_white_label_settings.sql'
+          echo 'd2d8e43f291a53f63b8712ee60377c9470d783262b456bc6065c29393f9e69bd  work/src/App.tsx' | sha256sum --check --strict
+          test ! -e work/src/utils/billApi.ts
+
+      - name: Reproduce RED on immutable blocked Master
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp v15-task8-fix/bill-api-fallback.test.mjs work/tests/bill-api-fallback.test.mjs
+          set +e
+          (cd work && node --test tests/bill-api-fallback.test.mjs) > bill-fallback-red.log 2>&1
+          status=$?
+          set -e
+          cat bill-fallback-red.log
+          test "$status" -ne 0
+          grep -Fq 'src/utils/billApi.ts must exist' bill-fallback-red.log
+
+      - name: Apply deterministic bounded fix and verify GREEN
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 v15-task8-fix/apply_bill_fallback_fix.py work
+          echo "$FIXED_APP_SHA256  work/src/App.tsx" | sha256sum --check --strict
+          echo "$FIXED_HELPER_SHA256  work/src/utils/billApi.ts" | sha256sum --check --strict
+          (cd work && node --test tests/bill-api-fallback.test.mjs)
+          cp v15-task8/task8-acceptance-matrix.test.mjs work/tests/task8-acceptance-matrix.test.mjs
+          (cd work && node --test tests/task8-acceptance-matrix.test.mjs)
+          rm work/tests/bill-api-fallback.test.mjs work/tests/task8-acceptance-matrix.test.mjs
+          test ! -e work/tests/bill-api-fallback.test.mjs
+          test ! -e work/tests/task8-acceptance-matrix.test.mjs
+
+      - name: Freeze deterministic fixed Master before dependency install
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import { writeFile } from 'node:fs/promises';
+          import { createZipFromDirectory, verifyZipBytes } from './work/scripts/zip-utils.mjs';
+          const bytes = await createZipFromDirectory('work');
+          verifyZipBytes(bytes);
+          await writeFile('dorm-management-system-master-v15-task8-fix-CANDIDATE.zip', bytes);
+          NODE
+          unzip -t dorm-management-system-master-v15-task8-fix-CANDIDATE.zip >/dev/null
+          sha256sum dorm-management-system-master-v15-task8-fix-CANDIDATE.zip > fixed-master-sha.txt
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: work/package-lock.json
+
+      - name: Fresh dependency install
+        working-directory: work
+        run: npm ci
+
+      - name: Focused V15 acceptance and runtime contracts
+        working-directory: work
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --test tests/task5-login-app-shell-branding.test.mjs tests/task6-bill-branding.test.mjs tests/task7-tenant-portal-branding.test.mjs
+          npx tsx --test \
+            tests/brand-theme-runtime.test.ts \
+            tests/theme-root-runtime.test.ts \
+            tests/theme-refresh-runtime.test.ts \
+            tests/branding-client-runtime.test.ts \
+            tests/settings-white-label.test.ts \
+            tests/white-label-settings-ui-utils.test.ts \
+            tests/logo-validation.test.ts \
+            tests/logo-api-contract.test.ts \
+            tests/public-branding.test.ts \
+            tests/plan-entitlements.test.ts \
+            tests/plan-api-guards.test.ts \
+            tests/bill-branding-snapshot.test.ts
+
+      - name: Full V15 regression suite
+        working-directory: work
+        run: npm test
+
+      - name: TypeScript lint
+        working-directory: work
+        run: npm run lint
+
+      - name: Cloudflare types
+        working-directory: work
+        run: npm run check:cloudflare-types:master
+
+      - name: Pages production build
+        working-directory: work
+        run: npm run build:pages
+
+      - name: VPS production build
+        working-directory: work
+        run: npm run build:vps
+
+      - name: One Master package generation and guarded release
+        working-directory: work
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run packages:generate
+          npm run test:builder
+          npm run packages:release
+
+      - name: Materialize fixed V15 candidate archives
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf v15-fixed-candidate package-audit
+          mkdir -p v15-fixed-candidate package-audit
+          cp dorm-management-system-master-v15-task8-fix-CANDIDATE.zip \
+            v15-fixed-candidate/dorm-management-system-master-v15-CUSTOMER-READY.zip
+          for plan in demo basic standard pro; do
+            src="work/release-v14/dorm-management-system-${plan}-v14-CUSTOMER-READY.zip"
+            dst="v15-fixed-candidate/dorm-management-system-${plan}-v15-CUSTOMER-READY.zip"
+            test -f "$src"
+            cp "$src" "$dst"
+            unzip -t "$dst" >/dev/null
+          done
+          (
+            cd v15-fixed-candidate
+            sha256sum dorm-management-system-*-v15-CUSTOMER-READY.zip | sort > V15_CUSTOMER_READY_SHA256.txt
+            sha256sum --check --strict V15_CUSTOMER_READY_SHA256.txt
+          )
+
+      - name: Four-plan fix regression and migration audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="$GITHUB_WORKSPACE"
+          for plan in demo basic standard pro; do
+            z="v15-fixed-candidate/dorm-management-system-${plan}-v15-CUSTOMER-READY.zip"
+            d="package-audit/${plan}"
+            mkdir -p "$d"
+            unzip -q "$z" -d "$d"
+            test "$(find "$d/d1-migrations" -maxdepth 1 -type f -printf '%f\n' | sort | tail -n1)" = '0006_add_white_label_settings.sql'
+            pkg_name="$(cd "$d" && node -p "require('./package.json').name")"
+            test "$pkg_name" = "dorm-management-system-${plan}"
+            grep -Eq "subscription_plan TEXT NOT NULL DEFAULT '${plan}'" "$d/schema_d1.sql"
+            echo "$FIXED_APP_SHA256  $d/src/App.tsx" | sha256sum --check --strict
+            echo "$FIXED_HELPER_SHA256  $d/src/utils/billApi.ts" | sha256sum --check --strict
+            cp v15-task8-fix/bill-api-fallback.test.mjs "$d/tests/bill-api-fallback.test.mjs"
+            (
+              cd "$d"
+              node --test tests/bill-api-fallback.test.mjs tests/task5-login-app-shell-branding.test.mjs tests/task6-bill-branding.test.mjs tests/task7-tenant-portal-branding.test.mjs
+              "$ROOT/work/node_modules/.bin/tsx" --test \
+                tests/brand-theme-runtime.test.ts \
+                tests/branding-client-runtime.test.ts \
+                tests/settings-white-label.test.ts \
+                tests/white-label-settings-ui-utils.test.ts \
+                tests/logo-validation.test.ts \
+                tests/public-branding.test.ts \
+                tests/plan-entitlements.test.ts \
+                tests/bill-branding-snapshot.test.ts
+            )
+            rm "$d/tests/bill-api-fallback.test.mjs"
+          done
+
+      - name: One Master and cross-plan source parity audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          files=(
+            src/App.tsx
+            src/utils/billApi.ts
+            src/components/Login.tsx
+            src/components/BillInvoice.tsx
+            src/components/TenantPortalView.tsx
+            src/context/ThemeContext.tsx
+            src/theme/brandTheme.ts
+            src/theme/brandingClient.ts
+            src/utils/billBranding.ts
+            src/utils/whiteLabelSettings.ts
+            src/server/validators/logo.ts
+            src/server/services/branding.service.ts
+            tests/task5-login-app-shell-branding.test.mjs
+            tests/task6-bill-branding.test.mjs
+            tests/task7-tenant-portal-branding.test.mjs
+          )
+          for plan in demo basic standard pro; do
+            for f in "${files[@]}"; do
+              cmp "work/$f" "package-audit/$plan/$f"
+            done
+          done
+          python3 - <<'PY'
+          from pathlib import Path
+          master = Path('work/src/constants/planEntitlements.ts').read_text()
+          marker = "    : 'pro';\n}\n\nexport function getPlanEntitlements"
+          assert master.count(marker) == 1, 'unexpected Master plan fallback shape'
+          for plan in ('demo','basic','standard','pro'):
+              actual = Path(f'package-audit/{plan}/src/constants/planEntitlements.ts').read_text()
+              expected = master if plan == 'pro' else master.replace(
+                  marker,
+                  f"    : '{plan}';\n}}\n\nexport function getPlanEntitlements",
+                  1,
+              )
+              assert actual == expected, f'{plan}: unexpected planEntitlements transform'
+          PY
+
+      - name: Security and secret audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf security-audit
+          mkdir security-audit
+          unzip -q v15-fixed-candidate/dorm-management-system-master-v15-CUSTOMER-READY.zip -d security-audit/master
+          for plan in demo basic standard pro; do
+            cp -a "package-audit/$plan" "security-audit/$plan"
+          done
+          python3 - <<'PY'
+          import re
+          from pathlib import Path
+          roots=[Path('security-audit/master'),Path('security-audit/demo'),Path('security-audit/basic'),Path('security-audit/standard'),Path('security-audit/pro')]
+          forbidden_exact={'.env','.dev.vars','wrangler.jsonc','credentials.json','service-account.json','pro-token.txt','demo-token.txt','pro-owner.txt','demo-owner.txt','pro-user.json','demo-user.json','pro-login.json','demo-login.json','pro-setup.json','demo-setup.json'}
+          forbidden_suffixes=('.pem','.p12','.pfx','.key')
+          secret_patterns=[
+            re.compile(rb'-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----'),
+            re.compile(rb'github_pat_[A-Za-z0-9_]{20,}'),
+            re.compile(rb'ghp_[A-Za-z0-9]{20,}'),
+            re.compile(rb'sk-proj-[A-Za-z0-9_-]{20,}'),
+          ]
+          failures=[]
+          for root in roots:
+            for p in root.rglob('*'):
+              if not p.is_file():
+                continue
+              name=p.name.lower(); rel=p.relative_to(root).as_posix()
+              if name in forbidden_exact or name.endswith(forbidden_suffixes) or name in {'id_rsa','id_ed25519'}:
+                failures.append(f'{root.name}:{rel}: forbidden credential/runtime file')
+                continue
+              try:
+                data=p.read_bytes()
+              except OSError:
+                continue
+              if any(pattern.search(data) for pattern in secret_patterns):
+                failures.append(f'{root.name}:{rel}: secret-like payload')
+          if failures:
+            raise SystemExit('\n'.join(failures))
+          PY
+          for z in v15-fixed-candidate/*.zip; do unzip -t "$z" >/dev/null; done
+
+      - name: Emit fixed Task 8 acceptance and lineage evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os
+          items={
+            'AC-01':['task5 app-shell contract','task6 bill contract','task7 tenant portal contract','bill fallback race regression'],
+            'AC-02':['runtime logo contract','Demo branding mask','bill logo fallback'],
+            'AC-03':['brand token semantic boundaries'],
+            'AC-04':['settings HEX validation'],
+            'AC-05':['logo validation and UI utility'],
+            'AC-06':['public branding secret boundary'],
+            'AC-07':['branding failure fallback and boot gate'],
+            'AC-08':['default branding constants and fallback'],
+            'AC-09':['plan entitlements, API guards and four-plan audit'],
+            'AC-10':['optional clears and bill fallback behavior'],
+          }
+          out={
+            'sourceSha':os.environ['GITHUB_SHA'],
+            'baseArtifactId':os.environ['BASE_ARTIFACT_ID'],
+            'baseArtifactDigest':os.environ['BASE_ARTIFACT_DIGEST'],
+            'baseReleaseSha':os.environ['BASE_RELEASE_SHA'],
+            'fixPatchBlob':os.environ['FIX_PATCH_BLOB'],
+            'fixTestBlob':os.environ['FIX_TEST_BLOB'],
+            'fixedAppSha256':os.environ['FIXED_APP_SHA256'],
+            'fixedHelperSha256':os.environ['FIXED_HELPER_SHA256'],
+            'migrationCeiling':'0006_add_white_label_settings.sql',
+            'finalCloudflareSmoke':'pending',
+            'acceptance':[{'id':k,'pass':True,'evidence':v} for k,v in items.items()],
+          }
+          open('v15-fixed-candidate/v15-task8-acceptance-matrix.json','w').write(json.dumps(out,ensure_ascii=False,indent=2)+'\n')
+          open('v15-fixed-candidate/V15_SOURCE_LINEAGE.txt','w').write(
+            f"source_sha={os.environ['GITHUB_SHA']}\n"
+            f"base_artifact_id={os.environ['BASE_ARTIFACT_ID']}\n"
+            f"base_artifact_digest={os.environ['BASE_ARTIFACT_DIGEST']}\n"
+            f"base_release_sha={os.environ['BASE_RELEASE_SHA']}\n"
+            f"fix_patch_blob={os.environ['FIX_PATCH_BLOB']}\n"
+            f"fix_test_blob={os.environ['FIX_TEST_BLOB']}\n"
+            f"fixed_app_sha256={os.environ['FIXED_APP_SHA256']}\n"
+            f"fixed_helper_sha256={os.environ['FIXED_HELPER_SHA256']}\n"
+            "final_cloudflare_smoke=pending\n"
+          )
+          assert len(out['acceptance']) == 10 and all(x['pass'] for x in out['acceptance'])
+          PY
+
+      - name: Upload fixed V15 candidate pending final Cloudflare smoke
+        id: upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: v15-task8-fixed-customer-ready-pending-final-cloudflare-smoke
+          path: v15-fixed-candidate/**
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Persist fixed Task 8 release evidence
+        if: always()
+        shell: bash
+        env:
+          FIX_ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+          FIX_ARTIFACT_DIGEST: ${{ steps.upload.outputs.artifact-digest }}
+        run: |
+          set -euo pipefail
+          mkdir -p v15-task8-evidence
+          cat > v15-task8-evidence/fix-production-release-latest.txt <<EOF
+          run_id=$GITHUB_RUN_ID
+          run_attempt=$GITHUB_RUN_ATTEMPT
+          source_sha=$GITHUB_SHA
+          base_artifact_id=$BASE_ARTIFACT_ID
+          base_artifact_digest=$BASE_ARTIFACT_DIGEST
+          fix_patch_blob=$FIX_PATCH_BLOB
+          fix_test_blob=$FIX_TEST_BLOB
+          fixed_app_sha256=$FIXED_APP_SHA256
+          fixed_helper_sha256=$FIXED_HELPER_SHA256
+          candidate_artifact_id=${FIX_ARTIFACT_ID:-}
+          candidate_artifact_digest=${FIX_ARTIFACT_DIGEST:-}
+          job_status=${{ job.status }}
+          EOF
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add v15-task8-evidence/fix-production-release-latest.txt
+          git commit -m 'ci(v15-task8): record bounded fix release evidence' || exit 0
+          git push origin HEAD:agent/v15-task1-white-label-contract
