@@ -1,0 +1,9 @@
+diff --git a/src/components/SettingsView.tsx b/src/components/SettingsView.tsx
+--- a/src/components/SettingsView.tsx
++++ b/src/components/SettingsView.tsx
+@@ -640,1 +640,1 @@
+- if (!meta.ok) {
++ if (meta.ok === false) {
+@@ -701,1 +701,1 @@
+-  if (!normalized.ok) {
++  if (normalized.ok === false) {
