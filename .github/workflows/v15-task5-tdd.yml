@@ -1,0 +1,217 @@
+name: V15 Task 5 TDD Gate
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [agent/v15-task1-white-label-contract]
+    paths:
+      - 'v15-task5-patches/001-task5-tests.patch'
+      - 'v15-task5-patches/002-task5-impl.patch'
+      - '.github/workflows/v15-task5-tdd.yml'
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: v15-task5-tdd
+  cancel-in-progress: true
+
+env:
+  TASK4_ARTIFACT_ID: 9308548139
+  TASK4_MASTER_SHA256: e87dadb925cc5319a5db08409930277c3f31ae2a8479fd2168158782c9c47c11
+  TEST_PATCH_BLOB: 0a4af7ed137bde03a9155c2a5c0f53befb726898
+  TEST_PATCH_SHA256: 1f91049889c7128163faaecb031c4b6d6da909608482962ceef786851547b2c7
+  IMPL_PATCH_BLOB: 6974d24a2c3a91abe38c9e553657306b24b07b63
+  IMPL_PATCH_SHA256: 0a6ab6eb60be235262916a1c2c6123b0c12ac4f211f56ba3c637d2ae2423d137
+
+jobs:
+  red-green:
+    name: immutable Task 4 -> RED -> GREEN
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Checkout Task 5 branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/v15-task1-white-label-contract
+
+      - name: Download immutable V15 Task 4 candidate
+        id: download
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p candidate
+          curl --fail --location --retry 8 --retry-all-errors --retry-delay 3 \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${TASK4_ARTIFACT_ID}/zip" \
+            -o task4-artifact.zip
+          unzip -q task4-artifact.zip -d candidate
+
+      - name: Verify and extract exact Task 4 master
+        id: extract
+        shell: bash
+        run: |
+          set -euo pipefail
+          MASTER_ZIP="$(find candidate -type f -name 'dorm-management-system-master-v15-task4-REVIEW-CI.zip' -print -quit)"
+          test -n "$MASTER_ZIP"
+          echo "$TASK4_MASTER_SHA256  $MASTER_ZIP" | sha256sum --check --strict
+          rm -rf source && mkdir source
+          unzip -q "$MASTER_ZIP" -d source
+          test -f source/src/utils/whiteLabelSettings.ts
+          test ! -e source/src/utils/logoOptimizer.ts
+          test "$(find source/d1-migrations -maxdepth 1 -type f -printf '%f\n' | sort | tail -n1)" = '0006_add_white_label_settings.sql'
+          (
+            cd source
+            git init -q
+            git config user.email 'ci@example.invalid'
+            git config user.name 'V15 Task 5 CI'
+            git add -A
+            git commit -qm 'immutable Task 4 baseline'
+          )
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: source/package-lock.json
+
+      - name: Fresh dependency install
+        id: install
+        working-directory: source
+        run: npm ci
+
+      - name: Verify and apply Task 5 tests-only patch
+        id: tests_patch
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object ../v15-task5-patches/001-task5-tests.patch)" = "$TEST_PATCH_BLOB"
+          echo "$TEST_PATCH_SHA256  ../v15-task5-patches/001-task5-tests.patch" | sha256sum --check --strict
+          patch --dry-run -p1 < ../v15-task5-patches/001-task5-tests.patch
+          patch -p1 < ../v15-task5-patches/001-task5-tests.patch
+
+      - name: Prove RED against immutable Task 4 source
+        id: red
+        working-directory: source
+        shell: bash
+        run: |
+          set +e
+          node --experimental-transform-types --test \
+            tests/logo-client-optimizer.test.ts \
+            tests/logo-client-optimizer-integration.test.ts \
+            > ../task5-red.log 2>&1
+          status=$?
+          set -e
+          cat ../task5-red.log
+          if [ "$status" -eq 0 ]; then
+            echo '::error::Task 5 tests-only state unexpectedly passed.'
+            exit 1
+          fi
+          grep -Eq 'ERR_MODULE_NOT_FOUND|ENOENT.*logoOptimizer|logoOptimizer\.ts' ../task5-red.log
+
+      - name: Verify and apply Task 5 implementation patch
+        id: impl_patch
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object ../v15-task5-patches/002-task5-impl.patch)" = "$IMPL_PATCH_BLOB"
+          echo "$IMPL_PATCH_SHA256  ../v15-task5-patches/002-task5-impl.patch" | sha256sum --check --strict
+          patch --dry-run -p1 < ../v15-task5-patches/002-task5-impl.patch
+          patch -p1 < ../v15-task5-patches/002-task5-impl.patch
+          git diff --check -- \
+            src/utils/logoOptimizer.ts \
+            src/components/SettingsView.tsx \
+            src/components/WhiteLabelSettingsSection.tsx \
+            tests/logo-client-optimizer.test.ts \
+            tests/logo-client-optimizer-integration.test.ts
+
+      - name: Prove GREEN Task 5 plus Task 4 focused regressions
+        id: green
+        working-directory: source
+        run: |
+          node --experimental-transform-types --test \
+            tests/logo-client-optimizer.test.ts \
+            tests/logo-client-optimizer-integration.test.ts \
+            tests/white-label-settings-ui-utils.test.ts \
+            tests/white-label-settings-view-integration.test.ts \
+            tests/white-label-settings-section.test.ts \
+            tests/theme-refresh-runtime.test.ts \
+            tests/theme-root-runtime.test.ts
+
+      - name: Task 4 theme regression
+        id: theme_regression
+        working-directory: source
+        run: npx tsx --test tests/brand-theme-runtime.test.ts tests/branding-client-runtime.test.ts tests/theme-root-runtime.test.ts tests/theme-css-contract.test.ts
+
+      - name: Static scope guard
+        id: scope
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'WHITE_LABEL_LOGO_MAX_DIMENSION = 1024' src/utils/logoOptimizer.ts
+          grep -q 'WHITE_LABEL_LOGO_TARGET_BYTES = 286_720' src/utils/logoOptimizer.ts
+          grep -q 'createImageBitmap' src/utils/logoOptimizer.ts
+          grep -q "document.createElement('canvas')" src/utils/logoOptimizer.ts
+          grep -q 'optimizeLogoFile(file)' src/components/SettingsView.tsx
+          ! grep -q 'new FileReader()' src/components/SettingsView.tsx
+          grep -q "fetch('/api/settings/logo'" src/components/SettingsView.tsx
+          grep -q "hasPlanFeature(subscriptionPlan, 'whiteLabel')" src/components/SettingsView.tsx
+          grep -q "hasPlanFeature(subscriptionPlan, 'promptPay')" src/components/SettingsView.tsx
+          test "$(find d1-migrations -maxdepth 1 -type f -printf '%f\n' | sort | tail -n1)" = '0006_add_white_label_settings.sql'
+
+      - name: TypeScript lint gate
+        id: lint
+        working-directory: source
+        run: npm run lint
+
+      - name: Pages production build
+        id: pages
+        working-directory: source
+        run: npm run build:pages
+
+      - name: VPS production build
+        id: vps
+        working-directory: source
+        run: npm run build:vps
+
+      - name: Persist Task 5 TDD evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p v15-task5-evidence
+          cat > v15-task5-evidence/tdd-latest.txt <<EOF
+          run_id=$GITHUB_RUN_ID
+          run_attempt=$GITHUB_RUN_ATTEMPT
+          source_sha=$GITHUB_SHA
+          download=${{ steps.download.outcome }}
+          extract=${{ steps.extract.outcome }}
+          install=${{ steps.install.outcome }}
+          tests_patch=${{ steps.tests_patch.outcome }}
+          red=${{ steps.red.outcome }}
+          impl_patch=${{ steps.impl_patch.outcome }}
+          green=${{ steps.green.outcome }}
+          theme_regression=${{ steps.theme_regression.outcome }}
+          scope=${{ steps.scope.outcome }}
+          lint=${{ steps.lint.outcome }}
+          pages=${{ steps.pages.outcome }}
+          vps=${{ steps.vps.outcome }}
+          task4_artifact_id=$TASK4_ARTIFACT_ID
+          task4_master_sha256=$TASK4_MASTER_SHA256
+          test_patch_blob=$TEST_PATCH_BLOB
+          test_patch_sha256=$TEST_PATCH_SHA256
+          impl_patch_blob=$IMPL_PATCH_BLOB
+          impl_patch_sha256=$IMPL_PATCH_SHA256
+          EOF
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add v15-task5-evidence/tdd-latest.txt
+          git commit -m 'ci(v15-task5): record TDD evidence' || exit 0
+          git push origin HEAD:agent/v15-task1-white-label-contract
