@@ -1,0 +1,250 @@
+name: V15 Task 4 Production Gate
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [agent/v15-task1-white-label-contract]
+    paths:
+      - 'v15-task4-patches/**'
+      - '.github/workflows/v15-task4-production-gate.yml'
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: v15-task4-production-gate
+  cancel-in-progress: true
+
+env:
+  TASK3_ARTIFACT_ID: 9295620943
+  TASK3_MASTER_SHA256: ea70213d83f87eaacfb9002beee1bc5b46bdc3aea158d3bf94d626ab5c0d53c2
+  TEST_PATCH_BLOB: 530ce99976dd7e23d7aa42692ef65b88acc5fd45
+  APP_PATCH_BLOB: fba1edcfbb33cd61bd5ac5f3bbdcf731f0626db8
+  APP_PATCH_SHA256: 7b319867a4244ca4c9f0c219d486cd3077d419e40444d022720dab5ef87b4bcc
+  SETTINGS_PATCH_BLOB: 7f014e5aee21f7bd9b2fda58676ae743bb23b788
+  SETTINGS_PATCH_SHA256: 5dff662790a4bf69365cec79c875b4053dd3c792a621b7f29457ae7d64e04c56
+  SECTION_PATCH_BLOB: bbbd66cc6100df5c067f87caa6e9a899ddc7fe1b
+  SECTION_PATCH_SHA256: 6e5b435109f5a4a6719bf62370bcde93e8edfd2c202d2d106420268651652d2e
+  THEME_PATCH_BLOB: 63809b5a53a6321b40dd59b81ea8515c5a28ebb7
+  THEME_PATCH_SHA256: db1b0e08e6453567bf145e25258ab97691bea91dc628d5120d64e69867d491ed
+  UTILS_PATCH_BLOB: bbb9b7705f4bad62987467147b29c764ae6310ca
+  UTILS_PATCH_SHA256: 42a2fe0960a066655583d1336f74d0c324f82a6bbdf1a9221402ddbe5d901092
+  NARROW_PATCH_BLOB: 7d5604c4cc9efff9b4565c0ddf120956ab7164e8
+  NARROW_PATCH_SHA256: 4d8f70092f2f085ced6ee3967a576054553499ffcf45facc4da4fe3cabc45d24
+
+jobs:
+  production-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 70
+    steps:
+      - name: Checkout Task 4 branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/v15-task1-white-label-contract
+
+      - name: Download immutable Task 3 candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p candidate
+          curl --fail --location --retry 8 --retry-all-errors --retry-delay 3 \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${TASK3_ARTIFACT_ID}/zip" \
+            -o task3-artifact.zip
+          unzip -q task3-artifact.zip -d candidate
+
+      - name: Verify and extract exact Task 3 master
+        shell: bash
+        run: |
+          set -euo pipefail
+          MASTER_ZIP="$(find candidate -type f -name 'dorm-management-system-master-v15-task3-REVIEW-CI.zip' -print -quit)"
+          test -n "$MASTER_ZIP"
+          echo "$TASK3_MASTER_SHA256  $MASTER_ZIP" | sha256sum --check --strict
+          rm -rf work && mkdir work
+          unzip -q "$MASTER_ZIP" -d work
+          test -f work/src/context/ThemeContext.tsx
+          test ! -e work/src/components/WhiteLabelSettingsSection.tsx
+          test ! -e work/src/utils/whiteLabelSettings.ts
+          test "$(find work/d1-migrations -maxdepth 1 -type f -printf '%f\n' | sort | tail -n1)" = '0006_add_white_label_settings.sql'
+
+      - name: Apply verified Task 4 tests and implementation
+        working-directory: work
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object ../v15-task4-patches/001-task4-tests.patch.gz.b64)" = "$TEST_PATCH_BLOB"
+          base64 -d ../v15-task4-patches/001-task4-tests.patch.gz.b64 | gzip -d > ../task4-tests.patch
+          patch -p1 < ../task4-tests.patch
+          verify() { test "$(git hash-object "../$1")" = "$2"; echo "$3  ../$1" | sha256sum --check --strict; }
+          verify v15-task4-patches/002a-App.patch "$APP_PATCH_BLOB" "$APP_PATCH_SHA256"
+          verify v15-task4-patches/002b-SettingsView.patch "$SETTINGS_PATCH_BLOB" "$SETTINGS_PATCH_SHA256"
+          verify v15-task4-patches/002c-WhiteLabelSettingsSection.patch "$SECTION_PATCH_BLOB" "$SECTION_PATCH_SHA256"
+          verify v15-task4-patches/002d-ThemeContext.patch "$THEME_PATCH_BLOB" "$THEME_PATCH_SHA256"
+          verify v15-task4-patches/002e-whiteLabelSettings.patch "$UTILS_PATCH_BLOB" "$UTILS_PATCH_SHA256"
+          verify v15-task4-patches/002f-SettingsView-narrowing.patch "$NARROW_PATCH_BLOB" "$NARROW_PATCH_SHA256"
+          for p in \
+            ../v15-task4-patches/002a-App.patch \
+            ../v15-task4-patches/002b-SettingsView.patch \
+            ../v15-task4-patches/002c-WhiteLabelSettingsSection.patch \
+            ../v15-task4-patches/002d-ThemeContext.patch \
+            ../v15-task4-patches/002e-whiteLabelSettings.patch \
+            ../v15-task4-patches/002f-SettingsView-narrowing.patch; do
+            patch --dry-run -p1 < "$p"
+            patch -p1 < "$p"
+          done
+          git diff --check
+
+      - name: Verify Task 4 scope anchors
+        working-directory: work
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f src/components/WhiteLabelSettingsSection.tsx
+          test -f src/utils/whiteLabelSettings.ts
+          grep -q "hasPlanFeature(subscriptionPlan, 'whiteLabel')" src/components/SettingsView.tsx
+          grep -q "hasPlanFeature(subscriptionPlan, 'promptPay')" src/components/SettingsView.tsx
+          grep -q "refreshBranding" src/components/SettingsView.tsx
+          grep -q "source !== 'public'" src/context/ThemeContext.tsx
+          grep -q "DEFAULT_BRAND_COLOR = '#1DB954'" src/theme/brandTheme.ts
+          ! grep -q 'document.documentElement' src/components/WhiteLabelSettingsSection.tsx
+          test "$(find d1-migrations -maxdepth 1 -type f -printf '%f\n' | sort | tail -n1)" = '0006_add_white_label_settings.sql'
+
+      - name: Create immutable Task 4 master candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f dorm-management-system-master-v15-task4-REVIEW-CI.zip
+          (cd work && zip -qr ../dorm-management-system-master-v15-task4-REVIEW-CI.zip .)
+          unzip -t dorm-management-system-master-v15-task4-REVIEW-CI.zip >/dev/null
+          sha256sum dorm-management-system-master-v15-task4-REVIEW-CI.zip | tee MASTER_V15_TASK4_CI_SHA256.txt
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: work/package-lock.json
+
+      - name: Fresh dependency install
+        working-directory: work
+        run: npm ci
+
+      - name: Focused Task 4 contracts
+        working-directory: work
+        run: |
+          node --experimental-transform-types --test \
+            tests/white-label-settings-ui-utils.test.ts \
+            tests/theme-root-runtime.test.ts \
+            tests/theme-refresh-runtime.test.ts \
+            tests/white-label-settings-section.test.ts \
+            tests/white-label-settings-view-integration.test.ts
+
+      - name: Theme regression
+        working-directory: work
+        run: npx tsx --test tests/brand-theme-runtime.test.ts tests/branding-client-runtime.test.ts tests/theme-root-runtime.test.ts tests/theme-css-contract.test.ts
+
+      - name: Backup regression
+        working-directory: work
+        run: npm run test:backup
+
+      - name: Full test suite
+        working-directory: work
+        run: npm test
+
+      - name: TypeScript lint
+        working-directory: work
+        run: npm run lint
+
+      - name: Cloudflare types
+        working-directory: work
+        run: npm run check:cloudflare-types:master
+
+      - name: Pages production build
+        working-directory: work
+        run: npm run build:pages
+
+      - name: VPS production build
+        working-directory: work
+        run: npm run build:vps
+
+      - name: Generate PREVIEW and guarded release packages
+        working-directory: work
+        run: |
+          npm run packages:generate
+          npm run test:builder
+          npm run packages:release
+
+      - name: Materialize Task 4 candidate packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p work/release-v15-task4
+          for plan in demo basic standard pro; do
+            src="work/release-v14/dorm-management-system-${plan}-v14-CUSTOMER-READY.zip"
+            dst="work/release-v15-task4/dorm-management-system-${plan}-v15-TASK4-CANDIDATE.zip"
+            test -f "$src"
+            cp "$src" "$dst"
+            unzip -t "$dst" >/dev/null
+          done
+          sha256sum work/release-v15-task4/*.zip | tee work/V15_TASK4_CANDIDATE_SHA256.txt
+
+      - name: One Master and package static parity audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf audit && mkdir audit
+          unzip -Z1 dorm-management-system-master-v15-task4-REVIEW-CI.zip > audit/master.txt
+          for entry in src/components/WhiteLabelSettingsSection.tsx src/utils/whiteLabelSettings.ts src/components/SettingsView.tsx src/context/ThemeContext.tsx; do
+            grep -Fx "$entry" audit/master.txt
+          done
+          ! grep -Fq 'node_modules/' audit/master.txt
+          ! grep -Fq 'release-v14/' audit/master.txt
+          for plan in demo basic standard pro; do
+            z="work/release-v15-task4/dorm-management-system-${plan}-v15-TASK4-CANDIDATE.zip"
+            unzip -p "$z" src/components/WhiteLabelSettingsSection.tsx > "audit/${plan}-section.tsx"
+            unzip -p "$z" src/components/SettingsView.tsx > "audit/${plan}-settings.tsx"
+            unzip -p "$z" src/context/ThemeContext.tsx > "audit/${plan}-theme.tsx"
+            grep -Fq "hasPlanFeature(subscriptionPlan, 'whiteLabel')" "audit/${plan}-settings.tsx"
+            grep -Fq "hasPlanFeature(subscriptionPlan, 'promptPay')" "audit/${plan}-settings.tsx"
+            grep -Fq 'refreshBranding' "audit/${plan}-settings.tsx"
+            grep -Fq "source !== 'public'" "audit/${plan}-theme.tsx"
+            ! grep -Fq 'document.documentElement' "audit/${plan}-section.tsx"
+          done
+          cmp audit/demo-section.tsx audit/pro-section.tsx
+          cmp audit/demo-settings.tsx audit/pro-settings.tsx
+          cmp audit/demo-theme.tsx audit/pro-theme.tsx
+
+      - name: Upload Task 4 candidate artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: v15-task4-candidate-pending-d1-browser-smoke
+          path: |
+            dorm-management-system-master-v15-task4-REVIEW-CI.zip
+            MASTER_V15_TASK4_CI_SHA256.txt
+            work/release-v15-task4/**
+            work/V15_TASK4_CANDIDATE_SHA256.txt
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Persist production gate evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p v15-task4-evidence
+          cat > v15-task4-evidence/production-gate-latest.txt <<EOF
+          run_id=$GITHUB_RUN_ID
+          run_attempt=$GITHUB_RUN_ATTEMPT
+          source_sha=$GITHUB_SHA
+          job_status=$JOB_STATUS
+          EOF
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add v15-task4-evidence/production-gate-latest.txt
+          git commit -m 'ci(v15-task4): record production gate evidence' || exit 0
+          git push origin HEAD:agent/v15-task1-white-label-contract
+        env:
+          JOB_STATUS: ${{ job.status }}
