@@ -1,0 +1,453 @@
+name: V15 Task 8 Final CUSTOMER-READY Cloudflare Smoke
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [agent/v15-task1-white-label-contract]
+    paths:
+      - '.github/workflows/v15-task8-final-cloudflare-smoke.yml'
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: v15-task8-final-cloudflare-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  SOURCE_ARTIFACT_ID: '9326820971'
+  SOURCE_ARTIFACT_SHA256: '25a402520dd01cb8c460a727208015b3dc06ad32c7a03dff90cc4f806d37f8b7'
+  SOURCE_ARTIFACT_DIGEST: 'sha256:25a402520dd01cb8c460a727208015b3dc06ad32c7a03dff90cc4f806d37f8b7'
+  SOURCE_RELEASE_SHA: 'c55367afa61227ea6fa09c501ec52f07933009a5'
+  MASTER_ZIP_SHA256: '2d9a1a17bfc6a0e4da1edf0cda2fc4c9a488a2f5807bc16e36cabafea8aff231'
+  PRO_ZIP_SHA256: '5fe906c99f22a92325015b7800079af6d68b3c08f13d3285e7093791bccf1916'
+  DEMO_ZIP_SHA256: 'ad02052c10fb50eb4d48c13caa5cdc3e553a85b28689b4255a519a7c4d703946'
+  TASK5_HARNESS_BLOB: 'f116f89bb391b36762658add03ba07dbef463722'
+  TASK6_HARNESS_BLOB: '80c51ecbcf8ec4d269f2d86c411a69512a7928b3'
+  TASK7_HARNESS_BLOB: '8d471b91f84f0559ce6bc00652a17cdadb2aca4e'
+  CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+  CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+jobs:
+  final-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 95
+    environment: "fulfilling-communication / production"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/v15-task1-white-label-contract
+
+      - name: Verify frozen browser harnesses and Cloudflare secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${CLOUDFLARE_API_TOKEN:-}"
+          test -n "${CLOUDFLARE_ACCOUNT_ID:-}"
+          test "$(git hash-object v15-task5/browser-smoke.mjs)" = "$TASK5_HARNESS_BLOB"
+          test "$(git hash-object v15-task6/browser-export-smoke-v2.mjs)" = "$TASK6_HARNESS_BLOB"
+          test "$(git hash-object v15-task7/portal-branding-smoke.mjs)" = "$TASK7_HARNESS_BLOB"
+          node --check v15-task5/browser-smoke.mjs
+          node --check v15-task6/browser-export-smoke-v2.mjs
+          node --check v15-task7/portal-branding-smoke.mjs
+
+      - name: Download and verify exact V15 CUSTOMER-READY artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 8 --retry-all-errors --retry-delay 3 \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${SOURCE_ARTIFACT_ID}/zip" \
+            -o final-artifact.zip
+          echo "$SOURCE_ARTIFACT_SHA256  final-artifact.zip" | sha256sum --check --strict
+          rm -rf final-artifact pro-work demo-work
+          mkdir final-artifact
+          unzip -q final-artifact.zip -d final-artifact
+          test "$(cat final-artifact/V15_SOURCE_LINEAGE.txt | grep '^source_sha=' | cut -d= -f2)" = "$SOURCE_RELEASE_SHA"
+          python3 - <<'PY'
+          import json, os
+          x=json.load(open('final-artifact/v15-task8-acceptance-matrix.json'))
+          assert x['sourceSha']==os.environ['SOURCE_RELEASE_SHA']
+          assert x['migrationCeiling']=='0006_add_white_label_settings.sql'
+          assert len(x['acceptance'])==10 and all(i.get('pass') is True for i in x['acceptance'])
+          assert [i['id'] for i in x['acceptance']]==[f'AC-{i:02d}' for i in range(1,11)]
+          PY
+          (cd final-artifact && sha256sum --check --strict V15_CUSTOMER_READY_SHA256.txt)
+          echo "$MASTER_ZIP_SHA256  final-artifact/dorm-management-system-master-v15-CUSTOMER-READY.zip" | sha256sum --check --strict
+          echo "$PRO_ZIP_SHA256  final-artifact/dorm-management-system-pro-v15-CUSTOMER-READY.zip" | sha256sum --check --strict
+          echo "$DEMO_ZIP_SHA256  final-artifact/dorm-management-system-demo-v15-CUSTOMER-READY.zip" | sha256sum --check --strict
+          mkdir pro-work demo-work
+          unzip -q final-artifact/dorm-management-system-pro-v15-CUSTOMER-READY.zip -d pro-work
+          unzip -q final-artifact/dorm-management-system-demo-v15-CUSTOMER-READY.zip -d demo-work
+          for d in pro-work demo-work; do
+            test "$(find "$d/d1-migrations" -maxdepth 1 -type f -printf '%f\n' | sort | tail -n1)" = '0006_add_white_label_settings.sql'
+            grep -Fq "import { useTheme } from '../context/ThemeContext.tsx';" "$d/src/components/TenantPortalView.tsx"
+            grep -Fq 'resolveBillBrandingSnapshot' "$d/src/components/BillInvoice.tsx"
+          done
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install exact final package dependencies
+        run: |
+          (cd pro-work && npm ci)
+          (cd demo-work && npm ci)
+
+      - name: Allocate temporary final-smoke Cloudflare resources
+        shell: bash
+        run: |
+          set -euo pipefail
+          P="$(printf '%s' "$GITHUB_RUN_ID" | tr -cd '0-9' | tail -c 10)-${GITHUB_RUN_ATTEMPT}"
+          echo "RUN_MARKER=$P" >> "$GITHUB_ENV"
+          echo "PRO_PAGES=v15-t8-pro-${P}" >> "$GITHUB_ENV"
+          echo "PRO_D1=v15-t8-pro-${P}-db" >> "$GITHUB_ENV"
+          echo "DEMO_PAGES=v15-t8-demo-${P}" >> "$GITHUB_ENV"
+          echo "DEMO_D1=v15-t8-demo-${P}-db" >> "$GITHUB_ENV"
+
+      - name: Create D1 and render exact package configs
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd pro-work && npx wrangler d1 create "$PRO_D1" --location apac && npx wrangler d1 info "$PRO_D1" --json > ../pro-d1.json)
+          (cd demo-work && npx wrangler d1 create "$DEMO_D1" --location apac && npx wrangler d1 info "$DEMO_D1" --json > ../demo-d1.json)
+          python3 - <<'PY'
+          import importlib.util, os, sys
+          from pathlib import Path
+          def load(path,name):
+              s=importlib.util.spec_from_file_location(name,Path(path)); m=importlib.util.module_from_spec(s); sys.modules[name]=m; s.loader.exec_module(m); return m
+          h=load('.github/scripts/v14_task12_d1_smoke.py','h8'); c=load('.github/scripts/v14_task12_wrangler_config.py','c8')
+          for p,d,i in [('PRO',Path('pro-work'),Path('pro-d1.json')),('DEMO',Path('demo-work'),Path('demo-d1.json'))]:
+              x=h.parse_wrangler_json(i.read_text()); x=x[0] if isinstance(x,list) else x
+              uid=x.get('uuid') or x.get('id') or x.get('database_id'); assert uid
+              text=c.build_wrangler_config((d/'wrangler.template.jsonc').read_text(),os.environ[p+'_PAGES'],os.environ[p+'_D1'],str(uid))
+              (d/'wrangler.jsonc').write_text(text)
+          PY
+
+      - name: Create Pages secrets and migrate through 0006
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd pro-work && npx wrangler pages project create "$PRO_PAGES" --production-branch main)
+          (cd demo-work && npx wrangler pages project create "$DEMO_PAGES" --production-branch main)
+          S1="$(python3 -c 'import secrets;print(secrets.token_urlsafe(48))')"; S2="$(python3 -c 'import secrets;print(secrets.token_urlsafe(48))')"
+          printf '%s\n' "$S1" | (cd pro-work && npx wrangler pages secret put JWT_SECRET --project-name "$PRO_PAGES")
+          printf '%s\n' "$S2" | (cd demo-work && npx wrangler pages secret put JWT_SECRET --project-name "$DEMO_PAGES")
+          unset S1 S2
+          (cd pro-work && npx wrangler d1 migrations apply DB --remote --config wrangler.jsonc)
+          (cd demo-work && npx wrangler d1 migrations apply DB --remote --config wrangler.jsonc)
+
+      - name: Build and deploy exact final Pro and Demo packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd pro-work && npm run build:pages)
+          (cd pro-work && npx wrangler pages deploy dist --project-name "$PRO_PAGES" --branch main --commit-hash "$SOURCE_RELEASE_SHA" --commit-dirty=false) | tee pro-deploy.log
+          (cd demo-work && npm run build:pages)
+          (cd demo-work && npx wrangler pages deploy dist --project-name "$DEMO_PAGES" --branch main --commit-hash "$SOURCE_RELEASE_SHA" --commit-dirty=false) | tee demo-deploy.log
+          PRO_DEPLOY_URL="$(grep -Eo 'https://[^[:space:]]+\.pages\.dev' pro-deploy.log | tail -n1)"
+          DEMO_DEPLOY_URL="$(grep -Eo 'https://[^[:space:]]+\.pages\.dev' demo-deploy.log | tail -n1)"
+          test -n "$PRO_DEPLOY_URL" && test -n "$DEMO_DEPLOY_URL"
+          case "$PRO_DEPLOY_URL" in https://*.$PRO_PAGES.pages.dev) ;; *) echo "unexpected Pro deployment URL: $PRO_DEPLOY_URL" >&2; exit 1;; esac
+          case "$DEMO_DEPLOY_URL" in https://*.$DEMO_PAGES.pages.dev) ;; *) echo "unexpected Demo deployment URL: $DEMO_DEPLOY_URL" >&2; exit 1;; esac
+          echo "PRO_URL=$PRO_DEPLOY_URL" >> "$GITHUB_ENV"
+          echo "DEMO_URL=$DEMO_DEPLOY_URL" >> "$GITHUB_ENV"
+
+      - name: Wait for Pages edge readiness
+        shell: bash
+        run: |
+          set -euo pipefail
+          wait_ready() {
+            local label="$1" url="$2"
+            for attempt in $(seq 1 120); do
+              if curl --fail --silent --show-error --connect-timeout 5 --max-time 10 "$url/" -o /dev/null; then
+                echo "$label deployment ready on attempt $attempt: $url"
+                return 0
+              fi
+              sleep 2
+            done
+            echo "$label deployment never became TLS/HTTP ready: $url" >&2
+            return 1
+          }
+          wait_ready Pro "$PRO_URL"
+          wait_ready Demo "$DEMO_URL"
+
+      - name: Create one real owner identity per final plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os
+          p=os.environ['RUN_MARKER']
+          cases={
+            'pro': {'email':f'v15-task8-pro-{p}@example.invalid','password':f'V15T8!ProAa12345{p[-2:]}','displayName':'V15 Task 8 Pro Final Smoke','dormName':'V15 Pro Dorm'},
+            'demo':{'email':f'v15-task8-demo-{p}@example.invalid','password':f'V15T8!DemoAa12345{p[-2:]}','displayName':'V15 Task 8 Demo Final Smoke','dormName':'V15 Demo Dorm'},
+          }
+          for name,data in cases.items():
+            open(f'{name}-setup-request.json','w').write(json.dumps(data))
+            open(f'{name}-login-request.json','w').write(json.dumps({'username':data['email'],'password':data['password']}))
+          PY
+          for kind in pro demo; do
+            urlvar="${kind^^}_URL"; url="${!urlvar}"
+            curl --fail --silent --show-error --retry 12 --retry-all-errors --retry-delay 2 -H 'Content-Type: application/json' --data "@$kind-setup-request.json" "$url/api/setup/init" > "$kind-setup.json"
+            curl --fail --silent --show-error --retry 12 --retry-all-errors --retry-delay 2 -H 'Content-Type: application/json' --data "@$kind-login-request.json" "$url/api/auth/login" > "$kind-login.json"
+          done
+          python3 - <<'PY'
+          import json
+          for kind in ('pro','demo'):
+            setup=json.load(open(f'{kind}-setup.json')); login=json.load(open(f'{kind}-login.json'))
+            sd=setup.get('data',setup); ld=login.get('data',login)
+            assert isinstance(sd.get('user'),dict) and sd.get('token')
+            assert isinstance(ld.get('user'),dict) and ld.get('token')
+            assert int(sd['user']['id']) == int(ld['user']['id'])
+            open(f'{kind}-owner.txt','w').write(str(sd['user']['id']))
+            open(f'{kind}-user.json','w').write(json.dumps(ld['user']))
+            open(f'{kind}-token.txt','w').write(str(ld['token']))
+          PY
+
+      - name: Set one deterministic effective Pro brand and dormant Demo brand
+        shell: bash
+        run: |
+          set -euo pipefail
+          PRO_OWNER="$(cat pro-owner.txt)"; DEMO_OWNER="$(cat demo-owner.txt)"
+          (cd pro-work && npx wrangler d1 execute DB --remote --config wrangler.jsonc --command "UPDATE settings SET subscription_plan='pro', dorm_name='V15 Pro Dorm', brand_color='#6D28D9', contact_phone='0812345678', bill_footer='V15 Pro Footer' WHERE user_id=${PRO_OWNER};")
+          (cd demo-work && npx wrangler d1 execute DB --remote --config wrangler.jsonc --command "UPDATE settings SET dorm_name='V15 Demo Dorm', brand_color='#DC2626', contact_phone='0899999999', bill_footer='V15 Hidden Demo Footer' WHERE user_id=${DEMO_OWNER};")
+          python3 - <<'PY'
+          import json
+          logo='data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAFElEQVR4nGPM1bj5n4GBgYGJAQoAJJwCcQA3o6cAAAAASUVORK5CYII='
+          open('pro-logo.json','w').write(json.dumps({'logoDataUri':logo}))
+          PY
+          PRO_TOKEN="$(cat pro-token.txt)"
+          curl --fail --silent --show-error -X PUT -H "Authorization: Bearer $PRO_TOKEN" -H 'Content-Type: application/json' --data @pro-logo.json "$PRO_URL/api/settings/logo" > /dev/null
+          curl --fail --silent --show-error "$PRO_URL/api/public/branding" > pro-branding.json
+          curl --fail --silent --show-error "$DEMO_URL/api/public/branding" > demo-branding.json
+          python3 - <<'PY'
+          import json
+          p=json.load(open('pro-branding.json')); d=json.load(open('demo-branding.json'))
+          assert p['dormName']=='V15 Pro Dorm' and p['brandColor']=='#6D28D9' and p['contactPhone']=='0812345678' and p['whiteLabelEnabled'] is True and str(p.get('logoDataUri','')).startswith('data:image/png;base64,')
+          assert d['dormName']=='V15 Demo Dorm' and d['brandColor'] is None and d['contactPhone'] is None and d['logoDataUri'] is None and d['whiteLabelEnabled'] is False
+          PY
+
+      - name: Create one real occupied room and bill per final plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          for kind, room in [('pro','V15-PRO-101'),('demo','V15-DEMO-101')]:
+            open(f'{kind}-room-request.json','w').write(json.dumps({'roomNumber':room,'monthlyRent':4500,'status':'occupied','tenantName':'V15 Tenant','tenantPhone':'0800000000'}))
+          PY
+          for kind in pro demo; do
+            urlvar="${kind^^}_URL"; url="${!urlvar}"; token="$(cat $kind-token.txt)"
+            curl --fail --silent --show-error -H "Authorization: Bearer $token" -H 'Content-Type: application/json' --data "@$kind-room-request.json" "$url/api/rooms" > "$kind-room.json"
+          done
+          python3 - <<'PY'
+          import json
+          for kind in ('pro','demo'):
+            room=json.load(open(f'{kind}-room.json')); rd=room.get('data',room); rid=int(rd['id'])
+            bill={'roomId':rid,'billMonth':'2026-08','priorElec':100,'currentElec':110,'elecDeduct':0,'elecUnitCost':7,'priorWater':50,'currentWater':55,'waterUnitCost':13,'rentCost':4500,'depositCost':0,'otherCost':200,'otherDescription':'ค่าบริการ V15','dueDate':'2026-08-25','status':'unpaid'}
+            open(f'{kind}-bill-request.json','w').write(json.dumps(bill,ensure_ascii=False))
+          PY
+          for kind in pro demo; do
+            urlvar="${kind^^}_URL"; url="${!urlvar}"; token="$(cat $kind-token.txt)"
+            curl --fail --silent --show-error -H "Authorization: Bearer $token" -H 'Content-Type: application/json' --data "@$kind-bill-request.json" "$url/api/bills" > "$kind-bill.json"
+            curl --fail --silent --show-error -H "Authorization: Bearer $token" "$url/api/bills" > "$kind-bills.json"
+          done
+          python3 - <<'PY'
+          import json
+          for kind in ('pro','demo'):
+            created=json.load(open(f'{kind}-bill.json')); cd=created.get('data',created); assert int(cd['id'])>0
+            bills=json.load(open(f'{kind}-bills.json')); bd=bills.get('data',bills); assert isinstance(bd,list) and len(bd)==1
+            assert bd[0]['billMonth']=='2026-08' and bd[0]['otherCost']==200
+          PY
+
+      - name: Final Pro Login desktop and mobile app-shell smoke
+        shell: bash
+        env:
+          SMOKE_BASE_URL: ${{ env.PRO_URL }}
+          SMOKE_EXPECTED_DORM: V15 Pro Dorm
+          SMOKE_EXPECTED_COLOR: '#6D28D9'
+          SMOKE_EXPECT_LOGO: 'true'
+          SMOKE_USER_JSON: ${{ github.workspace }}/pro-user.json
+          SMOKE_TOKEN_FILE: ${{ github.workspace }}/pro-token.txt
+          SMOKE_OUTPUT: ${{ github.workspace }}/pro-task5.json
+        run: |
+          set -euo pipefail
+          C="$(command -v google-chrome || command -v chromium || command -v chromium-browser || true)"; test -n "$C"
+          CHROME_BIN="$C" node v15-task5/browser-smoke.mjs
+
+      - name: Final Demo Login desktop and mobile masking smoke
+        shell: bash
+        env:
+          SMOKE_BASE_URL: ${{ env.DEMO_URL }}
+          SMOKE_EXPECTED_DORM: V15 Demo Dorm
+          SMOKE_EXPECTED_COLOR: '#1DB954'
+          SMOKE_EXPECT_LOGO: 'false'
+          SMOKE_USER_JSON: ${{ github.workspace }}/demo-user.json
+          SMOKE_TOKEN_FILE: ${{ github.workspace }}/demo-token.txt
+          SMOKE_OUTPUT: ${{ github.workspace }}/demo-task5.json
+        run: |
+          set -euo pipefail
+          C="$(command -v google-chrome || command -v chromium || command -v chromium-browser || true)"; test -n "$C"
+          CHROME_BIN="$C" node v15-task5/browser-smoke.mjs
+
+      - name: Final Pro Bill JPG and Print-PDF smoke
+        shell: bash
+        env:
+          SMOKE_BASE_URL: ${{ env.PRO_URL }}
+          SMOKE_EXPECTED_DORM: V15 Pro Dorm
+          SMOKE_EXPECTED_COLOR: '#6D28D9'
+          SMOKE_EXPECTED_FOOTER: V15 Pro Footer
+          SMOKE_EXPECTED_PHONE: '0812345678'
+          SMOKE_EXPECT_PAID_IDENTITY: 'true'
+          SMOKE_USER_JSON: ${{ github.workspace }}/pro-user.json
+          SMOKE_TOKEN_FILE: ${{ github.workspace }}/pro-token.txt
+          SMOKE_OUTPUT: ${{ github.workspace }}/pro-task6.json
+        run: |
+          set -euo pipefail
+          C="$(command -v google-chrome || command -v chromium || command -v chromium-browser || true)"; test -n "$C"
+          CHROME_BIN="$C" node v15-task6/browser-export-smoke-v2.mjs
+
+      - name: Final Demo Bill JPG and Print-PDF masking smoke
+        shell: bash
+        env:
+          SMOKE_BASE_URL: ${{ env.DEMO_URL }}
+          SMOKE_EXPECTED_DORM: V15 Demo Dorm
+          SMOKE_EXPECTED_COLOR: '#1DB954'
+          SMOKE_EXPECT_PAID_IDENTITY: 'false'
+          SMOKE_HIDDEN_FOOTER: V15 Hidden Demo Footer
+          SMOKE_HIDDEN_PHONE: '0899999999'
+          SMOKE_USER_JSON: ${{ github.workspace }}/demo-user.json
+          SMOKE_TOKEN_FILE: ${{ github.workspace }}/demo-token.txt
+          SMOKE_OUTPUT: ${{ github.workspace }}/demo-task6.json
+        run: |
+          set -euo pipefail
+          C="$(command -v google-chrome || command -v chromium || command -v chromium-browser || true)"; test -n "$C"
+          CHROME_BIN="$C" node v15-task6/browser-export-smoke-v2.mjs
+
+      - name: Final Pro Tenant Portal lookup and active smoke
+        shell: bash
+        env:
+          SMOKE_BASE_URL: ${{ env.PRO_URL }}
+          SMOKE_EXPECTED_DORM: V15 Pro Dorm
+          SMOKE_EXPECTED_COLOR: '#6D28D9'
+          SMOKE_ROOM_NUMBER: V15-PRO-101
+          SMOKE_TENANT_PHONE: '0800000000'
+          SMOKE_EXPECT_LOGO: 'true'
+          SMOKE_OUTPUT: ${{ github.workspace }}/pro-task7.json
+        run: |
+          set -euo pipefail
+          C="$(command -v google-chrome || command -v chromium || command -v chromium-browser || true)"; test -n "$C"
+          CHROME_BIN="$C" node v15-task7/portal-branding-smoke.mjs
+
+      - name: Final Demo Tenant Portal lookup and active masking smoke
+        shell: bash
+        env:
+          SMOKE_BASE_URL: ${{ env.DEMO_URL }}
+          SMOKE_EXPECTED_DORM: V15 Demo Dorm
+          SMOKE_EXPECTED_COLOR: '#1DB954'
+          SMOKE_ROOM_NUMBER: V15-DEMO-101
+          SMOKE_TENANT_PHONE: '0800000000'
+          SMOKE_EXPECT_LOGO: 'false'
+          SMOKE_OUTPUT: ${{ github.workspace }}/demo-task7.json
+        run: |
+          set -euo pipefail
+          C="$(command -v google-chrome || command -v chromium || command -v chromium-browser || true)"; test -n "$C"
+          CHROME_BIN="$C" node v15-task7/portal-branding-smoke.mjs
+
+      - name: Cleanup all temporary final-smoke Cloudflare resources
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          A=99;B=99;C=99;D=99
+          [ -d pro-work ] && [ -n "${PRO_PAGES:-}" ] && (cd pro-work && npx wrangler pages project delete "$PRO_PAGES" --yes); A=$?
+          [ -d pro-work ] && [ -n "${PRO_D1:-}" ] && (cd pro-work && npx wrangler d1 delete "$PRO_D1" --skip-confirmation); B=$?
+          [ -d demo-work ] && [ -n "${DEMO_PAGES:-}" ] && (cd demo-work && npx wrangler pages project delete "$DEMO_PAGES" --yes); C=$?
+          [ -d demo-work ] && [ -n "${DEMO_D1:-}" ] && (cd demo-work && npx wrangler d1 delete "$DEMO_D1" --skip-confirmation); D=$?
+          printf '{"proPagesExit":%s,"proD1Exit":%s,"demoPagesExit":%s,"demoD1Exit":%s}\n' "$A" "$B" "$C" "$D" > cleanup-evidence.json
+          rm -f *-token.txt *-owner.txt *-user.json *-setup-request.json *-login-request.json *-setup.json *-login.json *-room-request.json *-room.json *-bill-request.json *-bill.json *-bills.json pro-logo.json
+
+      - name: Assert complete V15 final runtime matrix and cleanup
+        id: assert_smoke
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          p5=json.load(open('pro-task5.json')); d5=json.load(open('demo-task5.json'))
+          p6=json.load(open('pro-task6.json')); d6=json.load(open('demo-task6.json'))
+          p7=json.load(open('pro-task7.json')); d7=json.load(open('demo-task7.json'))
+          for name,x in [('pro-task5',p5),('demo-task5',d5),('pro-task6',p6),('demo-task6',d6),('pro-task7',p7),('demo-task7',d7)]:
+              assert x.get('overallPass') is True, (name,x)
+          for x in (p5,d5):
+              assert x['login']['dormVisible'] and x['desktop']['dormVisible'] and x['mobile']['dormVisible']
+              assert x['desktop']['activeBrandClass'] and x['desktop']['activeContrastClass']
+              assert x['mobile']['headerVisible'] and x['mobile']['menuButtonVisible'] and x['mobile']['desktopAsideHidden']
+          for x in (p6,d6):
+              assert x['jpg']['mimeOk'] and x['jpg']['length'] > 1000 and x['jpg']['buttonRecovered']
+              assert x['print']['called'] and x['print']['containsExpectedColor'] and x['print']['exactColorAdjust']
+              assert x['invoice']['semanticAmber'] and x['invoice']['semanticBlue'] and x['invoice']['semanticPurple']
+          assert p6['invoice']['logoVisible'] and p6['invoice']['hasFooter'] and p6['invoice']['hasPhone']
+          assert p6['logoFallback']['exercised'] and p6['logoFallback']['fallbackVisible']
+          assert not d6['invoice']['logoVisible'] and not d6['invoice']['leakedFooter'] and not d6['invoice']['leakedPhone']
+          assert p7['expectedColor']=='#6D28D9' and p7['expectLogo'] is True and p7['lookup']['logoVisible'] and p7['active']['logoVisible']
+          assert d7['expectedColor']=='#1DB954' and d7['expectLogo'] is False and not d7['lookup']['logoVisible'] and not d7['active']['logoVisible']
+          assert p7['active']['successSemantic'] and p7['active']['repairSemantic']
+          assert d7['active']['successSemantic'] and d7['active']['repairSemantic']
+          assert p5['expectedDorm']=='V15 Pro Dorm' and p6['expectedDorm']=='V15 Pro Dorm' and p7['expectedDorm']=='V15 Pro Dorm'
+          assert d5['expectedDorm']=='V15 Demo Dorm' and d6['expectedDorm']=='V15 Demo Dorm' and d7['expectedDorm']=='V15 Demo Dorm'
+          c=json.load(open('cleanup-evidence.json')); assert all(c[k]==0 for k in c), c
+          PY
+
+      - name: Upload V15 final Cloudflare smoke evidence
+        id: upload_evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v15-task8-final-cloudflare-smoke-evidence
+          path: |
+            pro-branding.json
+            demo-branding.json
+            pro-task5.json
+            demo-task5.json
+            pro-task6.json
+            demo-task6.json
+            pro-task7.json
+            demo-task7.json
+            cleanup-evidence.json
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Persist Task 8 final Cloudflare smoke pointer
+        if: always()
+        shell: bash
+        env:
+          EVIDENCE_ARTIFACT_ID: ${{ steps.upload_evidence.outputs.artifact-id }}
+          EVIDENCE_ARTIFACT_DIGEST: ${{ steps.upload_evidence.outputs.artifact-digest }}
+        run: |
+          set -euo pipefail
+          mkdir -p v15-task8-evidence
+          cat > v15-task8-evidence/final-cloudflare-smoke-latest.txt <<EOF
+          run_id=$GITHUB_RUN_ID
+          run_attempt=$GITHUB_RUN_ATTEMPT
+          source_sha=$GITHUB_SHA
+          source_artifact_id=$SOURCE_ARTIFACT_ID
+          source_artifact_digest=$SOURCE_ARTIFACT_DIGEST
+          source_release_sha=$SOURCE_RELEASE_SHA
+          pro_zip_sha256=$PRO_ZIP_SHA256
+          demo_zip_sha256=$DEMO_ZIP_SHA256
+          evidence_artifact_id=${EVIDENCE_ARTIFACT_ID:-}
+          evidence_artifact_digest=${EVIDENCE_ARTIFACT_DIGEST:-}
+          assert_smoke=${{ steps.assert_smoke.outcome }}
+          EOF
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add v15-task8-evidence/final-cloudflare-smoke-latest.txt
+          git commit -m 'ci(v15-task8): record final Cloudflare smoke evidence' || exit 0
+          git push origin HEAD:agent/v15-task1-white-label-contract
