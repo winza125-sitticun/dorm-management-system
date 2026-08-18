@@ -20,7 +20,7 @@ env:
   SOURCE_ARTIFACT_DIGEST: 'sha256:f0bec7ca2f263938df722e9eca3d0fa7a649beee09191dc14dea15bc6d11447c'
   PRO_ZIP_SHA256: '6b37ff8db9ba2cf501723ec9543c951f9def366fae9cb339c260b41fa692f121'
   DEMO_ZIP_SHA256: '4dac28793ad338c8cfe16c9adeb240cda7d928c1627b1bd092c7957840dacd2c'
-  BROWSER_HARNESS_BLOB: '282b94331a7df6d113bd1223883ad4c4909afcc7'
+  BROWSER_HARNESS_BLOB: 'b3337eeaa64e602a5f662595c61459482861a789'
   CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
   CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
@@ -40,8 +40,8 @@ jobs:
           set -euo pipefail
           test -n "${CLOUDFLARE_API_TOKEN:-}"
           test -n "${CLOUDFLARE_ACCOUNT_ID:-}"
-          test "$(git hash-object v15-task6/browser-export-smoke.mjs)" = "$BROWSER_HARNESS_BLOB"
-          node --check v15-task6/browser-export-smoke.mjs
+          test "$(git hash-object v15-task6/browser-export-smoke-v2.mjs)" = "$BROWSER_HARNESS_BLOB"
+          node --check v15-task6/browser-export-smoke-v2.mjs
 
       - name: Download and verify immutable Task 6 candidate
         env:
@@ -269,7 +269,7 @@ jobs:
         run: |
           set -euo pipefail
           C="$(command -v google-chrome || command -v chromium || command -v chromium-browser || true)"; test -n "$C"
-          CHROME_BIN="$C" node v15-task6/browser-export-smoke.mjs
+          CHROME_BIN="$C" node v15-task6/browser-export-smoke-v2.mjs
 
       - name: Browser and export smoke Demo masking
         shell: bash
@@ -286,7 +286,7 @@ jobs:
         run: |
           set -euo pipefail
           C="$(command -v google-chrome || command -v chromium || command -v chromium-browser || true)"; test -n "$C"
-          CHROME_BIN="$C" node v15-task6/browser-export-smoke.mjs
+          CHROME_BIN="$C" node v15-task6/browser-export-smoke-v2.mjs
 
       - name: Cleanup temporary Cloudflare resources
         if: always()
