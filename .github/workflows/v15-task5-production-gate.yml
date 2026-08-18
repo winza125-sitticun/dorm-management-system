@@ -1,0 +1,229 @@
+name: V15 Task 5 Production Gate
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [agent/v15-task1-white-label-contract]
+    paths:
+      - '.github/workflows/v15-task5-production-gate.yml'
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: v15-task5-production-gate
+  cancel-in-progress: true
+
+env:
+  TASK4_ARTIFACT_ID: '9308548139'
+  TASK4_ARTIFACT_SHA256: '9e6041d979edf8defbb7a300308049dda8a61fd3d73bf238b317d96f97a23097'
+  TASK4_MASTER_SHA256: 'e87dadb925cc5319a5db08409930277c3f31ae2a8479fd2168158782c9c47c11'
+  TEST_BLOB: 'f8d4eec74e1d70d8a7a17f4ee09b15805d6da774'
+  IMPL_BLOB: 'f955896a2be8e780224bbd5e3329433cbbeda5b8'
+
+jobs:
+  production-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - name: Checkout Task 5 branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/v15-task1-white-label-contract
+
+      - name: Verify pinned Task 5 sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object v15-task5/task5-login-app-shell-branding.test.mjs)" = "$TEST_BLOB"
+          test "$(git hash-object v15-task5/implement.py)" = "$IMPL_BLOB"
+          python3 -m py_compile v15-task5/implement.py
+
+      - name: Download immutable Task 4 candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 8 --retry-all-errors --retry-delay 3 \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${TASK4_ARTIFACT_ID}/zip" \
+            -o task4-artifact.zip
+          echo "$TASK4_ARTIFACT_SHA256  task4-artifact.zip" | sha256sum --check --strict
+          rm -rf candidate && mkdir candidate
+          unzip -q task4-artifact.zip -d candidate
+
+      - name: Verify and extract exact Task 4 master
+        shell: bash
+        run: |
+          set -euo pipefail
+          MASTER_ZIP="$(find candidate -type f -name 'dorm-management-system-master-v15-task4-REVIEW-CI.zip' -print -quit)"
+          test -n "$MASTER_ZIP"
+          echo "$TASK4_MASTER_SHA256  $MASTER_ZIP" | sha256sum --check --strict
+          rm -rf work && mkdir work
+          unzip -q "$MASTER_ZIP" -d work
+          test -f work/src/components/Login.tsx
+          test -f work/src/App.tsx
+          test -f work/src/context/ThemeContext.tsx
+          test "$(find work/d1-migrations -maxdepth 1 -type f -printf '%f\n' | sort | tail -n1)" = '0006_add_white_label_settings.sql'
+
+      - name: Prove RED on immutable Task 4
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp v15-task5/task5-login-app-shell-branding.test.mjs work/tests/task5-login-app-shell-branding.test.mjs
+          set +e
+          (cd work && node --test tests/task5-login-app-shell-branding.test.mjs)
+          code=$?
+          set -e
+          test "$code" -ne 0
+
+      - name: Apply deterministic Task 5 implementation
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 v15-task5/implement.py work
+          grep -Fq "const { theme, toggleTheme, dormName, logoDataUri } = useTheme();" work/src/App.tsx
+          grep -Fq "const { dormName, logoDataUri } = useTheme();" work/src/components/Login.tsx
+          ! grep -Eiq '#1DB954|#1ED760' work/src/components/Login.tsx
+          test "$(find work/d1-migrations -maxdepth 1 -type f -printf '%f\n' | sort | tail -n1)" = '0006_add_white_label_settings.sql'
+
+      - name: Prove GREEN on Task 5 source contract
+        working-directory: work
+        run: node --test tests/task5-login-app-shell-branding.test.mjs
+
+      - name: Create immutable Task 5 master candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f dorm-management-system-master-v15-task5-REVIEW-CI.zip
+          (cd work && zip -qr ../dorm-management-system-master-v15-task5-REVIEW-CI.zip .)
+          unzip -t dorm-management-system-master-v15-task5-REVIEW-CI.zip >/dev/null
+          sha256sum dorm-management-system-master-v15-task5-REVIEW-CI.zip | tee MASTER_V15_TASK5_CI_SHA256.txt
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: work/package-lock.json
+
+      - name: Fresh dependency install
+        working-directory: work
+        run: npm ci
+
+      - name: Focused Task 5 contract
+        working-directory: work
+        run: node --test tests/task5-login-app-shell-branding.test.mjs
+
+      - name: Theme and branding regression
+        working-directory: work
+        run: npx tsx --test tests/brand-theme-runtime.test.ts tests/branding-client-runtime.test.ts tests/theme-root-runtime.test.ts tests/theme-refresh-runtime.test.ts tests/theme-css-contract.test.ts
+
+      - name: Backup regression
+        working-directory: work
+        run: npm run test:backup
+
+      - name: Full test suite
+        working-directory: work
+        run: npm test
+
+      - name: TypeScript lint
+        working-directory: work
+        run: npm run lint
+
+      - name: Cloudflare types
+        working-directory: work
+        run: npm run check:cloudflare-types:master
+
+      - name: Pages production build
+        working-directory: work
+        run: npm run build:pages
+
+      - name: VPS production build
+        working-directory: work
+        run: npm run build:vps
+
+      - name: Generate PREVIEW and guarded release packages
+        working-directory: work
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm tests/task5-login-app-shell-branding.test.mjs
+          npm run packages:generate
+          npm run test:builder
+          npm run packages:release
+
+      - name: Materialize Task 5 candidate packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p work/release-v15-task5
+          for plan in demo basic standard pro; do
+            src="work/release-v14/dorm-management-system-${plan}-v14-CUSTOMER-READY.zip"
+            dst="work/release-v15-task5/dorm-management-system-${plan}-v15-TASK5-CANDIDATE.zip"
+            test -f "$src"
+            cp "$src" "$dst"
+            unzip -t "$dst" >/dev/null
+          done
+          sha256sum work/release-v15-task5/*.zip | tee work/V15_TASK5_CANDIDATE_SHA256.txt
+
+      - name: One Master and package parity audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf audit && mkdir audit
+          unzip -Z1 dorm-management-system-master-v15-task5-REVIEW-CI.zip > audit/master.txt
+          grep -Fx 'src/components/Login.tsx' audit/master.txt
+          grep -Fx 'src/App.tsx' audit/master.txt
+          grep -Fx 'tests/task5-login-app-shell-branding.test.mjs' audit/master.txt
+          ! grep -Fq 'node_modules/' audit/master.txt
+          for plan in demo basic standard pro; do
+            z="work/release-v15-task5/dorm-management-system-${plan}-v15-TASK5-CANDIDATE.zip"
+            unzip -p "$z" src/components/Login.tsx > "audit/${plan}-login.tsx"
+            unzip -p "$z" src/App.tsx > "audit/${plan}-app.tsx"
+            ! grep -Eiq '#1DB954|#1ED760' "audit/${plan}-login.tsx"
+            grep -Fq 'useTheme();' "audit/${plan}-login.tsx"
+            grep -Fq 'logoDataUri' "audit/${plan}-login.tsx"
+            grep -Fq 'bg-[var(--brand-primary)]' "audit/${plan}-app.tsx"
+            ! grep -Fq 'bg-emerald-500 text-white shadow-md shadow-emerald-950/20' "audit/${plan}-app.tsx"
+          done
+          for plan in demo basic standard; do
+            cmp "audit/${plan}-login.tsx" audit/pro-login.tsx
+            cmp "audit/${plan}-app.tsx" audit/pro-app.tsx
+          done
+
+      - name: Upload Task 5 candidate artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: v15-task5-candidate-pending-browser-smoke
+          path: |
+            dorm-management-system-master-v15-task5-REVIEW-CI.zip
+            MASTER_V15_TASK5_CI_SHA256.txt
+            work/release-v15-task5/**
+            work/V15_TASK5_CANDIDATE_SHA256.txt
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Persist Task 5 production evidence
+        if: always()
+        shell: bash
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          set -euo pipefail
+          mkdir -p v15-task5-evidence
+          cat > v15-task5-evidence/production-gate-latest.txt <<EOF
+          run_id=$GITHUB_RUN_ID
+          run_attempt=$GITHUB_RUN_ATTEMPT
+          source_sha=$GITHUB_SHA
+          source_task4_artifact_id=$TASK4_ARTIFACT_ID
+          source_task4_artifact_sha256=$TASK4_ARTIFACT_SHA256
+          job_status=$JOB_STATUS
+          EOF
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add v15-task5-evidence/production-gate-latest.txt
+          git commit -m 'ci(v15-task5): record production gate evidence' || exit 0
+          git push origin HEAD:agent/v15-task1-white-label-contract
