@@ -143,6 +143,25 @@ jobs:
           echo "PRO_URL=$PRO_DEPLOY_URL" >> "$GITHUB_ENV"
           echo "DEMO_URL=$DEMO_DEPLOY_URL" >> "$GITHUB_ENV"
 
+      - name: Wait for Pages edge readiness
+        shell: bash
+        run: |
+          set -euo pipefail
+          wait_ready() {
+            local label="$1" url="$2"
+            for attempt in $(seq 1 60); do
+              if curl --fail --silent --show-error --connect-timeout 5 --max-time 10 "$url/" -o /dev/null; then
+                echo "$label deployment ready on attempt $attempt: $url"
+                return 0
+              fi
+              sleep 2
+            done
+            echo "$label deployment never became TLS/HTTP ready: $url" >&2
+            return 1
+          }
+          wait_ready Pro "$PRO_URL"
+          wait_ready Demo "$DEMO_URL"
+
       - name: Create real Pro and Demo owners and verify login
         shell: bash
         run: |
