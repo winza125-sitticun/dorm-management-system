@@ -1,0 +1,146 @@
+diff --git a/tests/logo-client-optimizer-integration.test.ts b/tests/logo-client-optimizer-integration.test.ts
+new file mode 100644
+index 0000000..ea2247b
+--- /dev/null
++++ b/tests/logo-client-optimizer-integration.test.ts
+@@ -0,0 +1,27 @@
++import test from 'node:test';
++import assert from 'node:assert/strict';
++import fs from 'node:fs';
++
++const optimizerSource = fs.readFileSync(new URL('../src/utils/logoOptimizer.ts', import.meta.url), 'utf8');
++const settingsSource = fs.readFileSync(new URL('../src/components/SettingsView.tsx', import.meta.url), 'utf8');
++const sectionSource = fs.readFileSync(new URL('../src/components/WhiteLabelSettingsSection.tsx', import.meta.url), 'utf8');
++
++test('browser optimizer decodes raster pixels and re-encodes through a canvas', () => {
++  assert.match(optimizerSource, /createImageBitmap/);
++  assert.match(optimizerSource, /document\.createElement\(['"]canvas['"]\)/);
++  assert.match(optimizerSource, /toBlob/);
++  assert.match(optimizerSource, /WHITE_LABEL_LOGO_MAX_DIMENSION\s*=\s*1024/);
++});
++
++test('SettingsView uploads the processed preview payload instead of the original FileReader payload', () => {
++  assert.match(settingsSource, /optimizeLogoFile/);
++  assert.match(settingsSource, /await optimizeLogoFile\(file\)/);
++  assert.match(settingsSource, /setPendingLogoDataUri\(optimizedLogo\.dataUri\)/);
++  assert.match(settingsSource, /logoDataUri:\s*optimizedLogo\.dataUri/);
++  assert.doesNotMatch(settingsSource, /new FileReader\(\)/);
++});
++
++test('logo UX tells the user that large images are resized and compressed before upload', () => {
++  assert.match(sectionSource, /ย่อ.*1024/);
++  assert.match(sectionSource, /บีบอัด/);
++});
++diff --git a/tests/logo-client-optimizer.test.ts b/tests/logo-client-optimizer.test.ts
++new file mode 100644
++index 0000000..f711009
++--- /dev/null
+++++ b/tests/logo-client-optimizer.test.ts
++@@ -0,0 +1,107 @@
+++import test from 'node:test';
+++import assert from 'node:assert/strict';
+++import {
+++  WHITE_LABEL_LOGO_MAX_DIMENSION,
+++  WHITE_LABEL_LOGO_TARGET_BYTES,
+++  calculateLogoResizeDimensions,
+++  optimizeLogoFile,
+++  validateLogoSourceFileMeta,
+++  type LogoRasterAdapter,
+++} from '../src/utils/logoOptimizer.ts';
+++
+++test('source logo preflight accepts optimizable oversized raster files but rejects invalid or empty inputs', () => {
+++  assert.deepEqual(validateLogoSourceFileMeta({ type: 'image/png', size: 900_000 }), { ok: true });
+++  assert.deepEqual(validateLogoSourceFileMeta({ type: 'image/jpeg', size: 900_000 }), { ok: true });
+++  assert.deepEqual(validateLogoSourceFileMeta({ type: 'image/webp', size: 900_000 }), { ok: true });
+++  assert.equal(validateLogoSourceFileMeta({ type: 'image/svg+xml', size: 100 }).ok, false);
+++  assert.equal(validateLogoSourceFileMeta({ type: 'image/png', size: 0 }).ok, false);
+++});
+++
+++test('resize dimensions preserve aspect ratio, cap the long side at 1024, and never upscale', () => {
+++  assert.equal(WHITE_LABEL_LOGO_MAX_DIMENSION, 1024);
+++  assert.deepEqual(calculateLogoResizeDimensions(400, 200), { width: 400, height: 200 });
+++  assert.deepEqual(calculateLogoResizeDimensions(2400, 1200), { width: 1024, height: 512 });
+++  assert.deepEqual(calculateLogoResizeDimensions(800, 1600), { width: 512, height: 1024 });
+++});
+++
+++test('small decoded logo stays at original dimensions and bytes without a needless re-encode', async () => {
+++  const file = new File([new Uint8Array(100)], 'logo.png', { type: 'image/png' });
+++  let closed = false;
+++  const adapter: LogoRasterAdapter = {
+++    async decode() {
+++      return { width: 400, height: 200, source: {}, close: () => { closed = true; } };
+++    },
+++    async encode() {
+++      throw new Error('encode should not run for already-safe logo');
+++    },
+++  };
+++
+++  const result = await optimizeLogoFile(file, adapter);
+++  assert.equal(result.width, 400);
+++  assert.equal(result.height, 200);
+++  assert.equal(result.outputBytes, 100);
+++  assert.equal(result.resized, false);
+++  assert.equal(result.compressed, false);
+++  assert.match(result.dataUri, /^data:image\/png;base64,/);
+++  assert.equal(closed, true);
+++});
+++
+++test('large logo is resized before encoding and produces upload bytes below the safety target', async () => {
+++  const file = new File([new Uint8Array(500_000)], 'logo.png', { type: 'image/png' });
+++  const calls: Array<{ width: number; height: number; type: string; quality?: number }> = [];
+++  const adapter: LogoRasterAdapter = {
+++    async decode() {
+++      return { width: 2400, height: 1200, source: {} };
+++    },
+++    async encode(_image, options) {
+++      calls.push(options);
+++      return new Blob([new Uint8Array(200_000)], { type: options.type });
+++    },
+++  };
+++
+++  const result = await optimizeLogoFile(file, adapter);
+++  assert.ok(result.outputBytes <= WHITE_LABEL_LOGO_TARGET_BYTES);
+++  assert.equal(result.width, 1024);
+++  assert.equal(result.height, 512);
+++  assert.equal(result.resized, true);
+++  assert.equal(result.compressed, true);
+++  assert.equal(calls[0]?.width, 1024);
+++  assert.equal(calls[0]?.height, 512);
+++});
+++
+++test('byte-heavy but small-dimension logo is compressed without upscaling', async () => {
+++  const file = new File([new Uint8Array(500_000)], 'logo.jpg', { type: 'image/jpeg' });
+++  let encodedDimensions: { width: number; height: number } | null = null;
+++  const adapter: LogoRasterAdapter = {
+++    async decode() {
+++      return { width: 800, height: 400, source: {} };
+++    },
+++    async encode(_image, options) {
+++      encodedDimensions = { width: options.width, height: options.height };
+++      return new Blob([new Uint8Array(180_000)], { type: options.type });
+++    },
+++  };
+++
+++  const result = await optimizeLogoFile(file, adapter);
+++  assert.deepEqual(encodedDimensions, { width: 800, height: 400 });
+++  assert.equal(result.width, 800);
+++  assert.equal(result.height, 400);
+++  assert.equal(result.resized, false);
+++  assert.equal(result.compressed, true);
+++});
+++
+++test('optimizer rejects before upload when every encoded candidate remains above target', async () => {
+++  const file = new File([new Uint8Array(500_000)], 'logo.webp', { type: 'image/webp' });
+++  let closed = false;
+++  const adapter: LogoRasterAdapter = {
+++    async decode() {
+++      return { width: 1600, height: 800, source: {}, close: () => { closed = true; } };
+++    },
+++    async encode(_image, options) {
+++      return new Blob([new Uint8Array(WHITE_LABEL_LOGO_TARGET_BYTES + 1)], { type: options.type });
+++    },
+++  };
+++
+++  await assert.rejects(() => optimizeLogoFile(file, adapter), /ลดขนาดโลโก้/);
+++  assert.equal(closed, true);
+++});
