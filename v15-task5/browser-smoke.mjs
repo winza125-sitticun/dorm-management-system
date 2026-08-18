@@ -165,18 +165,17 @@ try {
   if (desktopState.logoVisible !== expectLogo) throw new Error(`desktop logo expectation failed: ${JSON.stringify(desktopState)}`);
 
   await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
-  await send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 1 });
   await sleep(400);
-  const menuPoint = await evaluate(`(() => {
+  const menuFocused = await evaluate(`(() => {
     const visible = (el) => !!el && getComputedStyle(el).display !== 'none' && el.getBoundingClientRect().width > 0 && el.getBoundingClientRect().height > 0;
     const button = [...document.querySelectorAll('button[aria-label="เปิดเมนู"]')].find(visible);
-    if (!button) return null;
-    const rect = button.getBoundingClientRect();
-    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, width: rect.width, height: rect.height };
+    if (!button) return false;
+    button.focus();
+    return document.activeElement === button;
   })()`);
-  if (!menuPoint || menuPoint.width <= 0 || menuPoint.height <= 0) throw new Error(`mobile menu button not found: ${JSON.stringify(menuPoint)}`);
-  await send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: menuPoint.x, y: menuPoint.y, radiusX: 2, radiusY: 2, force: 1 }] });
-  await send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+  if (!menuFocused) throw new Error('mobile menu button could not receive focus');
+  await send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 });
+  await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 });
   await waitFor(`document.querySelector('nav[aria-label="เมนูหลักบนมือถือ"]') !== null`, 'mobile drawer');
   await sleep(500);
 
