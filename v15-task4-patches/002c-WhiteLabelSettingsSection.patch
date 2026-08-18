@@ -1,0 +1,211 @@
+diff --git a/src/components/WhiteLabelSettingsSection.tsx b/src/components/WhiteLabelSettingsSection.tsx
+new file mode 100644
+index 0000000..28294e8
+--- /dev/null
++++ b/src/components/WhiteLabelSettingsSection.tsx
+@@ -0,0 +1,205 @@
++import React from 'react';
++import { Building2, ImagePlus, Palette, Phone, ReceiptText, Trash2 } from 'lucide-react';
++import { deriveBrandTokens, DEFAULT_BRAND_COLOR } from '../theme/brandTheme.ts';
++import { effectivePreviewBranding } from '../utils/whiteLabelSettings.ts';
++
++interface WhiteLabelSettingsSectionProps {
++  dormName: string;
++  brandColor: string;
++  contactPhone: string;
++  billFooter: string;
++  savedLogoDataUri: string | null;
++  pendingLogoDataUri: string | null;
++  whiteLabelEnabled: boolean;
++  canEditWhiteLabel: boolean;
++  lockReason: string | null;
++  onDormNameChange: (value: string) => void;
++  onBrandColorChange: (value: string) => void;
++  onContactPhoneChange: (value: string) => void;
++  onBillFooterChange: (value: string) => void;
++  onUploadLogo: (file: File) => void;
++  onDeleteLogo: () => void;
++}
++
++export const WhiteLabelSettingsSection: React.FC<WhiteLabelSettingsSectionProps> = ({
++  dormName,
++  brandColor,
++  contactPhone,
++  billFooter,
++  savedLogoDataUri,
++  pendingLogoDataUri,
++  whiteLabelEnabled,
++  canEditWhiteLabel,
++  lockReason,
++  onDormNameChange,
++  onBrandColorChange,
++  onContactPhoneChange,
++  onBillFooterChange,
++  onUploadLogo,
++  onDeleteLogo,
++}) => {
++  const preview = effectivePreviewBranding({
++    whiteLabelEnabled,
++    dormName,
++    brandColor,
++    contactPhone,
++    savedLogoDataUri,
++    pendingLogoDataUri,
++  });
++  const tokens = deriveBrandTokens(preview.brandColor);
++
++  return (
++    <section className="bg-white border border-[#E0E0DB] rounded-2xl p-6 space-y-5 text-xs text-[#6B6B66]">
++      <div>
++        <h3 className="text-sm font-bold text-[#1A1A1A] flex items-center gap-2">
++          <Palette className="w-4 h-4" />
++          <span>แบรนด์และข้อมูลหอพัก</span>
++        </h3>
++        <p className="mt-1 text-[11px] text-[#8A8A85]">ปรับชื่อ โลโก้ สีหลัก เบอร์โทร และข้อความท้ายบิลจากจุดเดียว</p>
++      </div>
++
++      {whiteLabelEnabled ? (
++        !canEditWhiteLabel ? (
++          <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-amber-800">
++            เฉพาะเจ้าของหอพัก/Admin เท่านั้นที่แก้ไข White-label ได้
++          </div>
++        ) : lockReason ? (
++          <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-amber-800">{lockReason}</div>
++        ) : null
++      ) : (
++        <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-amber-800">
++          White-label ปิดใช้งานใน Demo — ดูตัวอย่างได้ แต่ต้องใช้ Basic หรือสูงกว่าเพื่อบันทึก
++        </div>
++      )}
++
++      <div className="grid gap-5 lg:grid-cols-[1fr_0.9fr]">
++        <div className="space-y-4">
++          <label className="block space-y-1.5">
++            <span className="font-bold text-[#6B6B66]">ชื่อหอพัก *</span>
++            <input
++              value={dormName}
++              onChange={(event) => onDormNameChange(event.target.value)}
++              disabled={!canEditWhiteLabel}
++              maxLength={120}
++              className="w-full rounded-xl border border-[#E0E0DB] px-3 py-2.5 disabled:opacity-50"
++            />
++          </label>
++
++          <div className="space-y-2">
++            <span className="font-bold text-[#6B6B66]">โลโก้</span>
++            <div className="flex flex-wrap gap-2">
++              <label className={`inline-flex items-center gap-2 rounded-xl border border-[#E0E0DB] px-3 py-2 font-bold ${canEditWhiteLabel ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'}`}>
++                <ImagePlus className="w-4 h-4" /> อัปโหลดโลโก้
++                <input
++                  type="file"
++                  accept="image/png,image/jpeg,image/webp"
++                  className="sr-only"
++                  disabled={!canEditWhiteLabel}
++                  onChange={(event) => {
++                    const file = event.target.files?.[0];
++                    if (file) onUploadLogo(file);
++                    event.currentTarget.value = '';
++                  }}
++                />
++              </label>
++              <button
++                type="button"
++                disabled={!canEditWhiteLabel || (!savedLogoDataUri && !pendingLogoDataUri)}
++                onClick={onDeleteLogo}
++                className="inline-flex items-center gap-2 rounded-xl border border-red-200 px-3 py-2 font-bold text-red-700 disabled:opacity-50"
++              >
++                <Trash2 className="w-4 h-4" /> ลบโลโก้
++              </button>
++            </div>
++            <p className="text-[10px] text-[#8A8A85]">PNG / JPEG / WebP ขนาดไม่เกิน 300 KB</p>
++          </div>
++
++          <div className="space-y-1.5">
++            <span className="font-bold text-[#6B6B66]">สีหลัก</span>
++            <div className="flex flex-wrap items-center gap-2">
++              <input
++                type="color"
++                value={/^#[0-9A-Fa-f]{6}$/.test(brandColor) ? brandColor : DEFAULT_BRAND_COLOR}
++                onChange={(event) => onBrandColorChange(event.target.value.toUpperCase())}
++                disabled={!canEditWhiteLabel}
++                className="h-10 w-14 rounded-lg border border-[#E0E0DB] bg-white p-1 disabled:opacity-50"
++              />
++              <input
++                value={brandColor}
++                onChange={(event) => onBrandColorChange(event.target.value)}
++                disabled={!canEditWhiteLabel}
++                placeholder={DEFAULT_BRAND_COLOR}
++                className="w-32 rounded-xl border border-[#E0E0DB] px-3 py-2 font-mono uppercase disabled:opacity-50"
++              />
++              <button
++                type="button"
++                disabled={!canEditWhiteLabel}
++                onClick={() => onBrandColorChange('')}
++                className="rounded-xl border border-[#E0E0DB] px-3 py-2 font-bold disabled:opacity-50"
++              >
++                ใช้สีเริ่มต้น
++              </button>
++            </div>
++          </div>
++
++          <label className="block space-y-1.5">
++            <span className="font-bold text-[#6B6B66] flex items-center gap-1"><Phone className="w-3.5 h-3.5" /> เบอร์โทร</span>
++            <input
++              value={contactPhone}
++              onChange={(event) => onContactPhoneChange(event.target.value)}
++              disabled={!canEditWhiteLabel}
++              maxLength={32}
++              className="w-full rounded-xl border border-[#E0E0DB] px-3 py-2.5 disabled:opacity-50"
++            />
++          </label>
++
++          <label className="block space-y-1.5">
++            <span className="font-bold text-[#6B6B66] flex items-center gap-1"><ReceiptText className="w-3.5 h-3.5" /> ข้อความท้ายบิล</span>
++            <textarea
++              value={billFooter}
++              onChange={(event) => onBillFooterChange(event.target.value)}
++              disabled={!canEditWhiteLabel}
++              maxLength={500}
++              rows={3}
++              className="w-full rounded-xl border border-[#E0E0DB] px-3 py-2.5 disabled:opacity-50"
++            />
++            <span className="text-[10px] text-[#8A8A85]">สูงสุด 500 ตัวอักษร</span>
++          </label>
++        </div>
++
++        <div className="rounded-2xl border border-[#E0E0DB] bg-[#F8F8F5] p-4">
++          <p className="mb-3 font-bold text-[#1A1A1A]">ตัวอย่างก่อนบันทึก</p>
++          <div className="overflow-hidden rounded-2xl bg-white shadow-sm">
++            <div className="p-4" style={{ backgroundColor: tokens.soft }}>
++              <div className="flex items-center gap-3">
++                {preview.logoDataUri ? (
++                  <img src={preview.logoDataUri} alt="โลโก้หอพัก" className="h-12 w-12 rounded-xl object-contain bg-white" />
++                ) : (
++                  <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-white"><Building2 className="w-6 h-6" /></div>
++                )}
++                <div>
++                  <p className="font-bold text-[#1A1A1A]">{preview.dormName}</p>
++                  <p className="text-[10px] text-[#6B6B66]">{preview.contactPhone || 'ยังไม่ได้ระบุเบอร์โทร'}</p>
++                </div>
++              </div>
++            </div>
++            <div className="space-y-3 p-4">
++              <div className="rounded-xl border border-[#E0E0DB] p-3">
++                <p className="font-bold">ตัวอย่างหัวบิล</p>
++                <p className="text-[10px] text-[#8A8A85]">{billFooter.trim() || 'ข้อความท้ายบิลจะแสดงที่นี่'}</p>
++              </div>
++              <button
++                type="button"
++                disabled={!canEditWhiteLabel}
++                className="w-full rounded-xl px-3 py-2 font-bold disabled:opacity-70"
++                style={{ backgroundColor: tokens.primary, color: tokens.contrast }}
++              >
++                ปุ่มหลักของระบบ
++              </button>
++            </div>
++          </div>
++        </div>
++      </div>
++    </section>
++  );
++};
