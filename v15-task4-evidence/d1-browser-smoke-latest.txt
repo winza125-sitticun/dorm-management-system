@@ -1,0 +1,6 @@
+run_id=32092158593
+run_attempt=1
+source_sha=2852e220809920080bd29d8f7229d154c78f2a03
+source_artifact_id=9308548139
+source_artifact_digest=sha256:9e6041d979edf8defbb7a300308049dda8a61fd3d73bf238b317d96f97a23097
+assert_smoke=success
