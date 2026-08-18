@@ -1,0 +1,6 @@
+run_id=32093592272
+run_attempt=1
+source_sha=4abf1276e59080175bc293f7ef02a074d8d2bf89
+source_task4_artifact_id=9308548139
+source_task4_artifact_sha256=9e6041d979edf8defbb7a300308049dda8a61fd3d73bf238b317d96f97a23097
+job_status=success
