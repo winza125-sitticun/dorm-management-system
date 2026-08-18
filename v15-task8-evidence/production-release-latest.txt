@@ -1,0 +1,8 @@
+run_id=32142729181
+run_attempt=1
+source_sha=87059894a9ce96aa31de2c2342c5bb8edaa6ffcb
+source_task7_artifact_id=9317174783
+source_task7_artifact_digest=sha256:2f475ac6daaae661442b3cb13b60b8d4ed82c74570c2e67ed70a8242bbbf0d3e
+final_artifact_id=
+final_artifact_digest=
+job_status=failure
