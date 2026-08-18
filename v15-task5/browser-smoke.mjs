@@ -54,10 +54,12 @@ try {
   }
   if (!targets?.length) throw new Error('no Chrome page target');
 
-  ws = new WebSocket(targets[0].webSocketDebuggerUrl);
+  const target = targets.find((item) => item.type === 'page') || targets[0];
+  ws = new WebSocket(target.webSocketDebuggerUrl);
   await new Promise((resolve, reject) => { ws.onopen = resolve; ws.onerror = reject; });
   let id = 0;
   const pending = new Map();
+  const browserEvents = [];
   ws.onmessage = (event) => {
     const message = JSON.parse(event.data);
     if (message.id && pending.has(message.id)) {
@@ -65,6 +67,11 @@ try {
       pending.delete(message.id);
       if (message.error) reject(new Error(JSON.stringify(message.error)));
       else resolve(message.result);
+      return;
+    }
+    if (['Runtime.exceptionThrown', 'Runtime.consoleAPICalled', 'Log.entryAdded'].includes(message.method)) {
+      browserEvents.push({ method: message.method, params: message.params });
+      if (browserEvents.length > 20) browserEvents.shift();
     }
   };
   const send = (method, params = {}) => new Promise((resolve, reject) => {
@@ -77,20 +84,46 @@ try {
     if (result.exceptionDetails) throw new Error(`browser eval failed: ${JSON.stringify(result.exceptionDetails)}`);
     return result.result?.value;
   };
+  const diagnosticSnapshot = async () => {
+    try {
+      return await evaluate(`(() => ({
+        href: location.href,
+        readyState: document.readyState,
+        title: document.title,
+        boot: document.documentElement?.dataset?.brandingBoot || null,
+        brand: getComputedStyle(document.documentElement).getPropertyValue('--brand-primary').trim(),
+        bodyText: (document.body?.innerText || '').slice(0, 600),
+        bodyTextContent: (document.body?.textContent || '').slice(0, 600),
+        bodyHtml: (document.body?.innerHTML || '').slice(0, 1200),
+        rootHtml: (document.querySelector('#root')?.innerHTML || '').slice(0, 1200),
+        scriptCount: document.scripts.length
+      }))()`);
+    } catch (error) {
+      return { diagnosticError: String(error) };
+    }
+  };
   const waitFor = async (expression, label, attempts = 100) => {
     for (let i = 0; i < attempts; i += 1) {
       try { if (await evaluate(expression)) return; } catch {}
       await sleep(150);
     }
-    throw new Error(`timeout waiting for ${label}`);
+    const snapshot = await diagnosticSnapshot();
+    const eventSummary = browserEvents.slice(-8).map((event) => ({
+      method: event.method,
+      text: event.params?.entry?.text || event.params?.type || event.params?.exceptionDetails?.text || null,
+      description: event.params?.exceptionDetails?.exception?.description || null,
+    }));
+    throw new Error(`timeout waiting for ${label}; snapshot=${JSON.stringify(snapshot)}; events=${JSON.stringify(eventSummary)}; chrome=${stderr.slice(-800)}`);
   };
   const navigate = async (url) => {
-    await send('Page.navigate', { url });
+    const result = await send('Page.navigate', { url });
+    if (result?.errorText) throw new Error(`navigation failed ${url}: ${result.errorText}`);
     await waitFor('document.readyState === "complete" || document.readyState === "interactive"', `navigation ${url}`);
   };
 
   await send('Page.enable');
   await send('Runtime.enable');
+  await send('Log.enable');
   await send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false });
   await navigate(`${baseUrl}/`);
   await waitFor('document.body && document.body.innerText.length > 0', 'login body');
