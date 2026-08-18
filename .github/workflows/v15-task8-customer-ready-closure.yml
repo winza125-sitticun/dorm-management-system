@@ -1,0 +1,337 @@
+name: V15 Task 8 CUSTOMER-READY Closure
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [agent/v15-task1-white-label-contract]
+    paths:
+      - '.github/workflows/v15-task8-customer-ready-closure.yml'
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: v15-task8-customer-ready-closure-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  SOURCE_ARTIFACT_ID: '9329473697'
+  SOURCE_ARTIFACT_SHA256: '00c1b4a7e98af601c265f42ed00823ced640a241f232274485e62ea1d79977d5'
+  SOURCE_ARTIFACT_DIGEST: 'sha256:00c1b4a7e98af601c265f42ed00823ced640a241f232274485e62ea1d79977d5'
+  SOURCE_RELEASE_SHA: 'e3e313b77dfb9d2a548d02df89c8e3cd1420b363'
+  SOURCE_SMOKE_RUN_ID: '32150971820'
+  SOURCE_SMOKE_ATTEMPT: '2'
+  SOURCE_EVIDENCE_ARTIFACT_ID: '9330223089'
+  SOURCE_EVIDENCE_SHA256: 'ad2f45ce5222ff28dbb260078e6534bdb9512a55ad8a82557488c40f979fbc5d'
+  SOURCE_EVIDENCE_DIGEST: 'sha256:ad2f45ce5222ff28dbb260078e6534bdb9512a55ad8a82557488c40f979fbc5d'
+  MASTER_ZIP_SHA256: 'd05ee110815a29b74498e17adac1b8355dec40d5a705dd016f5ad5f849caa9e9'
+  BASIC_ZIP_SHA256: '3e6b0df1464934750704c65a1fde2036c9d10ae4496f0982537c454eab60a0fa'
+  STANDARD_ZIP_SHA256: '803e430815dbdb1762ce8cad88ecb6587c2662f992322f74503775ae42d1fef4'
+  PRO_ZIP_SHA256: 'bcba801e55b48270f02f7d7a3afd78fda8b2112563534da50e2554d4d828c13d'
+  DEMO_ZIP_SHA256: '55263baace7d0925065977cd22f6035bc5fc90e43813532371c4e3fbd175caf5'
+  FIXED_APP_SHA256: '70769ae729b1390e7aa3adfd5e4588a13f2e95ba6dd1a9e8c27deee83d5c137e'
+  FIXED_HELPER_SHA256: '7595afe39a3709791c896af62567cc2a7e8c682af98b6ad8fdd2b450b49dcfa5'
+  PORTAL_HARNESS_BLOB: '60a84a10f887b3208f44bd2a7f09e445f3f3c99f'
+  PORTAL_CLEANUP_TEST_BLOB: '9da9911aa684b8df1d46db80f66ee82085c817e5'
+  CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+  CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+jobs:
+  close-release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 70
+    environment: "fulfilling-communication / production"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/v15-task1-white-label-contract
+          fetch-depth: 0
+
+      - name: Verify teardown regression harness
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object v15-task8-fix/portal-branding-smoke-v2.mjs)" = "$PORTAL_HARNESS_BLOB"
+          test "$(git hash-object v15-task8-fix/task7-harness-cleanup.test.mjs)" = "$PORTAL_CLEANUP_TEST_BLOB"
+          node --check v15-task8-fix/portal-branding-smoke-v2.mjs
+          node --test v15-task8-fix/task7-harness-cleanup.test.mjs
+
+      - name: Download exact candidate and source runtime evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 8 --retry-all-errors --retry-delay 3 \
+            -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${SOURCE_ARTIFACT_ID}/zip" \
+            -o candidate-artifact.zip
+          curl --fail --location --retry 8 --retry-all-errors --retry-delay 3 \
+            -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${SOURCE_EVIDENCE_ARTIFACT_ID}/zip" \
+            -o source-evidence.zip
+          echo "$SOURCE_ARTIFACT_SHA256  candidate-artifact.zip" | sha256sum --check --strict
+          echo "$SOURCE_EVIDENCE_SHA256  source-evidence.zip" | sha256sum --check --strict
+          rm -rf candidate source-evidence demo-work final-release
+          mkdir candidate source-evidence final-release
+          unzip -q candidate-artifact.zip -d candidate
+          unzip -q source-evidence.zip -d source-evidence
+          (cd candidate && sha256sum --check --strict V15_CUSTOMER_READY_SHA256.txt)
+          echo "$MASTER_ZIP_SHA256  candidate/dorm-management-system-master-v15-CUSTOMER-READY.zip" | sha256sum --check --strict
+          echo "$BASIC_ZIP_SHA256  candidate/dorm-management-system-basic-v15-CUSTOMER-READY.zip" | sha256sum --check --strict
+          echo "$STANDARD_ZIP_SHA256  candidate/dorm-management-system-standard-v15-CUSTOMER-READY.zip" | sha256sum --check --strict
+          echo "$PRO_ZIP_SHA256  candidate/dorm-management-system-pro-v15-CUSTOMER-READY.zip" | sha256sum --check --strict
+          echo "$DEMO_ZIP_SHA256  candidate/dorm-management-system-demo-v15-CUSTOMER-READY.zip" | sha256sum --check --strict
+
+      - name: Re-assert full exact-byte runtime evidence from smoke attempt 2
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          root=Path('source-evidence')
+          p5=json.load(open(root/'pro-task5.json')); d5=json.load(open(root/'demo-task5.json'))
+          p6=json.load(open(root/'pro-task6.json')); d6=json.load(open(root/'demo-task6.json'))
+          p7=json.load(open(root/'pro-task7.json')); d7=json.load(open(root/'demo-task7.json'))
+          for name,x in [('pro-task5',p5),('demo-task5',d5),('pro-task6',p6),('demo-task6',d6),('pro-task7',p7),('demo-task7',d7)]:
+              assert x.get('overallPass') is True, (name,x)
+          for x in (p5,d5):
+              assert x['login']['dormVisible'] and x['desktop']['dormVisible'] and x['mobile']['dormVisible']
+              assert x['desktop']['activeBrandClass'] and x['desktop']['activeContrastClass']
+              assert x['mobile']['headerVisible'] and x['mobile']['menuButtonVisible'] and x['mobile']['desktopAsideHidden']
+          for x in (p6,d6):
+              assert x['jpg']['mimeOk'] and x['jpg']['length'] > 1000 and x['jpg']['buttonRecovered']
+              assert x['print']['called'] and x['print']['containsExpectedColor'] and x['print']['exactColorAdjust']
+              assert x['invoice']['semanticAmber'] and x['invoice']['semanticBlue'] and x['invoice']['semanticPurple']
+          assert p6['invoice']['logoVisible'] and p6['invoice']['hasFooter'] and p6['invoice']['hasPhone']
+          assert p6['logoFallback']['exercised'] and p6['logoFallback']['fallbackVisible']
+          assert not d6['invoice']['logoVisible'] and not d6['invoice']['leakedFooter'] and not d6['invoice']['leakedPhone']
+          assert p7['expectedColor']=='#6D28D9' and p7['expectLogo'] is True and p7['lookup']['logoVisible'] and p7['active']['logoVisible']
+          assert d7['expectedColor']=='#1DB954' and d7['expectLogo'] is False and not d7['lookup']['logoVisible'] and not d7['active']['logoVisible']
+          assert p7['active']['successSemantic'] and p7['active']['repairSemantic']
+          assert d7['active']['successSemantic'] and d7['active']['repairSemantic']
+          c=json.load(open(root/'cleanup-evidence.json')); assert all(c[k]==0 for k in c), c
+          PY
+
+      - name: Prepare exact Demo package for teardown closure smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir demo-work
+          unzip -q candidate/dorm-management-system-demo-v15-CUSTOMER-READY.zip -d demo-work
+          echo "$FIXED_APP_SHA256  demo-work/src/App.tsx" | sha256sum --check --strict
+          echo "$FIXED_HELPER_SHA256  demo-work/src/utils/billApi.ts" | sha256sum --check --strict
+          test "$(find demo-work/d1-migrations -maxdepth 1 -type f -printf '%f\n' | sort | tail -n1)" = '0006_add_white_label_settings.sql'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install exact Demo dependencies
+        working-directory: demo-work
+        run: npm ci
+
+      - name: Allocate Demo closure Cloudflare resources
+        shell: bash
+        run: |
+          set -euo pipefail
+          P="$(printf '%s' "$GITHUB_RUN_ID" | tr -cd '0-9' | tail -c 10)-${GITHUB_RUN_ATTEMPT}"
+          echo "RUN_MARKER=$P" >> "$GITHUB_ENV"
+          echo "DEMO_PAGES=v15-t8c-demo-${P}" >> "$GITHUB_ENV"
+          echo "DEMO_D1=v15-t8c-demo-${P}-db" >> "$GITHUB_ENV"
+
+      - name: Create Demo D1 Pages and migrate through 0006
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd demo-work && npx wrangler d1 create "$DEMO_D1" --location apac && npx wrangler d1 info "$DEMO_D1" --json > ../demo-d1.json)
+          python3 - <<'PY'
+          import importlib.util, os, sys
+          from pathlib import Path
+          def load(path,name):
+              s=importlib.util.spec_from_file_location(name,Path(path)); m=importlib.util.module_from_spec(s); sys.modules[name]=m; s.loader.exec_module(m); return m
+          h=load('.github/scripts/v14_task12_d1_smoke.py','h8c'); c=load('.github/scripts/v14_task12_wrangler_config.py','c8c')
+          x=h.parse_wrangler_json(Path('demo-d1.json').read_text()); x=x[0] if isinstance(x,list) else x
+          uid=x.get('uuid') or x.get('id') or x.get('database_id'); assert uid
+          d=Path('demo-work')
+          text=c.build_wrangler_config((d/'wrangler.template.jsonc').read_text(),os.environ['DEMO_PAGES'],os.environ['DEMO_D1'],str(uid))
+          (d/'wrangler.jsonc').write_text(text)
+          PY
+          (cd demo-work && npx wrangler pages project create "$DEMO_PAGES" --production-branch main)
+          S="$(python3 -c 'import secrets;print(secrets.token_urlsafe(48))')"
+          printf '%s\n' "$S" | (cd demo-work && npx wrangler pages secret put JWT_SECRET --project-name "$DEMO_PAGES")
+          unset S
+          (cd demo-work && npx wrangler d1 migrations apply DB --remote --config wrangler.jsonc)
+
+      - name: Build deploy and wait for either Demo hostname
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd demo-work && npm run build:pages)
+          (cd demo-work && npx wrangler pages deploy dist --project-name "$DEMO_PAGES" --branch main --commit-hash "$SOURCE_RELEASE_SHA" --commit-dirty=false) | tee demo-deploy.log
+          DEPLOY_URL="$(grep -Eo 'https://[^[:space:]]+\.pages\.dev' demo-deploy.log | tail -n1)"
+          CANONICAL_URL="https://${DEMO_PAGES}.pages.dev"
+          test -n "$DEPLOY_URL"
+          case "$DEPLOY_URL" in https://*.$DEMO_PAGES.pages.dev) ;; *) echo "unexpected Demo deployment URL: $DEPLOY_URL" >&2; exit 1;; esac
+          ready=''
+          for attempt in $(seq 1 120); do
+            for url in "$DEPLOY_URL" "$CANONICAL_URL"; do
+              if curl --fail --silent --show-error --connect-timeout 5 --max-time 10 "$url/" -o /dev/null; then
+                ready="$url"; break 2
+              fi
+            done
+            sleep 2
+          done
+          test -n "$ready"
+          echo "DEMO_URL=$ready" >> "$GITHUB_ENV"
+
+      - name: Create real Demo owner with dormant paid branding and occupied room
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os
+          p=os.environ['RUN_MARKER']
+          setup={'email':f'v15-task8c-demo-{p}@example.invalid','password':f'V15T8C!DemoAa12345{p[-2:]}','displayName':'V15 Task 8 Closure Demo','dormName':'V15 Demo Dorm'}
+          open('demo-setup-request.json','w').write(json.dumps(setup))
+          open('demo-login-request.json','w').write(json.dumps({'username':setup['email'],'password':setup['password']}))
+          PY
+          curl --fail --silent --show-error -H 'Content-Type: application/json' --data @demo-setup-request.json "$DEMO_URL/api/setup/init" > demo-setup.json
+          curl --fail --silent --show-error -H 'Content-Type: application/json' --data @demo-login-request.json "$DEMO_URL/api/auth/login" > demo-login.json
+          python3 - <<'PY'
+          import json
+          s=json.load(open('demo-setup.json')); l=json.load(open('demo-login.json'))
+          sd=s.get('data',s); ld=l.get('data',l)
+          assert sd.get('token') and ld.get('token') and int(sd['user']['id'])==int(ld['user']['id'])
+          open('demo-owner.txt','w').write(str(sd['user']['id']))
+          open('demo-token.txt','w').write(str(ld['token']))
+          PY
+          OWNER="$(cat demo-owner.txt)"
+          (cd demo-work && npx wrangler d1 execute DB --remote --config wrangler.jsonc --command "UPDATE settings SET dorm_name='V15 Demo Dorm', brand_color='#DC2626', contact_phone='0899999999', bill_footer='V15 Hidden Demo Footer' WHERE user_id=${OWNER};")
+          curl --fail --silent --show-error "$DEMO_URL/api/public/branding" > demo-branding.json
+          python3 - <<'PY'
+          import json
+          d=json.load(open('demo-branding.json'))
+          assert d['dormName']=='V15 Demo Dorm' and d['brandColor'] is None and d['contactPhone'] is None and d['logoDataUri'] is None and d['whiteLabelEnabled'] is False
+          PY
+          python3 - <<'PY'
+          import json
+          open('demo-room-request.json','w').write(json.dumps({'roomNumber':'V15-DEMO-101','monthlyRent':4500,'status':'occupied','tenantName':'V15 Tenant','tenantPhone':'0800000000'}))
+          PY
+          TOKEN="$(cat demo-token.txt)"
+          curl --fail --silent --show-error -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' --data @demo-room-request.json "$DEMO_URL/api/rooms" > demo-room.json
+
+      - name: Run Demo Tenant Portal with teardown-hardened harness
+        shell: bash
+        env:
+          SMOKE_BASE_URL: ${{ env.DEMO_URL }}
+          SMOKE_EXPECTED_DORM: V15 Demo Dorm
+          SMOKE_EXPECTED_COLOR: '#1DB954'
+          SMOKE_ROOM_NUMBER: V15-DEMO-101
+          SMOKE_TENANT_PHONE: '0800000000'
+          SMOKE_EXPECT_LOGO: 'false'
+          SMOKE_OUTPUT: ${{ github.workspace }}/demo-portal-closure.json
+        run: |
+          set -euo pipefail
+          C="$(command -v google-chrome || command -v chromium || command -v chromium-browser || true)"; test -n "$C"
+          CHROME_BIN="$C" node v15-task8-fix/portal-branding-smoke-v2.mjs
+          python3 - <<'PY'
+          import json
+          d=json.load(open('demo-portal-closure.json'))
+          assert d['overallPass'] is True
+          assert d['expectedColor']=='#1DB954' and d['expectLogo'] is False
+          assert not d['lookup']['logoVisible'] and not d['active']['logoVisible']
+          assert d['active']['successSemantic'] and d['active']['repairSemantic']
+          PY
+
+      - name: Cleanup Demo closure Cloudflare resources
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          A=99;B=99
+          [ -d demo-work ] && [ -n "${DEMO_PAGES:-}" ] && (cd demo-work && npx wrangler pages project delete "$DEMO_PAGES" --yes); A=$?
+          [ -d demo-work ] && [ -n "${DEMO_D1:-}" ] && (cd demo-work && npx wrangler d1 delete "$DEMO_D1" --skip-confirmation); B=$?
+          printf '{"demoPagesExit":%s,"demoD1Exit":%s}\n' "$A" "$B" > closure-cleanup.json
+          rm -f demo-token.txt demo-owner.txt demo-setup-request.json demo-login-request.json demo-setup.json demo-login.json demo-room-request.json demo-room.json
+
+      - name: Assert closure and materialize exact final release
+        id: assert_closure
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          d=json.load(open('demo-portal-closure.json')); assert d.get('overallPass') is True
+          c=json.load(open('closure-cleanup.json')); assert all(c[k]==0 for k in c), c
+          PY
+          cp candidate/dorm-management-system-*-v15-CUSTOMER-READY.zip final-release/
+          cp candidate/V15_CUSTOMER_READY_SHA256.txt final-release/
+          (cd final-release && sha256sum --check --strict V15_CUSTOMER_READY_SHA256.txt)
+          python3 - <<'PY'
+          import json, os
+          out={
+            'status':'CUSTOMER-READY',
+            'candidateArtifactId':os.environ['SOURCE_ARTIFACT_ID'],
+            'candidateArtifactDigest':os.environ['SOURCE_ARTIFACT_DIGEST'],
+            'sourceReleaseSha':os.environ['SOURCE_RELEASE_SHA'],
+            'sourceSmokeRunId':os.environ['SOURCE_SMOKE_RUN_ID'],
+            'sourceSmokeAttempt':int(os.environ['SOURCE_SMOKE_ATTEMPT']),
+            'sourceEvidenceArtifactId':os.environ['SOURCE_EVIDENCE_ARTIFACT_ID'],
+            'sourceEvidenceArtifactDigest':os.environ['SOURCE_EVIDENCE_DIGEST'],
+            'migrationCeiling':'0006_add_white_label_settings.sql',
+            'runtimeMatrix':'PASS',
+            'portalTeardownClosure':'PASS',
+          }
+          open('final-release/V15_FINAL_RELEASE_STATUS.json','w').write(json.dumps(out,indent=2)+'\n')
+          PY
+
+      - name: Upload final V15 CUSTOMER-READY release
+        id: upload_final
+        uses: actions/upload-artifact@v4
+        with:
+          name: v15-customer-ready-final
+          path: final-release/**
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Persist final CUSTOMER-READY evidence pointer
+        if: always()
+        shell: bash
+        env:
+          FINAL_ARTIFACT_ID: ${{ steps.upload_final.outputs.artifact-id }}
+          FINAL_ARTIFACT_DIGEST: ${{ steps.upload_final.outputs.artifact-digest }}
+        run: |
+          set -euo pipefail
+          mkdir -p v15-task8-evidence
+          cat > v15-task8-evidence/customer-ready-final-latest.txt <<EOF
+          run_id=$GITHUB_RUN_ID
+          run_attempt=$GITHUB_RUN_ATTEMPT
+          source_sha=$GITHUB_SHA
+          source_artifact_id=$SOURCE_ARTIFACT_ID
+          source_artifact_digest=$SOURCE_ARTIFACT_DIGEST
+          source_release_sha=$SOURCE_RELEASE_SHA
+          source_smoke_run_id=$SOURCE_SMOKE_RUN_ID
+          source_smoke_attempt=$SOURCE_SMOKE_ATTEMPT
+          source_evidence_artifact_id=$SOURCE_EVIDENCE_ARTIFACT_ID
+          source_evidence_artifact_digest=$SOURCE_EVIDENCE_DIGEST
+          master_zip_sha256=$MASTER_ZIP_SHA256
+          basic_zip_sha256=$BASIC_ZIP_SHA256
+          standard_zip_sha256=$STANDARD_ZIP_SHA256
+          pro_zip_sha256=$PRO_ZIP_SHA256
+          demo_zip_sha256=$DEMO_ZIP_SHA256
+          fixed_app_sha256=$FIXED_APP_SHA256
+          fixed_helper_sha256=$FIXED_HELPER_SHA256
+          portal_harness_blob=$PORTAL_HARNESS_BLOB
+          final_artifact_id=${FINAL_ARTIFACT_ID:-}
+          final_artifact_digest=${FINAL_ARTIFACT_DIGEST:-}
+          customer_ready=${{ steps.assert_closure.outcome }}
+          EOF
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add v15-task8-evidence/customer-ready-final-latest.txt
+          git commit -m 'ci(v15-task8): record CUSTOMER-READY closure evidence' || exit 0
+          git push origin HEAD:agent/v15-task1-white-label-contract
