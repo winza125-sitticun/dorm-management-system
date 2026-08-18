@@ -1,0 +1,256 @@
+diff --git a/src/components/SettingsView.tsx b/src/components/SettingsView.tsx
+index 1a984df..1dd346c 100644
+--- a/src/components/SettingsView.tsx
++++ b/src/components/SettingsView.tsx
+@@ -42,6 +42,9 @@ import { hasPlanFeature, normalizeSubscriptionPlan } from '../constants/planEnti
+ import type { UserRole } from '../types.ts';
+ import { RecurringChargesSettings } from './RecurringChargesSettings.tsx';
+ import { BackupRestoreSettings } from './BackupRestoreSettings.tsx';
++import { WhiteLabelSettingsSection } from './WhiteLabelSettingsSection.tsx';
++import { normalizeWhiteLabelDraft, validateLogoFileMeta, type NormalizedWhiteLabelDraft } from '../utils/whiteLabelSettings.ts';
++import { useTheme } from '../context/ThemeContext.tsx';
+ 
+ interface SettingsViewProps {
+  settings: Settings | null;
+@@ -50,6 +53,7 @@ interface SettingsViewProps {
+  idToken?: string | null;
+  userProfile?: UserProfile | null;
+  onRestoreSuccess?: () => Promise<void> | void;
++ onRefreshSettings?: () => Promise<void>;
+  showToast?: (message: string, type?: 'success' | 'error' | 'info' | 'warning') => void;
+ }
+ 
+@@ -60,6 +64,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
+  idToken,
+  userProfile,
+  onRestoreSuccess,
++ onRefreshSettings,
+  showToast
+ }) => {
+  const role = String(userProfile?.role || '').toLowerCase();
+@@ -68,6 +73,13 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
+  const canManageSettingsByRole = hasAppPermission(role, userProfile?.permissions, PERMISSIONS.MANAGE_SETTINGS);
+  const canManageSettings = canManageSettingsByRole && hasPlanFeature(subscriptionPlan, 'settings');
+  const canUsePromptPay = canManageSettingsByRole && hasPlanFeature(subscriptionPlan, 'promptPay');
++ const canEditWhiteLabel = isOwnerOrAdmin && hasPlanFeature(subscriptionPlan, 'whiteLabel');
++ const whiteLabelLockReason = !hasPlanFeature(subscriptionPlan, 'whiteLabel')
++  ? 'White-label ปิดใช้งานใน Demo'
++  : !isOwnerOrAdmin
++   ? 'เฉพาะเจ้าของหอพัก/Admin เท่านั้นที่แก้ไข White-label ได้'
++   : null;
++ const { refreshBranding } = useTheme();
+  const canUseGoogleSheets = canManageSettingsByRole && hasPlanFeature(subscriptionPlan, 'googleSheets');
+  const canUseLineIntegration = canManageSettingsByRole && hasPlanFeature(subscriptionPlan, 'lineIntegration');
+  const canManageRecurringCharges = hasAppPermission(role, userProfile?.permissions, PERMISSIONS.MANAGE_RECURRING_CHARGES) && hasPlanFeature(subscriptionPlan, 'recurringCharges');
+@@ -75,6 +87,12 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
+  const canExportData = isOwnerOrAdmin && hasPlanFeature(subscriptionPlan, 'contracts');
+  
+  const [dormName, setDormName] = useState('');
++ const [brandColor, setBrandColor] = useState('');
++ const [contactPhone, setContactPhone] = useState('');
++ const [billFooter, setBillFooter] = useState('');
++ const [pendingLogoDataUri, setPendingLogoDataUri] = useState<string | null>(null);
++ const [brandingRefreshWarning, setBrandingRefreshWarning] = useState<string | null>(null);
++ const [logoMutationPending, setLogoMutationPending] = useState(false);
+  const [defaultElecRate, setDefaultElecRate] = useState('');
+  const [defaultWaterRate, setDefaultWaterRate] = useState('');
+  const [defaultDueDateDay, setDefaultDueDateDay] = useState('');
+@@ -502,6 +520,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
+  useEffect(() => {
+  if (settings) {
+  setDormName(settings.dormName || '');
++ setBrandColor(settings.brandColor || '');
++ setContactPhone(settings.contactPhone || '');
++ setBillFooter(settings.billFooter || '');
++ setPendingLogoDataUri(null);
+  setDefaultElecRate(settings.defaultElecRate != null ? String(settings.defaultElecRate) : '7');
+  setDefaultWaterRate(settings.defaultWaterRate != null ? String(settings.defaultWaterRate) : '13');
+  setDefaultDueDateDay(settings.defaultDueDateDay != null ? String(settings.defaultDueDateDay) : '5');
+@@ -545,8 +567,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
+  return () => { cancelled = true; };
+  }, [idToken, canUseGoogleSheets]);
+ 
+- const buildSettingsPayload = (spreadsheetId = googleSpreadsheetId): Omit<Settings, 'id'> => ({
+- dormName: dormName || 'หอพักของฉัน',
++ const buildSettingsPayload = (spreadsheetId = googleSpreadsheetId, whiteLabelOverride?: NormalizedWhiteLabelDraft): Omit<Settings, 'id'> => ({
++ dormName: whiteLabelOverride?.dormName ?? (dormName || 'หอพักของฉัน'),
+  defaultElecRate: parseNumberOrFallback(defaultElecRate, 7),
+  defaultWaterRate: parseNumberOrFallback(defaultWaterRate, 13),
+  defaultDueDateDay: parseNumberOrFallback(defaultDueDateDay, 5),
+@@ -557,6 +579,11 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
+  lineChannelSecret: removeLineSecret ? null : (lineChannelSecret.trim() || undefined),
+  lineBotEnabled,
+  googleSpreadsheetId: spreadsheetId || '',
++ ...(canEditWhiteLabel ? {
++  brandColor: whiteLabelOverride?.brandColor ?? (brandColor || null),
++  contactPhone: whiteLabelOverride?.contactPhone ?? (contactPhone || null),
++  billFooter: whiteLabelOverride?.billFooter ?? (billFooter || null),
++ } : {}),
+  ...(isOwnerOrAdmin ? { fontScale } : {})
+  });
+ 
+@@ -600,14 +627,85 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
+  setTimeout(() => setCopied(false), 2000);
+  };
+ 
++ const readFileAsDataUri = (file: File): Promise<string> => new Promise((resolve, reject) => {
++ const reader = new FileReader();
++ reader.onload = () => resolve(String(reader.result || ''));
++ reader.onerror = () => reject(new Error('ไม่สามารถอ่านไฟล์โลโก้ได้'));
++ reader.readAsDataURL(file);
++ });
++
++ const handleUploadLogo = async (file: File) => {
++ if (!canEditWhiteLabel || logoMutationPending) return;
++ const meta = validateLogoFileMeta(file);
++ if (!meta.ok) {
++  setFormError(meta.error);
++  return;
++ }
++ setFormError(null);
++ setBrandingRefreshWarning(null);
++ setLogoMutationPending(true);
++ try {
++  const logoDataUri = await readFileAsDataUri(file);
++  setPendingLogoDataUri(logoDataUri);
++  const response = await fetch('/api/settings/logo', {
++   method: 'PUT',
++   headers: { 'Authorization': `Bearer ${idToken}`, 'Content-Type': 'application/json' },
++   body: JSON.stringify({ logoDataUri }),
++  });
++  if (!response.ok) throw new Error(await readApiError(response, 'อัปโหลดโลโก้ไม่สำเร็จ'));
++  await onRefreshSettings?.();
++  const brandingRefreshed = await refreshBranding();
++  if (!brandingRefreshed) setBrandingRefreshWarning('อัปโหลดโลโก้แล้ว แต่ยังรีเฟรชแบรนด์บนหน้าจอไม่ได้ กรุณาลองรีเฟรชหน้า');
++  setPendingLogoDataUri(null);
++  showToast?.('อัปโหลดโลโก้เรียบร้อยแล้ว', 'success');
++ } catch (err) {
++  setPendingLogoDataUri(null);
++  setFormError(err instanceof Error ? err.message : 'อัปโหลดโลโก้ไม่สำเร็จ');
++ } finally {
++  setLogoMutationPending(false);
++ }
++ };
++
++ const handleDeleteLogo = async () => {
++ if (!canEditWhiteLabel || logoMutationPending) return;
++ setFormError(null);
++ setBrandingRefreshWarning(null);
++ setLogoMutationPending(true);
++ try {
++  const response = await fetch('/api/settings/logo', {
++   method: 'DELETE',
++   headers: { 'Authorization': `Bearer ${idToken}` },
++  });
++  if (!response.ok) throw new Error(await readApiError(response, 'ลบโลโก้ไม่สำเร็จ'));
++  setPendingLogoDataUri(null);
++  await onRefreshSettings?.();
++  const brandingRefreshed = await refreshBranding();
++  if (!brandingRefreshed) setBrandingRefreshWarning('ลบโลโก้แล้ว แต่ยังรีเฟรชแบรนด์บนหน้าจอไม่ได้ กรุณาลองรีเฟรชหน้า');
++  showToast?.('ลบโลโก้เรียบร้อยแล้ว', 'success');
++ } catch (err) {
++  setFormError(err instanceof Error ? err.message : 'ลบโลโก้ไม่สำเร็จ');
++ } finally {
++  setLogoMutationPending(false);
++ }
++ };
++
+  const handleSubmit = async (e: React.FormEvent) => {
+  e.preventDefault();
+  setFormError(null);
+  setFormSuccess(false);
+-
+- if (!dormName) {
+- setFormError('กรุณากรอกชื่อหอพัก/อาคาร');
+- return;
++ setBrandingRefreshWarning(null);
++
++ let normalizedWhiteLabel: NormalizedWhiteLabelDraft | undefined;
++ if (canEditWhiteLabel) {
++  const normalized = normalizeWhiteLabelDraft({ dormName, brandColor, contactPhone, billFooter });
++  if (!normalized.ok) {
++   setFormError(normalized.error);
++   return;
++  }
++  normalizedWhiteLabel = normalized.value;
++ } else if (!dormName) {
++  setFormError('กรุณากรอกชื่อหอพัก/อาคาร');
++  return;
+  }
+  if (!defaultElecRate || parseFloat(defaultElecRate) <= 0) {
+  setFormError('กรุณากรอกอัตราค่าไฟต่อหน่วยที่ถูกต้อง');
+@@ -639,10 +737,14 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
+ 
+  setSubmitting(true);
+ 
+- const settingsData = buildSettingsPayload();
++ const settingsData = buildSettingsPayload(googleSpreadsheetId, normalizedWhiteLabel);
+ 
+  try {
+  await onUpdateSettings(settingsData);
++ const brandingRefreshed = await refreshBranding();
++ if (!brandingRefreshed) {
++  setBrandingRefreshWarning('บันทึกแล้ว แต่ยังรีเฟรชแบรนด์บนหน้าจอไม่ได้ กรุณาลองรีเฟรชหน้า');
++ }
+  if (lineChannelAccessToken.trim()) setLineTokenConfigured(true);
+  if (lineChannelSecret.trim()) setLineSecretConfigured(true);
+  if (removeLineToken) setLineTokenConfigured(false);
+@@ -1158,6 +1260,31 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
+ 
+  {canManageRecurringCharges && <RecurringChargesSettings idToken={idToken} />}
+ 
++ <WhiteLabelSettingsSection
++  dormName={dormName}
++  brandColor={brandColor}
++  contactPhone={contactPhone}
++  billFooter={billFooter}
++  savedLogoDataUri={settings?.brandLogoUrl || null}
++  pendingLogoDataUri={pendingLogoDataUri}
++  whiteLabelEnabled={hasPlanFeature(subscriptionPlan, 'whiteLabel')}
++  canEditWhiteLabel={canEditWhiteLabel && !logoMutationPending}
++  lockReason={whiteLabelLockReason}
++  onDormNameChange={setDormName}
++  onBrandColorChange={setBrandColor}
++  onContactPhoneChange={setContactPhone}
++  onBillFooterChange={setBillFooter}
++  onUploadLogo={handleUploadLogo}
++  onDeleteLogo={handleDeleteLogo}
++ />
++
++ {brandingRefreshWarning && (
++  <div className="p-4 bg-amber-50 border border-amber-200 text-amber-800 rounded-2xl text-xs flex items-center gap-2.5">
++   <AlertTriangle className="w-5 h-5 flex-shrink-0" />
++   <p className="font-medium">{brandingRefreshWarning}</p>
++  </div>
++ )}
++
+  {formSuccess && (
+  <div className="p-4 bg-[#1DB954]/8 border border-[#1DB954]/30 text-[#1DB954] rounded-2xl text-xs flex items-center gap-2.5 animate-fadeIn">
+  <CheckCircle className="w-5 h-5 text-[#1DB954] flex-shrink-0" />
+@@ -1177,26 +1304,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
+ 
+  <form onSubmit={handleSubmit} className="bg-white border border-[#E0E0DB] rounded-2xl p-6 space-y-6 text-xs text-[#6B6B66]">
+  
+- {/* Section 1: Dormitory general */}
+- <div className="space-y-4">
+- <h3 className="text-xs font-bold text-[#1A1A1A] border-b border-[#E0E0DB] pb-2 flex items-center gap-2">
+- <Building className="w-4 h-4 text-[#1DB954]" />
+- <span>ข้อมูลและชื่อสถานประกอบการ</span>
+- </h3>
+-
+- <div>
+- <label className="block text-[#8A8A85] font-bold mb-1.5 uppercase tracking-wider text-[10px]">ชื่อหอพัก / อพาร์ทเม้นท์ / คอนโด *</label>
+- <input
+- type="text"
+- placeholder="เช่น หอพักกรีนวิลล์, Greenville Mansion"
+- value={dormName}
+- onChange={(e) => setDormName(e.target.value)}
+- disabled={!canManageSettings}
+- className="w-full bg-white border border-[#E0E0DB] rounded-xl p-3 text-[#1A1A1A] placeholder-slate-400 focus:outline-none focus:border-[#1DB954] transition disabled:opacity-50"
+- />
+- </div>
+- </div>
+-
+  {isOwnerOrAdmin && (
+  <div className="space-y-4">
+  <h3 className="text-xs font-bold text-[#1A1A1A] border-b border-[#E0E0DB] pb-2 flex items-center gap-2">
