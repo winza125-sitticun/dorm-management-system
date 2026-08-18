@@ -11,6 +11,7 @@ on:
       - 'v15-task4-patches/002c-WhiteLabelSettingsSection.patch'
       - 'v15-task4-patches/002d-ThemeContext.patch'
       - 'v15-task4-patches/002e-whiteLabelSettings.patch'
+      - 'v15-task4-patches/002f-SettingsView-narrowing.patch'
       - '.github/workflows/v15-task4-tdd.yml'
 
 permissions:
@@ -35,6 +36,8 @@ env:
   THEME_PATCH_SHA256: db1b0e08e6453567bf145e25258ab97691bea91dc628d5120d64e69867d491ed
   UTILS_PATCH_BLOB: bbb9b7705f4bad62987467147b29c764ae6310ca
   UTILS_PATCH_SHA256: 42a2fe0960a066655583d1336f74d0c324f82a6bbdf1a9221402ddbe5d901092
+  NARROW_PATCH_BLOB: 7d5604c4cc9efff9b4565c0ddf120956ab7164e8
+  NARROW_PATCH_SHA256: 4d8f70092f2f085ced6ee3967a576054553499ffcf45facc4da4fe3cabc45d24
 
 jobs:
   red-green:
@@ -131,7 +134,6 @@ jobs:
             exit 1
           fi
           grep -Eq 'ERR_MODULE_NOT_FOUND|Cannot find module|ENOENT' ../task4-red.log
-          echo 'Expected RED confirmed.'
 
       - name: Verify raw implementation patch integrity
         id: impl_integrity
@@ -149,34 +151,25 @@ jobs:
           echo "$THEME_PATCH_SHA256  ../v15-task4-patches/002d-ThemeContext.patch" | sha256sum --check --strict
           test "$(git hash-object ../v15-task4-patches/002e-whiteLabelSettings.patch)" = "$UTILS_PATCH_BLOB"
           echo "$UTILS_PATCH_SHA256  ../v15-task4-patches/002e-whiteLabelSettings.patch" | sha256sum --check --strict
+          test "$(git hash-object ../v15-task4-patches/002f-SettingsView-narrowing.patch)" = "$NARROW_PATCH_BLOB"
+          echo "$NARROW_PATCH_SHA256  ../v15-task4-patches/002f-SettingsView-narrowing.patch" | sha256sum --check --strict
 
-      - name: Dry-run raw implementation patches
-        id: impl_dry_run
-        working-directory: source
-        shell: bash
-        run: |
-          set -euo pipefail
-          for patch_file in \
-            ../v15-task4-patches/002a-App.patch \
-            ../v15-task4-patches/002b-SettingsView.patch \
-            ../v15-task4-patches/002c-WhiteLabelSettingsSection.patch \
-            ../v15-task4-patches/002d-ThemeContext.patch \
-            ../v15-task4-patches/002e-whiteLabelSettings.patch; do
-            patch --dry-run -p1 < "$patch_file"
-          done
-
-      - name: Apply raw implementation patches
+      - name: Dry-run and apply raw implementation patches
         id: impl_apply
         working-directory: source
         shell: bash
         run: |
           set -euo pipefail
-          for patch_file in \
-            ../v15-task4-patches/002a-App.patch \
-            ../v15-task4-patches/002b-SettingsView.patch \
-            ../v15-task4-patches/002c-WhiteLabelSettingsSection.patch \
-            ../v15-task4-patches/002d-ThemeContext.patch \
-            ../v15-task4-patches/002e-whiteLabelSettings.patch; do
+          PATCHES=(
+            ../v15-task4-patches/002a-App.patch
+            ../v15-task4-patches/002b-SettingsView.patch
+            ../v15-task4-patches/002c-WhiteLabelSettingsSection.patch
+            ../v15-task4-patches/002d-ThemeContext.patch
+            ../v15-task4-patches/002e-whiteLabelSettings.patch
+            ../v15-task4-patches/002f-SettingsView-narrowing.patch
+          )
+          for patch_file in "${PATCHES[@]}"; do
+            patch --dry-run -p1 < "$patch_file"
             patch -p1 < "$patch_file"
           done
 
@@ -184,9 +177,7 @@ jobs:
         id: impl_diff
         working-directory: source
         shell: bash
-        run: |
-          set -euo pipefail
-          git diff --check -- src/App.tsx src/components/SettingsView.tsx src/components/WhiteLabelSettingsSection.tsx src/context/ThemeContext.tsx src/utils/whiteLabelSettings.ts tests
+        run: git diff --check -- src/App.tsx src/components/SettingsView.tsx src/components/WhiteLabelSettingsSection.tsx src/context/ThemeContext.tsx src/utils/whiteLabelSettings.ts tests
 
       - name: Prove GREEN focused Task 4 contracts
         id: green
@@ -256,7 +247,6 @@ jobs:
           tests_patch=${{ steps.tests_patch.outcome }}
           red=${{ steps.red.outcome }}
           impl_integrity=${{ steps.impl_integrity.outcome }}
-          impl_dry_run=${{ steps.impl_dry_run.outcome }}
           impl_apply=${{ steps.impl_apply.outcome }}
           impl_diff=${{ steps.impl_diff.outcome }}
           green=${{ steps.green.outcome }}
@@ -278,6 +268,8 @@ jobs:
           theme_patch_sha256=$THEME_PATCH_SHA256
           utils_patch_blob=$UTILS_PATCH_BLOB
           utils_patch_sha256=$UTILS_PATCH_SHA256
+          narrow_patch_blob=$NARROW_PATCH_BLOB
+          narrow_patch_sha256=$NARROW_PATCH_SHA256
           EOF
           if [ -f task4-lint.log ]; then
             tail -n 160 task4-lint.log > v15-task4-evidence/lint-latest.txt
