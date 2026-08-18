@@ -22,6 +22,7 @@ env:
   TASK3_MASTER_SHA256: ea70213d83f87eaacfb9002beee1bc5b46bdc3aea158d3bf94d626ab5c0d53c2
   TEST_PATCH_BLOB: 530ce99976dd7e23d7aa42692ef65b88acc5fd45
   IMPL_PATCH_BLOB: ed8decacb1f8433c5ab6f6e274e06023bdbe0b14
+  IMPL_PATCH_SHA256: 83c1dccf6a7a5657548ee511bb74b98d1e7dc095eaf0ad315552e008afbaccdf
 
 jobs:
   red-green:
@@ -120,14 +121,27 @@ jobs:
           grep -Eq 'ERR_MODULE_NOT_FOUND|Cannot find module|ENOENT' ../task4-red.log
           echo 'Expected RED confirmed.'
 
-      - name: Verify and apply implementation patch
+      - name: Verify, decode, dry-run, and apply implementation patch
         id: impl_patch
         working-directory: source
         shell: bash
         run: |
           set -euo pipefail
           test "$(git hash-object ../v15-task4-patches/002-task4-impl.patch.gz.b64)" = "$IMPL_PATCH_BLOB"
-          base64 -d ../v15-task4-patches/002-task4-impl.patch.gz.b64 | gzip -d > ../task4-impl.patch
+
+          # The repository transport blob currently has a damaged gzip trailer.
+          # Do not trust decompressed bytes unless their canonical patch SHA-256 matches.
+          set +e
+          base64 -d ../v15-task4-patches/002-task4-impl.patch.gz.b64 | gzip -dc > ../task4-impl.patch
+          decode_status=("${PIPESTATUS[@]}")
+          set -e
+          test "${decode_status[0]}" -eq 0
+          if [ "${decode_status[1]}" -ne 0 ]; then
+            echo 'gzip transport integrity warning; enforcing canonical raw patch SHA-256.'
+          fi
+
+          echo "$IMPL_PATCH_SHA256  ../task4-impl.patch" | sha256sum --check --strict
+          patch --dry-run -p1 < ../task4-impl.patch
           patch -p1 < ../task4-impl.patch
           git diff --check -- src/App.tsx src/components/SettingsView.tsx src/components/WhiteLabelSettingsSection.tsx src/context/ThemeContext.tsx src/utils/whiteLabelSettings.ts tests
 
@@ -202,6 +216,7 @@ jobs:
           task3_master_sha256=$TASK3_MASTER_SHA256
           test_patch_blob=$TEST_PATCH_BLOB
           impl_patch_blob=$IMPL_PATCH_BLOB
+          impl_patch_sha256=$IMPL_PATCH_SHA256
           EOF
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
