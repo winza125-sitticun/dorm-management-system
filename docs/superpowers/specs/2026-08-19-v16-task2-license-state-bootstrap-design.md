@@ -12,7 +12,7 @@ Add the customer-side persistence foundation required by V16 License/Activation:
 
 ## Source-derived requirements
 
-The V16 parent design requires a customer-side table separate from `settings` with the following fields:
+The V16 parent design requires a customer-side table separate from `settings` with exactly these fields and stated defaults/nullability:
 
 ```text
 id INTEGER PRIMARY KEY CHECK(id = 1)
@@ -60,7 +60,7 @@ Task 2 does not implement license verification, activation, refresh, deactivatio
 
 Create `d1-migrations/0007_add_license_state.sql` using `CREATE TABLE IF NOT EXISTS` so fresh and upgrade paths converge on the same schema.
 
-The exact table is:
+The table must preserve the parent-design contract without inventing an `updated_at` default:
 
 ```sql
 CREATE TABLE IF NOT EXISTS license_state (
@@ -73,7 +73,7 @@ CREATE TABLE IF NOT EXISTS license_state (
   grace_until TEXT,
   expires_at TEXT,
   control_plane_url TEXT NOT NULL,
-  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  updated_at TEXT NOT NULL
 );
 ```
 
@@ -102,11 +102,11 @@ export const licenseState = sqliteTable('license_state', {
   graceUntil: text('grace_until'),
   expiresAt: text('expires_at'),
   controlPlaneUrl: text('control_plane_url').notNull(),
-  updatedAt: text('updated_at').default(sql`(CURRENT_TIMESTAMP)`).notNull(),
+  updatedAt: text('updated_at').notNull(),
 });
 ```
 
-The SQL migration remains the authority for `CHECK(id = 1)` because the current Drizzle schema style does not need to introduce a new check-helper abstraction solely for Task 2.
+The SQL migration remains the authority for `CHECK(id = 1)` because the current Drizzle schema style does not need a new check-helper abstraction solely for Task 2.
 
 ## License state service boundary
 
@@ -156,14 +156,15 @@ export async function ensureLicenseState(
 2. Read singleton row `id = 1` first.
 3. If the row already exists, return it unchanged. The caller's new URL must not overwrite existing identity/state in Task 2.
 4. If no row exists, create a candidate `installationId` with `crypto.randomUUID()`.
-5. Attempt an idempotent singleton insert using `INSERT OR IGNORE` with:
+5. Create an ISO timestamp in application code with `new Date().toISOString()`.
+6. Attempt an idempotent singleton insert using `INSERT OR IGNORE` with bound values for:
    - `id = 1`
    - generated `installation_id`
    - `status = 'unlicensed'`
    - caller-provided trimmed `control_plane_url`
-   - `updated_at = CURRENT_TIMESTAMP`
-6. Re-read `id = 1` and return the persisted row.
-7. Throw a deterministic bootstrap error if the row is still missing after insert/re-read.
+   - generated `updated_at`
+7. Re-read `id = 1` and return the persisted row.
+8. Throw a deterministic bootstrap error if the row is still missing after insert/re-read.
 
 This pattern is required for bounded first-request races: concurrent callers may generate different candidate UUIDs, but the D1 singleton constraint plus `INSERT OR IGNORE` chooses one persisted row, and every caller returns the same stored identity after re-read.
 
@@ -185,7 +186,7 @@ Nullable token/plan/time fields remain nullable.
 
 ## Backup/Restore invariant
 
-This is a security/compatibility derivation from the V14 and V16 parent designs:
+This is a security/compatibility derivation from the V14 and V16 parent designs, not an explicit row in the V14 table list:
 
 - V14 application backup is an in-place business-data restore and excludes auth/integration/operational state.
 - V16 `installation_id` is the identity to which a signed license token is bound.
@@ -202,11 +203,11 @@ Task 2 must:
 
 Task 2 must not bump `.dormbackup` format version solely for this exclusion. The exported `excluded` array is metadata and the existing strict business-table allowlist already prevents `license_state` from entering restore data.
 
-Note: current backup `schemaVersion` values are backup-format compatibility values and are not to be conflated with D1 migration file `0007`.
+Current backup `schemaVersion` values are backup-format compatibility values and must not be conflated with D1 migration file `0007`.
 
 ## Existing regression updates required by migration 0007
 
-The Task 1 baseline contains tests that intentionally enforce a `0006` ceiling. Task 2 must update only those assertions whose purpose is to track the current maximum migration:
+The Task 1 baseline contains tests that intentionally enforce a `0006` ceiling. Task 2 must update only assertions whose purpose is to track the current maximum migration:
 
 - `tests/package-release.test.mjs`
 - `tests/package-parity.test.mjs`
@@ -230,7 +231,7 @@ From the reconstructed Task 1 Master:
 - Create: `tests/license-state-migration.test.mjs`
 - Create: `tests/license-state-service.test.ts`
 - Modify: `tests/backup-export.test.ts`
-- Add or modify a focused backup/restore regression to prove `license_state` is never restored
+- Add or modify a focused backup/restore regression proving `license_state` is never restored
 - Modify the five migration-ceiling tests listed above
 - Modify Master-only builder/audit lists if new Task 2 test files would otherwise leak into customer ZIP
 
@@ -250,8 +251,9 @@ After implementation they must verify:
 
 - migration filename is exact
 - migration creates `license_state`
-- exact singleton primary-key/check contract exists
-- exact columns/nullability/default intent is represented
+- singleton primary-key/check contract exists
+- required columns/nullability/default intent matches the parent design
+- `updated_at` is NOT NULL without an invented schema default
 - `schema_d1.sql` contains the same table contract
 - `src/db/schema.ts` exports `licenseState`
 - no migration after `0007` exists
@@ -279,8 +281,8 @@ In CI:
 
 Tests must prove:
 
-- first call creates a persisted UUID using the runtime `crypto.randomUUID()` path
-- first row has `id=1`, `status='unlicensed'`, null token/plan/time fields, supplied URL, and timestamp
+- first call creates a persisted UUID using runtime `crypto.randomUUID()`
+- first row has `id=1`, `status='unlicensed'`, null token/plan/time fields, supplied URL, and application-generated ISO timestamp
 - second call returns the original installation ID
 - second call with a different URL does not rotate identity or silently overwrite state
 - whitespace-only URL is rejected before insert
@@ -320,7 +322,7 @@ Required sequence:
 4. Verify outer artifact SHA-256 `56f5be6a25f0d831d3ac611d4cce531213a6704da772ad28ee3bccc0a7654001`.
 5. Verify/extract Task 1 Master SHA-256 `6551a8778f39e5f1a3dd7c2cbc18655a316c29906d02d0df428dd00d6ac522eb`.
 6. Verify pre-patch migration ceiling `0006_add_white_label_settings.sql`.
-7. Apply Task 2 tests and prove the intended RED state.
+7. Apply Task 2 tests and prove intended RED.
 8. Apply Task 2 implementation and prove focused GREEN.
 9. Verify post-patch migration ceiling exactly `0007_add_license_state.sql`.
 10. Run fresh and upgrade D1 migration smoke tests.
@@ -346,7 +348,7 @@ Task 2 workflow must not invoke a V16 CUSTOMER-READY release path.
 - Basic/Standard/Pro are not made read-only by Task 2.
 - No license key is accepted or stored in Task 2.
 - No signing/verification key is added in Task 2.
-- `signed_token` column exists but remains unused/null until later tasks.
+- `signed_token` exists but remains unused/null until later tasks.
 - Control Plane source is still absent; Task 1 vendor boundary remains enforced.
 - Backup remains usable and cannot clone/replay `installation_id` or cached license token.
 - Existing V14 Backup/Restore and V15 White-label behavior must remain unchanged.
@@ -362,7 +364,7 @@ Task 2 does not:
 - implement `/api/license/*`
 - store plaintext license keys
 - populate `signed_token`
-- implement `resolveLicenseState`, `resolveEffectivePlan`, or mutation gates used by production requests
+- implement `resolveLicenseState`, `resolveEffectivePlan`, or production mutation gates
 - change `PLAN_ENTITLEMENTS`
 - change `settings.subscription_plan` write authority
 - calculate grace periods
