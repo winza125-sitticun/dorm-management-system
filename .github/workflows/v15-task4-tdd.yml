@@ -21,7 +21,7 @@ env:
   TASK3_ARTIFACT_ID: 9295620943
   TASK3_MASTER_SHA256: ea70213d83f87eaacfb9002beee1bc5b46bdc3aea158d3bf94d626ab5c0d53c2
   TEST_PATCH_BLOB: 530ce99976dd7e23d7aa42692ef65b88acc5fd45
-  IMPL_PATCH_BLOB: e9494f50fb506219986881decfe0068f5788e786
+  IMPL_PATCH_BLOB: ed8decacb1f8433c5ab6f6e274e06023bdbe0b14
 
 jobs:
   red-green:
@@ -66,6 +66,14 @@ jobs:
           test -f source/src/components/SettingsView.tsx
           test ! -e source/src/components/WhiteLabelSettingsSection.tsx
           test ! -e source/src/utils/whiteLabelSettings.ts
+          (
+            cd source
+            git init -q
+            git config user.email 'ci@example.invalid'
+            git config user.name 'V15 Task 4 CI'
+            git add -A
+            git commit -qm 'immutable Task 3 baseline'
+          )
 
       - name: Use Node.js 22
         uses: actions/setup-node@v4
