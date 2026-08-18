@@ -5,163 +5,151 @@ on:
   push:
     branches: [agent/v15-task1-white-label-contract]
     paths:
-      - 'v15-task4-patches/**'
+      - 'v15-task4-patches/001-task4-tests.patch.gz.b64'
+      - 'v15-task4-patches/002-task4-impl.patch.gz.b64'
       - '.github/workflows/v15-task4-tdd.yml'
 
 permissions:
-  contents: write
+  contents: read
   actions: read
 
+concurrency:
+  group: v15-task4-tdd
+  cancel-in-progress: true
+
+env:
+  TASK3_ARTIFACT_ID: 9295620943
+  TASK3_MASTER_SHA256: ea70213d83f87eaacfb9002beee1bc5b46bdc3aea158d3bf94d626ab5c0d53c2
+  TEST_PATCH_BLOB: 530ce99976dd7e23d7aa42692ef65b88acc5fd45
+  IMPL_PATCH_BLOB: e9494f50fb506219986881decfe0068f5788e786
+
 jobs:
-  task1-task2-red-green:
+  red-green:
+    name: immutable Task 3 -> RED -> GREEN
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 35
     steps:
       - name: Checkout Task 4 branch
         uses: actions/checkout@v4
-        with:
-          ref: agent/v15-task1-white-label-contract
 
-      - name: Download immutable Task 3 candidate by artifact ID
-        shell: bash
+      - name: Download immutable V15 Task 3 candidate
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          curl -fL --retry 8 --retry-delay 3 --retry-all-errors \
-            -H "Authorization: Bearer $GH_TOKEN" \
-            -H "Accept: application/vnd.github+json" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            "https://api.github.com/repos/winza125-sitticun/dorm-management-system/actions/artifacts/9295620943/zip" \
-            -o candidate.zip
-          unzip -q candidate.zip -d candidate
-
-      - name: Extract exact Task 3 Master
         shell: bash
         run: |
           set -euo pipefail
-          MASTER_ZIP="candidate/dorm-management-system-master-v15-task3-REVIEW-CI.zip"
-          test -f "$MASTER_ZIP"
-          echo 'ea70213d83f87eaacfb9002beee1bc5b46bdc3aea158d3bf94d626ab5c0d53c2  '"$MASTER_ZIP" | sha256sum --check --strict
+          mkdir -p candidate
+          curl --fail --location --retry 8 --retry-all-errors --retry-delay 3 \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/winza125-sitticun/dorm-management-system/actions/artifacts/${TASK3_ARTIFACT_ID}/zip" \
+            -o task3-artifact.zip
+          unzip -q task3-artifact.zip -d candidate
+
+      - name: Verify and extract exact Task 3 master
+        shell: bash
+        run: |
+          set -euo pipefail
+          MASTER_ZIP="$(find candidate -type f -name 'dorm-management-system-master-v15-task3-REVIEW-CI.zip' -print -quit)"
+          test -n "$MASTER_ZIP"
+          echo "$TASK3_MASTER_SHA256  $MASTER_ZIP" | sha256sum --check --strict
+          rm -rf source
           mkdir source
           unzip -q "$MASTER_ZIP" -d source
+          test -f source/src/context/ThemeContext.tsx
+          test -f source/src/theme/brandTheme.ts
+          test -f source/src/components/SettingsView.tsx
+          test ! -e source/src/components/WhiteLabelSettingsSection.tsx
+          test ! -e source/src/utils/whiteLabelSettings.ts
 
       - name: Use Node.js 22
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: '22'
           cache: npm
           cache-dependency-path: source/package-lock.json
 
-      - name: Install exact dependencies
+      - name: Fresh dependency install
         working-directory: source
         run: npm ci
 
-      - name: Apply Task 1 verified patches
-        id: task1
+      - name: Verify and apply tests-only patch
         working-directory: source
         shell: bash
         run: |
           set -euo pipefail
-          base64 -d ../v15-task4-patches/001-task1-tests.patch.b64 > ../task1-tests.patch
-          patch -p1 < ../task1-tests.patch
-          base64 -d ../v15-task4-patches/002-task1-impl.patch.b64 > ../task1-impl.patch
-          patch -p1 < ../task1-impl.patch
-          npx tsx --test tests/white-label-settings-ui-utils.test.ts
+          test "$(git hash-object ../v15-task4-patches/001-task4-tests.patch.gz.b64)" = "$TEST_PATCH_BLOB"
+          base64 -d ../v15-task4-patches/001-task4-tests.patch.gz.b64 | gzip -d > ../task4-tests.patch
+          patch -p1 < ../task4-tests.patch
 
-      - name: Apply Task 2 tests and contract evolution
-        id: task2tests
+      - name: Prove RED against immutable Task 3 source
         working-directory: source
         shell: bash
         run: |
-          set -euo pipefail
-          base64 -d ../v15-task4-patches/003-task2-tests.patch.b64 > ../task2-tests.patch
-          patch -p1 < ../task2-tests.patch
-          base64 -d ../v15-task4-patches/005-task2-test-contract-fix.patch.b64 > ../task2-contract-fix.patch
-          patch -p1 < ../task2-contract-fix.patch
-
-      - name: Verify Task 2 RED
-        id: red
-        working-directory: source
-        shell: bash
-        run: |
-          set -euo pipefail
           set +e
-          npx tsx --test tests/theme-root-runtime.test.ts tests/theme-refresh-runtime.test.ts > ../task2-red.log 2>&1
-          rc=$?
+          node --experimental-transform-types --test \
+            tests/white-label-settings-ui-utils.test.ts \
+            tests/theme-root-runtime.test.ts \
+            tests/theme-refresh-runtime.test.ts \
+            tests/white-label-settings-section.test.ts \
+            tests/white-label-settings-view-integration.test.ts \
+            > ../task4-red.log 2>&1
+          status=$?
           set -e
-          cat ../task2-red.log
-          if [ "$rc" -eq 0 ]; then
-            echo '::error::Task 2 RED unexpectedly passed before ThemeContext implementation'
+          cat ../task4-red.log
+          if [ "$status" -eq 0 ]; then
+            echo '::error::Task 4 tests-only state unexpectedly passed; RED gate is invalid.'
             exit 1
           fi
-          grep -Eq 'refreshBranding|manual branding refresh|missing refreshBranding' ../task2-red.log
+          grep -Eq 'ERR_MODULE_NOT_FOUND|Cannot find module|ENOENT' ../task4-red.log
+          echo 'Expected RED confirmed.'
 
-      - name: Apply Task 2 implementation
-        id: task2impl
+      - name: Verify and apply implementation patch
         working-directory: source
         shell: bash
         run: |
           set -euo pipefail
-          base64 -d ../v15-task4-patches/004-task2-impl.patch.b64 > ../task2-impl.patch
-          patch -p1 < ../task2-impl.patch
+          test "$(git hash-object ../v15-task4-patches/002-task4-impl.patch.gz.b64)" = "$IMPL_PATCH_BLOB"
+          base64 -d ../v15-task4-patches/002-task4-impl.patch.gz.b64 | gzip -d > ../task4-impl.patch
+          patch -p1 < ../task4-impl.patch
+          git diff --check -- src/App.tsx src/components/SettingsView.tsx src/components/WhiteLabelSettingsSection.tsx src/context/ThemeContext.tsx src/utils/whiteLabelSettings.ts tests
 
-      - name: Verify Task 2 GREEN
-        id: green
+      - name: Prove GREEN focused Task 4 contracts
+        working-directory: source
+        run: |
+          node --experimental-transform-types --test \
+            tests/white-label-settings-ui-utils.test.ts \
+            tests/theme-root-runtime.test.ts \
+            tests/theme-refresh-runtime.test.ts \
+            tests/white-label-settings-section.test.ts \
+            tests/white-label-settings-view-integration.test.ts
+
+      - name: Task 3 theme regressions
+        working-directory: source
+        run: npx tsx --test tests/brand-theme-runtime.test.ts tests/branding-client-runtime.test.ts tests/theme-root-runtime.test.ts tests/theme-css-contract.test.ts
+
+      - name: Static scope guard
         working-directory: source
         shell: bash
         run: |
           set -euo pipefail
-          npx tsx --test tests/brand-theme-runtime.test.ts tests/branding-client-runtime.test.ts tests/theme-root-runtime.test.ts tests/theme-refresh-runtime.test.ts tests/theme-css-contract.test.ts 2>&1 | tee ../task2-green.log
+          test ! -e d1-migrations/0007_add_task4_white_label_ui.sql
+          ! grep -q "brandLogoUrl:" src/components/SettingsView.tsx
+          grep -q "hasPlanFeature(subscriptionPlan, 'promptPay')" src/components/SettingsView.tsx
+          grep -q "hasPlanFeature(subscriptionPlan, 'whiteLabel')" src/components/SettingsView.tsx
+          grep -q "DEFAULT_BRAND_COLOR = '#1DB954'" src/theme/brandTheme.ts
+          grep -q "source !== 'public'" src/context/ThemeContext.tsx
+          ! grep -q 'document.documentElement' src/components/WhiteLabelSettingsSection.tsx
 
-      - name: Lint
-        id: lint
+      - name: TypeScript lint gate
         working-directory: source
         run: npm run lint
 
-      - name: Pages build
-        id: pages
+      - name: Pages production build
         working-directory: source
         run: npm run build:pages
 
-      - name: VPS build
-        id: vps
+      - name: VPS production build
         working-directory: source
         run: npm run build:vps
-
-      - name: Diff check
-        id: diffcheck
-        working-directory: source
-        run: git diff --check
-
-      - name: Persist Task 2 diagnostic evidence
-        if: always()
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p v15-task4-evidence
-          cat > v15-task4-evidence/task2-latest.txt <<EOF
-          run_id=$GITHUB_RUN_ID
-          run_attempt=$GITHUB_RUN_ATTEMPT
-          source_sha=$GITHUB_SHA
-          task1=${{ steps.task1.outcome }}
-          task2tests=${{ steps.task2tests.outcome }}
-          red=${{ steps.red.outcome }}
-          task2impl=${{ steps.task2impl.outcome }}
-          green=${{ steps.green.outcome }}
-          lint=${{ steps.lint.outcome }}
-          pages=${{ steps.pages.outcome }}
-          vps=${{ steps.vps.outcome }}
-          diffcheck=${{ steps.diffcheck.outcome }}
-          EOF
-          if [ "${{ steps.green.outcome }}" = success ] && [ "${{ steps.lint.outcome }}" = success ] && [ "${{ steps.pages.outcome }}" = success ] && [ "${{ steps.vps.outcome }}" = success ] && [ "${{ steps.diffcheck.outcome }}" = success ]; then
-            printf 'status=RED_VERIFIED_GREEN_PASS\nrun_id=%s\nrun_attempt=%s\nsource_sha=%s\nmaster_sha256=%s\n' \
-              "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$GITHUB_SHA" \
-              'ea70213d83f87eaacfb9002beee1bc5b46bdc3aea158d3bf94d626ab5c0d53c2' \
-              > v15-task4-evidence/task2-green.txt
-          fi
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add v15-task4-evidence/task2-latest.txt v15-task4-evidence/task2-green.txt 2>/dev/null || git add v15-task4-evidence/task2-latest.txt
-          git commit -m 'ci(v15-task4): record Task 2 diagnostic evidence' || exit 0
-          git push origin HEAD:agent/v15-task1-white-label-contract
