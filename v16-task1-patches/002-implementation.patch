@@ -1,0 +1,70 @@
+diff --git a/package-plans/basic.json b/package-plans/basic.json
+index 97d9da5..ab55ee0 100644
+--- a/package-plans/basic.json
++++ b/package-plans/basic.json
+@@ -1 +1 @@
+-{"id":"basic","label":"Basic","packageName":"dorm-management-system-basic","limits":{"maxRooms":10,"maxStaff":0},"googleOAuthExample":false,"features":["จัดการห้องพักและผู้เช่า","คำนวณค่าเช่า ค่าไฟ และค่าน้ำ","ออกบิลและ PDF","ตั้งค่าพื้นฐานของหอพัก","โน้ตภายในระบบ","Backup + Restore D1 ผ่านหน้า Admin","ตั้งค่า White-label: ชื่อหอ สีแบรนด์ เบอร์ติดต่อ และข้อความท้ายบิล"]}
++{"id":"basic","label":"Basic","packageName":"dorm-management-system-basic","limits":{"maxRooms":10,"maxStaff":0},"googleOAuthExample":false,"features":["จัดการห้องพักและผู้เช่า","คำนวณค่าเช่า ค่าไฟ และค่าน้ำ","ออกบิลและ PDF","ตั้งค่าพื้นฐานของหอพัก","โน้ตภายในระบบ","Backup + Restore D1 ผ่านหน้า Admin","ตั้งค่า White-label: ชื่อหอ สีแบรนด์ เบอร์ติดต่อ และข้อความท้ายบิล"],"requiresLicense":true}
+diff --git a/package-plans/demo.json b/package-plans/demo.json
+index 553f0d3..00e13c1 100644
+--- a/package-plans/demo.json
++++ b/package-plans/demo.json
+@@ -1 +1 @@
+-{"id":"demo","label":"Demo","packageName":"dorm-management-system-demo","limits":{"maxRooms":5,"maxStaff":0},"googleOAuthExample":false,"features":["ทดลองจัดการห้องและบิล","กรอกมิเตอร์แบบกลุ่ม","รายงาน","ประกาศและ Tenant Portal","PromptPay สำหรับข้อมูลสาธิต","สำรองข้อมูล .dormbackup (Restore ต้อง Basic ขึ้นไป)","ดูตัวอย่างการตั้งค่าแบรนด์ (การแก้ไข White-label ต้อง Basic ขึ้นไป)"]}
++{"id":"demo","label":"Demo","packageName":"dorm-management-system-demo","limits":{"maxRooms":5,"maxStaff":0},"googleOAuthExample":false,"features":["ทดลองจัดการห้องและบิล","กรอกมิเตอร์แบบกลุ่ม","รายงาน","ประกาศและ Tenant Portal","PromptPay สำหรับข้อมูลสาธิต","สำรองข้อมูล .dormbackup (Restore ต้อง Basic ขึ้นไป)","ดูตัวอย่างการตั้งค่าแบรนด์ (การแก้ไข White-label ต้อง Basic ขึ้นไป)"],"requiresLicense":false}
+diff --git a/package-plans/pro.json b/package-plans/pro.json
+index 9a04a5a..ed03841 100644
+--- a/package-plans/pro.json
++++ b/package-plans/pro.json
+@@ -1 +1 @@
+-{"id":"pro","label":"Pro","packageName":"dorm-management-system-pro","limits":{"maxRooms":100,"maxStaff":5},"googleOAuthExample":true,"features":["ทุกความสามารถของ Standard","สัญญาเช่าและคืนเงินประกัน","แจ้งซ่อม","งานแม่บ้าน","ประกาศและ Tenant Portal","LINE Messaging API","Google Sheets","Audit Log","ผู้ดูแลร่วมสูงสุด 5 คน","Backup + Restore D1 ผ่านหน้า Admin","ตั้งค่า White-label: ชื่อหอ สีแบรนด์ เบอร์ติดต่อ และข้อความท้ายบิล"]}
++{"id":"pro","label":"Pro","packageName":"dorm-management-system-pro","limits":{"maxRooms":100,"maxStaff":5},"googleOAuthExample":true,"features":["ทุกความสามารถของ Standard","สัญญาเช่าและคืนเงินประกัน","แจ้งซ่อม","งานแม่บ้าน","ประกาศและ Tenant Portal","LINE Messaging API","Google Sheets","Audit Log","ผู้ดูแลร่วมสูงสุด 5 คน","Backup + Restore D1 ผ่านหน้า Admin","ตั้งค่า White-label: ชื่อหอ สีแบรนด์ เบอร์ติดต่อ และข้อความท้ายบิล"],"requiresLicense":true}
+diff --git a/package-plans/standard.json b/package-plans/standard.json
+index 5cf400d..4214815 100644
+--- a/package-plans/standard.json
++++ b/package-plans/standard.json
+@@ -1 +1 @@
+-{"id":"standard","label":"Standard","packageName":"dorm-management-system-standard","limits":{"maxRooms":30,"maxStaff":2},"googleOAuthExample":false,"features":["ทุกความสามารถหลักของ Basic","PromptPay","บันทึกมิเตอร์แบบกลุ่ม","รายงาน","ค่าบริการประจำ","ผู้ดูแลร่วมสูงสุด 2 คน","Backup + Restore D1 ผ่านหน้า Admin","ตั้งค่า White-label: ชื่อหอ สีแบรนด์ เบอร์ติดต่อ และข้อความท้ายบิล"]}
++{"id":"standard","label":"Standard","packageName":"dorm-management-system-standard","limits":{"maxRooms":30,"maxStaff":2},"googleOAuthExample":false,"features":["ทุกความสามารถหลักของ Basic","PromptPay","บันทึกมิเตอร์แบบกลุ่ม","รายงาน","ค่าบริการประจำ","ผู้ดูแลร่วมสูงสุด 2 คน","Backup + Restore D1 ผ่านหน้า Admin","ตั้งค่า White-label: ชื่อหอ สีแบรนด์ เบอร์ติดต่อ และข้อความท้ายบิล"],"requiresLicense":true}
+diff --git a/scripts/build-packages.mjs b/scripts/build-packages.mjs
+index 0dda191..cdbb825 100644
+--- a/scripts/build-packages.mjs
++++ b/scripts/build-packages.mjs
+@@ -22,7 +22,7 @@ const MASTER_ONLY = new Set([
+   'tests/package-builder.test.mjs', 'tests/package-parity.test.mjs', 'tests/package-audit.test.mjs', 'tests/package-release.test.mjs', 'tests/master-launchers.test.mjs', 'tests/zip-utils.test.mjs',
+   'BUILD-PACKAGES-WINDOWS.cmd', 'BUILD-PACKAGES-ANDROID.sh', 'MASTER_PROJECT_TH.md', 'wrangler.master.jsonc', 'RELEASE_NOTES_V13_TH.md', 'TASK12_STATUS_TH.md',
+ ]);
+-const MASTER_PREFIXES = ['.git/', 'node_modules/', 'docs/superpowers/', 'package-plans/', 'release-v13/', 'preview-v13/', '.staging-v13/', 'release-v14/', 'preview-v14/', '.staging-v14/', 'dist/', 'dist-server/', 'backups/'];
++const MASTER_PREFIXES = ['.git/', 'node_modules/', 'docs/superpowers/', 'package-plans/', 'control-plane/', 'release-v13/', 'preview-v13/', '.staging-v13/', 'release-v14/', 'preview-v14/', '.staging-v14/', 'dist/', 'dist-server/', 'backups/'];
+ 
+ export function validatePlanConfig(plan) {
+   if (!plan || !Object.hasOwn(APPROVED, plan.id)) throw new Error(`Unsupported plan: ${plan?.id ?? 'missing'}`);
+@@ -33,6 +33,7 @@ export function validatePlanConfig(plan) {
+   if (plan?.limits?.maxStaff !== approved.maxStaff) throw new Error(`${plan.id}: maxStaff must be ${approved.maxStaff}`);
+   if (!Array.isArray(plan.features) || plan.features.length === 0 || plan.features.some((x) => typeof x !== 'string' || !x.trim())) throw new Error(`${plan.id}: features must be a non-empty string array`);
+   if (typeof plan.googleOAuthExample !== 'boolean') throw new Error(`${plan.id}: googleOAuthExample must be boolean`);
++  if (typeof plan.requiresLicense !== 'boolean') throw new Error(`${plan.id}: requiresLicense must be boolean`);
+   return plan;
+ }
+ 
+diff --git a/scripts/package-audit.mjs b/scripts/package-audit.mjs
+index 69d758c..cbcc23a 100644
+--- a/scripts/package-audit.mjs
++++ b/scripts/package-audit.mjs
+@@ -2,7 +2,7 @@ import { readdir, readFile } from 'node:fs/promises';
+ import { relative, resolve } from 'node:path';
+ 
+ const FORBIDDEN_PREFIXES = [
+-  '.git/', 'node_modules/', 'docs/superpowers/', 'package-plans/', 'release-v13/', '.staging-v13/', 'release-v14/', '.staging-v14/',
++  '.git/', 'node_modules/', 'docs/superpowers/', 'package-plans/', 'control-plane/', 'release-v13/', '.staging-v13/', 'release-v14/', '.staging-v14/',
+   'backups/', 'dist/', 'dist-server/', 'assets/.aistudio/', 'preview-v13/', 'preview-v14/',
+ ];
+ const FORBIDDEN_EXACT = new Set([
+@@ -50,6 +50,7 @@ export async function auditCustomerTree(root, plan) {
+     try { text = await readFile(resolve(root, rel), 'utf8'); } catch { continue; }
+     if (/winza125@gmail\.com/i.test(text)) issues.push(`Developer personal email leaked: ${rel}`);
+     if (/-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/.test(text)) issues.push(`Private key leaked: ${rel}`);
++    if (text.includes('LICENSE_SIGNING_PRIVATE_KEY')) issues.push(`License signing private key identifier leaked: ${rel}`);
+     if (/\b(?:sk-proj|ghp|github_pat|xox[baprs])-[-A-Za-z0-9_]{16,}\b/.test(text)) issues.push(`Credential-like token leaked: ${rel}`);
+     if (CUSTOMER_LABEL_FILES.has(rel) && rel !== 'RELEASE_NOTES_V14_TH.md' && /\bV(?:5|6|7|8|9|10|11|12|13)\b/i.test(text)) issues.push(`Stale delivery label in ${rel}`);
+   }

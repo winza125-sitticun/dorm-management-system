@@ -1,0 +1,110 @@
+diff --git a/tests/package-audit.test.mjs b/tests/package-audit.test.mjs
+index 267cc6d..554e758 100644
+--- a/tests/package-audit.test.mjs
++++ b/tests/package-audit.test.mjs
+@@ -32,3 +32,28 @@ test('customer package audit rejects stale delivery versions in customer-facing
+     assert.ok(issues.some((x) => /stale delivery label/i.test(x)));
+   } finally { await rm(root, { recursive: true, force: true }); }
+ });
++
++
++test('customer package audit rejects the vendor-only control-plane root', async () => {
++  const { auditCustomerTree } = await import('../scripts/package-audit.mjs');
++  const root = await mkdtemp(join(tmpdir(), 'dorm-v16-control-plane-audit-'));
++  try {
++    await mkdir(join(root, 'control-plane'), { recursive: true });
++    await writeFile(join(root, 'control-plane', 'vendor-only-marker.txt'), 'vendor only');
++    await writeFile(join(root, 'package.json'), JSON.stringify({ name: 'dorm-management-system-demo', scripts: {} }));
++    const issues = await auditCustomerTree(root, { id: 'demo', packageName: 'dorm-management-system-demo' });
++    assert.ok(issues.some((x) => /control-plane\/vendor-only-marker\.txt/.test(x)));
++  } finally { await rm(root, { recursive: true, force: true }); }
++});
++
++
++test('customer package audit rejects the license signing private secret identifier', async () => {
++  const { auditCustomerTree } = await import('../scripts/package-audit.mjs');
++  const root = await mkdtemp(join(tmpdir(), 'dorm-v16-signing-secret-audit-'));
++  try {
++    await writeFile(join(root, 'package.json'), JSON.stringify({ name: 'dorm-management-system-demo', scripts: {} }));
++    await writeFile(join(root, 'customer-notes.txt'), 'LICENSE_SIGNING_PRIVATE_KEY=should-never-ship');
++    const issues = await auditCustomerTree(root, { id: 'demo', packageName: 'dorm-management-system-demo' });
++    assert.ok(issues.some((x) => /LICENSE_SIGNING_PRIVATE_KEY|signing private key/i.test(x)));
++  } finally { await rm(root, { recursive: true, force: true }); }
++});
+diff --git a/tests/package-builder.test.mjs b/tests/package-builder.test.mjs
+index 151eccc..1f7ac5e 100644
+--- a/tests/package-builder.test.mjs
++++ b/tests/package-builder.test.mjs
+@@ -1,15 +1,17 @@
+ import assert from 'node:assert/strict';
+ import { existsSync, readFileSync } from 'node:fs';
++import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
++import { tmpdir } from 'node:os';
+ import { join } from 'node:path';
+ import test from 'node:test';
+ 
+ const root = new URL('../', import.meta.url);
+ 
+ const expected = {
+-  demo: { label: 'Demo', packageName: 'dorm-management-system-demo', maxRooms: 5, maxStaff: 0, googleOAuthExample: false },
+-  basic: { label: 'Basic', packageName: 'dorm-management-system-basic', maxRooms: 10, maxStaff: 0, googleOAuthExample: false },
+-  standard: { label: 'Standard', packageName: 'dorm-management-system-standard', maxRooms: 30, maxStaff: 2, googleOAuthExample: false },
+-  pro: { label: 'Pro', packageName: 'dorm-management-system-pro', maxRooms: 100, maxStaff: 5, googleOAuthExample: true },
++  demo: { label: 'Demo', packageName: 'dorm-management-system-demo', maxRooms: 5, maxStaff: 0, googleOAuthExample: false, requiresLicense: false },
++  basic: { label: 'Basic', packageName: 'dorm-management-system-basic', maxRooms: 10, maxStaff: 0, googleOAuthExample: false, requiresLicense: true },
++  standard: { label: 'Standard', packageName: 'dorm-management-system-standard', maxRooms: 30, maxStaff: 2, googleOAuthExample: false, requiresLicense: true },
++  pro: { label: 'Pro', packageName: 'dorm-management-system-pro', maxRooms: 100, maxStaff: 5, googleOAuthExample: true, requiresLicense: true },
+ };
+ 
+ test('V14 master ships one declarative config for every commercial package', () => {
+@@ -30,6 +32,7 @@ test('package plan configs preserve approved commercial limits and identity', as
+     assert.equal(plans[id].limits.maxRooms, exp.maxRooms);
+     assert.equal(plans[id].limits.maxStaff, exp.maxStaff);
+     assert.equal(plans[id].googleOAuthExample, exp.googleOAuthExample);
++    assert.equal(plans[id].requiresLicense, exp.requiresLicense);
+     assert.ok(Array.isArray(plans[id].features) && plans[id].features.length > 0);
+   }
+ });
+@@ -37,7 +40,41 @@ test('package plan configs preserve approved commercial limits and identity', as
+ test('builder validation rejects malformed, unknown, or inconsistent plan config', async () => {
+   const { validatePlanConfig } = await import('../scripts/build-packages.mjs');
+   assert.throws(() => validatePlanConfig({ id: 'enterprise' }), /unsupported plan/i);
+-  assert.throws(() => validatePlanConfig({ id: 'basic', label: 'Basic', packageName: 'dorm-management-system-basic', limits: { maxRooms: 99, maxStaff: 0 }, features: ['x'], googleOAuthExample: false }), /maxRooms/i);
++  assert.throws(() => validatePlanConfig({ id: 'basic', label: 'Basic', packageName: 'dorm-management-system-basic', limits: { maxRooms: 99, maxStaff: 0 }, features: ['x'], googleOAuthExample: false, requiresLicense: true }), /maxRooms/i);
++});
++
++test('license requirement metadata is a strict boolean package contract', async () => {
++  const { validatePlanConfig } = await import('../scripts/build-packages.mjs');
++  const validBasic = {
++    id: 'basic',
++    label: 'Basic',
++    packageName: 'dorm-management-system-basic',
++    limits: { maxRooms: 10, maxStaff: 0 },
++    features: ['x'],
++    googleOAuthExample: false,
++    requiresLicense: true,
++  };
++  assert.throws(() => validatePlanConfig({ ...validBasic, requiresLicense: undefined }), /requiresLicense must be boolean/i);
++  assert.throws(() => validatePlanConfig({ ...validBasic, requiresLicense: 'true' }), /requiresLicense must be boolean/i);
++  assert.equal(validatePlanConfig(validBasic).requiresLicense, true);
++});
++
++
++test('builder excludes the vendor-only control-plane root from customer staging', async () => {
++  const { buildPackageTree, loadPlans } = await import('../scripts/build-packages.mjs');
++  const vendorRoot = new URL('../control-plane/', import.meta.url);
++  const output = await mkdtemp(join(tmpdir(), 'dorm-v16-control-plane-'));
++  try {
++    await mkdir(vendorRoot, { recursive: true });
++    await writeFile(new URL('vendor-only-marker.txt', vendorRoot), 'vendor only');
++    const plans = await loadPlans();
++    const destination = join(output, 'demo');
++    await buildPackageTree(plans.demo, { destination, runPortableTests: false, customerReady: false });
++    assert.equal(existsSync(join(destination, 'control-plane', 'vendor-only-marker.txt')), false);
++  } finally {
++    await rm(vendorRoot, { recursive: true, force: true });
++    await rm(output, { recursive: true, force: true });
++  }
+ });
+ 
+ test('master package scripts expose V14 generation and release commands', () => {

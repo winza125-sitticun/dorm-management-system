@@ -1,0 +1,231 @@
+name: V16 Task 1 License Contract Gate
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [agent/v16-task1-license-contract-boundary]
+    paths:
+      - 'v16-task1-patches/**'
+      - '.github/workflows/v16-task1-license-contract-gate.yml'
+      - 'docs/superpowers/specs/2026-08-19-v16-task1-license-contract-boundary-design.md'
+      - 'docs/superpowers/plans/2026-08-19-v16-task1-license-contract-boundary.md'
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: v16-task1-license-contract-gate
+  cancel-in-progress: true
+
+env:
+  BASE_ARTIFACT_ID: '9330679827'
+  BASE_ARTIFACT_SHA256: '5f6e65ae856c1196fcd3a2e3dd7bcffb4da863ab212d3595839e921f0a96e1cf'
+  BASE_MASTER_SHA256: 'd05ee110815a29b74498e17adac1b8355dec40d5a705dd016f5ad5f849caa9e9'
+  TEST_PATCH_SHA256: 'be53cdd50c187a4ff2088c7ea822e95acfafc3e14fc883f7d1c81caac43e21d6'
+  IMPLEMENTATION_PATCH_SHA256: '6160376f7d6aff8cd643e0fff9bab10ae06804fe473bf3f073bdedfea71ba522'
+
+jobs:
+  task1-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout V16 Task 1 lineage
+        uses: actions/checkout@v4
+        with:
+          ref: agent/v16-task1-license-contract-boundary
+
+      - name: Verify patch bytes
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "$TEST_PATCH_SHA256  v16-task1-patches/001-tests.patch" | sha256sum --check --strict
+          echo "$IMPLEMENTATION_PATCH_SHA256  v16-task1-patches/002-implementation.patch" | sha256sum --check --strict
+
+      - name: Download immutable V15 CUSTOMER-READY artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 8 --retry-all-errors --retry-delay 3 \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${BASE_ARTIFACT_ID}/zip" \
+            -o v15-customer-ready-final.zip
+          echo "$BASE_ARTIFACT_SHA256  v15-customer-ready-final.zip" | sha256sum --check --strict
+          rm -rf candidate && mkdir candidate
+          unzip -q v15-customer-ready-final.zip -d candidate
+
+      - name: Verify and extract exact V15 Master
+        shell: bash
+        run: |
+          set -euo pipefail
+          MASTER_ZIP="$(find candidate -type f -name 'dorm-management-system-master-v15-CUSTOMER-READY.zip' -print -quit)"
+          test -n "$MASTER_ZIP"
+          echo "$BASE_MASTER_SHA256  $MASTER_ZIP" | sha256sum --check --strict
+          rm -rf work && mkdir work
+          unzip -q "$MASTER_ZIP" -d work
+          latest="$(find work/d1-migrations -maxdepth 1 -type f -printf '%f\n' | sort | tail -n1)"
+          test "$latest" = '0006_add_white_label_settings.sql'
+          test ! -e work/control-plane
+          test ! -e work/d1-migrations/0007_license_state.sql
+
+      - name: Apply Task 1 tests and prove RED
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd work
+          patch --dry-run -p1 < ../v16-task1-patches/001-tests.patch
+          patch -p1 < ../v16-task1-patches/001-tests.patch
+          set +e
+          node --test tests/package-builder.test.mjs tests/package-audit.test.mjs > ../v16-task1-red.log 2>&1
+          red_status=$?
+          set -e
+          cat ../v16-task1-red.log
+          test "$red_status" -ne 0
+          grep -Fq '# fail 5' ../v16-task1-red.log
+          grep -Eq 'not ok [0-9]+ - package plan configs preserve approved commercial limits and identity' ../v16-task1-red.log
+          grep -Eq 'not ok [0-9]+ - license requirement metadata is a strict boolean package contract' ../v16-task1-red.log
+          grep -Eq 'not ok [0-9]+ - builder excludes the vendor-only control-plane root from customer staging' ../v16-task1-red.log
+          grep -Eq 'not ok [0-9]+ - customer package audit rejects the vendor-only control-plane root' ../v16-task1-red.log
+          grep -Eq 'not ok [0-9]+ - customer package audit rejects the license signing private secret identifier' ../v16-task1-red.log
+
+      - name: Apply Task 1 implementation and prove GREEN
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd work
+          patch --dry-run -p1 < ../v16-task1-patches/002-implementation.patch
+          patch -p1 < ../v16-task1-patches/002-implementation.patch
+          node --check scripts/build-packages.mjs
+          node --check scripts/package-audit.mjs
+          node --test tests/package-builder.test.mjs tests/package-audit.test.mjs | tee ../v16-task1-focused-green.log
+          latest="$(find d1-migrations -maxdepth 1 -type f -printf '%f\n' | sort | tail -n1)"
+          test "$latest" = '0006_add_white_label_settings.sql'
+          node - <<'NODE'
+          const fs = require('node:fs');
+          const expected = { demo: false, basic: true, standard: true, pro: true };
+          for (const [id, requiresLicense] of Object.entries(expected)) {
+            const plan = JSON.parse(fs.readFileSync(`package-plans/${id}.json`, 'utf8'));
+            if (plan.requiresLicense !== requiresLicense) throw new Error(`${id} requiresLicense mismatch`);
+          }
+          NODE
+
+      - name: Create immutable Task 1 Master REVIEW candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f dorm-management-system-master-v16-task1-REVIEW-CI.zip
+          (cd work && zip -qr ../dorm-management-system-master-v16-task1-REVIEW-CI.zip .)
+          unzip -t dorm-management-system-master-v16-task1-REVIEW-CI.zip >/dev/null
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: work/package-lock.json
+
+      - name: Fresh dependency install
+        working-directory: work
+        run: npm ci
+
+      - name: Full regression suite
+        working-directory: work
+        run: npm test
+
+      - name: TypeScript lint
+        working-directory: work
+        run: npm run lint
+
+      - name: Cloudflare types
+        working-directory: work
+        run: npm run check:cloudflare-types:master
+
+      - name: Pages production build
+        working-directory: work
+        run: npm run build:pages
+
+      - name: VPS production build
+        working-directory: work
+        run: npm run build:vps
+
+      - name: Generate PREVIEW packages only
+        working-directory: work
+        run: npm run packages:generate
+
+      - name: Audit and materialize V16 Task 1 PREVIEW packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf v16-task1-review && mkdir v16-task1-review
+          for plan in demo basic standard pro; do
+            src="work/preview-v14/dorm-management-system-${plan}-v14-PREVIEW.zip"
+            dst="v16-task1-review/dorm-management-system-${plan}-v16-TASK1-PREVIEW.zip"
+            test -f "$src"
+            unzip -t "$src" >/dev/null
+            cp "$src" "$dst"
+            names="$(unzip -Z1 "$dst")"
+            if printf '%s\n' "$names" | grep -Eq '^(control-plane/|package-plans/|docs/superpowers/|\.env$|\.dev\.vars$)'; then
+              echo "Forbidden path in $dst" >&2
+              exit 41
+            fi
+            tmp="$(mktemp -d)"
+            unzip -q "$dst" -d "$tmp"
+            if grep -RIl --exclude='*.zip' 'LICENSE_SIGNING_PRIVATE_KEY' "$tmp" | grep -q .; then
+              echo "Signing private secret identifier leaked in $dst" >&2
+              rm -rf "$tmp"
+              exit 42
+            fi
+            rm -rf "$tmp"
+          done
+          test "$(find work/d1-migrations -maxdepth 1 -type f -printf '%f\n' | sort | tail -n1)" = '0006_add_white_label_settings.sql'
+          sha256sum dorm-management-system-master-v16-task1-REVIEW-CI.zip v16-task1-review/*.zip | tee V16_TASK1_REVIEW_SHA256.txt
+          cat > V16_TASK1_BUILD_EVIDENCE.txt <<EOF
+          artifact_id=${BASE_ARTIFACT_ID}
+          artifact_sha256=${BASE_ARTIFACT_SHA256}
+          master_v15_sha256=${BASE_MASTER_SHA256}
+          source_sha=${GITHUB_SHA}
+          run_id=${GITHUB_RUN_ID}
+          migration_ceiling=0006_add_white_label_settings.sql
+          customer_ready=false
+          release_status=REVIEW
+          EOF
+
+      - name: Upload V16 Task 1 REVIEW artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: v16-task1-license-contract-review
+          path: |
+            dorm-management-system-master-v16-task1-REVIEW-CI.zip
+            v16-task1-review/**
+            V16_TASK1_REVIEW_SHA256.txt
+            V16_TASK1_BUILD_EVIDENCE.txt
+            v16-task1-red.log
+            v16-task1-focused-green.log
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Persist Task 1 gate evidence
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p v16-task1-evidence
+          cat > v16-task1-evidence/task1-gate-latest.txt <<EOF
+          run_id=${GITHUB_RUN_ID}
+          run_attempt=${GITHUB_RUN_ATTEMPT}
+          source_sha=${GITHUB_SHA}
+          job_status=${JOB_STATUS}
+          base_artifact_id=${BASE_ARTIFACT_ID}
+          base_artifact_sha256=${BASE_ARTIFACT_SHA256}
+          base_master_sha256=${BASE_MASTER_SHA256}
+          customer_ready=false
+          EOF
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add v16-task1-evidence/task1-gate-latest.txt
+          git commit -m 'ci(v16-task1): record license contract gate evidence' || exit 0
+          git push origin HEAD:agent/v16-task1-license-contract-boundary
