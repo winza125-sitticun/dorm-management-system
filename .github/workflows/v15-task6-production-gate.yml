@@ -1,0 +1,239 @@
+name: V15 Task 6 Production Gate
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [agent/v15-task1-white-label-contract]
+    paths:
+      - '.github/workflows/v15-task6-production-gate.yml'
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: v15-task6-production-gate
+  cancel-in-progress: true
+
+env:
+  TASK5_ARTIFACT_ID: '9309202126'
+  TASK5_ARTIFACT_SHA256: '88fd5b025071db5437c956a731bf721d9c62d471af5853ed92d8ff7b041b4bc0'
+  TASK5_MASTER_SHA256: 'a273bc8ee13d3b6a2cd44201a14662a1e61922c36c7e5694f20407ba0379093d'
+  PATCH_B64_SHA256: 'befeec1fc4cadac95f9149894d3d9227434acc5bd31352893672a437ecd1a273'
+  PATCH_SHA256: '6721e531c1e8798f5ac68fdbd5b6e1074bf5e4e3f21eadcfb9e97459fc53ddcc'
+  SOURCE_TEST_SHA256: 'ed59a0319533658ea501fb721a3e1e94e20e2178625f9c39875fdac03da49dd8'
+  UNIT_TEST_SHA256: '2baddbf105ab7ba0e66d5bbba3d7ca53c62a000b4df161f9b96764e4dae12e45'
+
+jobs:
+  production-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 80
+    steps:
+      - name: Checkout Task 6 branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/v15-task1-white-label-contract
+
+      - name: Verify pinned Task 6 sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "$PATCH_B64_SHA256  v15-task6/task6.patch.gz.b64" | sha256sum --check --strict
+          echo "$SOURCE_TEST_SHA256  v15-task6/task6-bill-branding.test.mjs" | sha256sum --check --strict
+          echo "$UNIT_TEST_SHA256  v15-task6/bill-branding-snapshot.test.ts" | sha256sum --check --strict
+          base64 -d v15-task6/task6.patch.gz.b64 | gzip -d > task6.patch
+          echo "$PATCH_SHA256  task6.patch" | sha256sum --check --strict
+
+      - name: Download immutable Task 5 candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 8 --retry-all-errors --retry-delay 3 \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${TASK5_ARTIFACT_ID}/zip" \
+            -o task5-artifact.zip
+          echo "$TASK5_ARTIFACT_SHA256  task5-artifact.zip" | sha256sum --check --strict
+          rm -rf candidate && mkdir candidate
+          unzip -q task5-artifact.zip -d candidate
+
+      - name: Verify and extract exact Task 5 master
+        shell: bash
+        run: |
+          set -euo pipefail
+          MASTER_ZIP="$(find candidate -type f -name 'dorm-management-system-master-v15-task5-REVIEW-CI.zip' -print -quit)"
+          test -n "$MASTER_ZIP"
+          echo "$TASK5_MASTER_SHA256  $MASTER_ZIP" | sha256sum --check --strict
+          rm -rf work && mkdir work
+          unzip -q "$MASTER_ZIP" -d work
+          echo '70ae3ff3ec0b1b68c035a1c48ed5f535f2c145e61df86369fb0d629a7b31243a  work/src/components/BillInvoice.tsx' | sha256sum --check --strict
+          echo 'd35ca50cf78a1defce78bb5a498a079a8532b69dfc94c1208e1cd7ced7839ce3  work/package.json' | sha256sum --check --strict
+          test ! -e work/src/utils/billBranding.ts
+          test "$(find work/d1-migrations -maxdepth 1 -type f -printf '%f\n' | sort | tail -n1)" = '0006_add_white_label_settings.sql'
+
+      - name: Prove RED on immutable Task 5
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp v15-task6/task6-bill-branding.test.mjs work/tests/task6-bill-branding.test.mjs
+          set +e
+          (cd work && node --test tests/task6-bill-branding.test.mjs)
+          code=$?
+          set -e
+          test "$code" -ne 0
+
+      - name: Apply deterministic Task 6 patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd work && git apply --check ../task6.patch && git apply ../task6.patch)
+          cp v15-task6/bill-branding-snapshot.test.ts work/tests/bill-branding-snapshot.test.ts
+          echo 'eb4678e87fc1bd5aa3bd891c7ae0bd89095b28f410951ff91cc86a4825a5cb97  work/src/components/BillInvoice.tsx' | sha256sum --check --strict
+          echo 'e7d2a31d71cd8615425dc50dec6b0065ba6a81523cf6fecd8a9a40cbac4acaaa  work/src/utils/billBranding.ts' | sha256sum --check --strict
+          echo '43c0afe7e79b35250fbfa983f4f891659f5b06a1d44d5e173925bf426d11db30  work/package.json' | sha256sum --check --strict
+          ! grep -Eiq '#166534|#DCFCE7|#bbf7d0|#86efac|#22c55e|#16a34a|#15803d|#dcfce7|#f0fdf4' work/src/components/BillInvoice.tsx
+          grep -Fq 'toJpeg(printAreaRef.current' work/src/components/BillInvoice.tsx
+          grep -Fq 'border: 2.5px solid ${branding.brandColor}' work/src/components/BillInvoice.tsx
+          test "$(find work/d1-migrations -maxdepth 1 -type f -printf '%f\n' | sort | tail -n1)" = '0006_add_white_label_settings.sql'
+
+      - name: Prove GREEN on Task 6 source contract
+        working-directory: work
+        run: node --test tests/task6-bill-branding.test.mjs
+
+      - name: Create immutable Task 6 master candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f dorm-management-system-master-v15-task6-REVIEW-CI.zip
+          (cd work && zip -qr ../dorm-management-system-master-v15-task6-REVIEW-CI.zip .)
+          unzip -t dorm-management-system-master-v15-task6-REVIEW-CI.zip >/dev/null
+          sha256sum dorm-management-system-master-v15-task6-REVIEW-CI.zip | tee MASTER_V15_TASK6_CI_SHA256.txt
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: work/package-lock.json
+
+      - name: Fresh dependency install
+        working-directory: work
+        run: npm ci
+
+      - name: Focused Task 6 contracts
+        working-directory: work
+        run: |
+          node --test tests/task6-bill-branding.test.mjs
+          npx tsx --test tests/bill-branding-snapshot.test.ts
+          node --test tests/bill-mobile-desktop-layout.test.mjs
+
+      - name: Theme and branding regression
+        working-directory: work
+        run: npx tsx --test tests/brand-theme-runtime.test.ts tests/branding-client-runtime.test.ts tests/theme-root-runtime.test.ts tests/theme-refresh-runtime.test.ts tests/theme-css-contract.test.ts
+
+      - name: Backup regression
+        working-directory: work
+        run: npm run test:backup
+
+      - name: Full test suite
+        working-directory: work
+        run: npm test
+
+      - name: TypeScript lint
+        working-directory: work
+        run: npm run lint
+
+      - name: Cloudflare types
+        working-directory: work
+        run: npm run check:cloudflare-types:master
+
+      - name: Pages production build
+        working-directory: work
+        run: npm run build:pages
+
+      - name: VPS production build
+        working-directory: work
+        run: npm run build:vps
+
+      - name: Generate PREVIEW and guarded release packages
+        working-directory: work
+        run: |
+          npm run packages:generate
+          npm run test:builder
+          npm run packages:release
+
+      - name: Materialize Task 6 candidate packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p work/release-v15-task6
+          for plan in demo basic standard pro; do
+            src="work/release-v14/dorm-management-system-${plan}-v14-CUSTOMER-READY.zip"
+            dst="work/release-v15-task6/dorm-management-system-${plan}-v15-TASK6-CANDIDATE.zip"
+            test -f "$src"
+            cp "$src" "$dst"
+            unzip -t "$dst" >/dev/null
+          done
+          sha256sum work/release-v15-task6/*.zip | tee work/V15_TASK6_CANDIDATE_SHA256.txt
+
+      - name: One Master and package parity audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf audit && mkdir audit
+          unzip -Z1 dorm-management-system-master-v15-task6-REVIEW-CI.zip > audit/master.txt
+          grep -Fx 'src/components/BillInvoice.tsx' audit/master.txt
+          grep -Fx 'src/utils/billBranding.ts' audit/master.txt
+          grep -Fx 'tests/bill-branding-snapshot.test.ts' audit/master.txt
+          grep -Fx 'tests/task6-bill-branding.test.mjs' audit/master.txt
+          ! grep -Fq 'node_modules/' audit/master.txt
+          for plan in demo basic standard pro; do
+            z="work/release-v15-task6/dorm-management-system-${plan}-v15-TASK6-CANDIDATE.zip"
+            unzip -p "$z" src/components/BillInvoice.tsx > "audit/${plan}-bill.tsx"
+            unzip -p "$z" src/utils/billBranding.ts > "audit/${plan}-branding.ts"
+            unzip -p "$z" tests/bill-branding-snapshot.test.ts > "audit/${plan}-test.ts"
+            ! grep -Eiq '#166534|#DCFCE7|#bbf7d0|#86efac|#22c55e|#16a34a|#15803d|#dcfce7|#f0fdf4' "audit/${plan}-bill.tsx"
+            grep -Fq 'resolveBillBrandingSnapshot' "audit/${plan}-bill.tsx"
+            grep -Fq 'toJpeg(printAreaRef.current' "audit/${plan}-bill.tsx"
+            grep -Fq 'whiteLabelEnabled ? cleanOptional' "audit/${plan}-branding.ts"
+          done
+          for plan in demo basic standard; do
+            cmp "audit/${plan}-bill.tsx" audit/pro-bill.tsx
+            cmp "audit/${plan}-branding.ts" audit/pro-branding.ts
+            cmp "audit/${plan}-test.ts" audit/pro-test.ts
+          done
+
+      - name: Upload Task 6 candidate artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: v15-task6-candidate-pending-browser-export-smoke
+          path: |
+            dorm-management-system-master-v15-task6-REVIEW-CI.zip
+            MASTER_V15_TASK6_CI_SHA256.txt
+            work/release-v15-task6/**
+            work/V15_TASK6_CANDIDATE_SHA256.txt
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Persist Task 6 production evidence
+        if: always()
+        shell: bash
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          set -euo pipefail
+          mkdir -p v15-task6-evidence
+          cat > v15-task6-evidence/production-gate-latest.txt <<EOT
+          run_id=$GITHUB_RUN_ID
+          run_attempt=$GITHUB_RUN_ATTEMPT
+          source_sha=$GITHUB_SHA
+          source_task5_artifact_id=$TASK5_ARTIFACT_ID
+          source_task5_artifact_sha256=$TASK5_ARTIFACT_SHA256
+          job_status=$JOB_STATUS
+          EOT
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add v15-task6-evidence/production-gate-latest.txt
+          git commit -m 'ci(v15-task6): record production gate evidence' || exit 0
+          git push origin HEAD:agent/v15-task1-white-label-contract
