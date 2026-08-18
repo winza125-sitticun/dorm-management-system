@@ -1,0 +1,291 @@
+diff --git a/src/components/SettingsView.tsx b/src/components/SettingsView.tsx
+index 4369f0c..960745b 100644
+--- a/src/components/SettingsView.tsx
++++ b/src/components/SettingsView.tsx
+@@ -43,7 +43,8 @@ import type { UserRole } from '../types.ts';
+ import { RecurringChargesSettings } from './RecurringChargesSettings.tsx';
+ import { BackupRestoreSettings } from './BackupRestoreSettings.tsx';
+ import { WhiteLabelSettingsSection } from './WhiteLabelSettingsSection.tsx';
+-import { normalizeWhiteLabelDraft, validateLogoFileMeta, type NormalizedWhiteLabelDraft } from '../utils/whiteLabelSettings.ts';
++import { normalizeWhiteLabelDraft, type NormalizedWhiteLabelDraft } from '../utils/whiteLabelSettings.ts';
++import { optimizeLogoFile, validateLogoSourceFileMeta } from '../utils/logoOptimizer.ts';
+ import { useTheme } from '../context/ThemeContext.tsx';
+ 
+ interface SettingsViewProps {
+@@ -627,16 +628,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
+  setTimeout(() => setCopied(false), 2000);
+  };
+ 
+- const readFileAsDataUri = (file: File): Promise<string> => new Promise((resolve, reject) => {
+- const reader = new FileReader();
+- reader.onload = () => resolve(String(reader.result || ''));
+- reader.onerror = () => reject(new Error('ไม่สามารถอ่านไฟล์โลโก้ได้'));
+- reader.readAsDataURL(file);
+- });
+-
+  const handleUploadLogo = async (file: File) => {
+  if (!canEditWhiteLabel || logoMutationPending) return;
+- const meta = validateLogoFileMeta(file);
++ const meta = validateLogoSourceFileMeta(file);
+  if (meta.ok === false) {
+   setFormError(meta.error);
+   return;
+@@ -645,12 +639,12 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
+  setBrandingRefreshWarning(null);
+  setLogoMutationPending(true);
+  try {
+-  const logoDataUri = await readFileAsDataUri(file);
+-  setPendingLogoDataUri(logoDataUri);
++  const optimizedLogo = await optimizeLogoFile(file);
++  setPendingLogoDataUri(optimizedLogo.dataUri);
+   const response = await fetch('/api/settings/logo', {
+    method: 'PUT',
+    headers: { 'Authorization': `Bearer ${idToken}`, 'Content-Type': 'application/json' },
+-   body: JSON.stringify({ logoDataUri }),
++   body: JSON.stringify({ logoDataUri: optimizedLogo.dataUri }),
+   });
+   if (!response.ok) throw new Error(await readApiError(response, 'อัปโหลดโลโก้ไม่สำเร็จ'));
+   await onRefreshSettings?.();
+diff --git a/src/components/WhiteLabelSettingsSection.tsx b/src/components/WhiteLabelSettingsSection.tsx
+index 28294e8..17a3a5c 100644
+--- a/src/components/WhiteLabelSettingsSection.tsx
++++ b/src/components/WhiteLabelSettingsSection.tsx
+@@ -111,7 +111,7 @@ export const WhiteLabelSettingsSection: React.FC<WhiteLabelSettingsSectionProps>
+                 <Trash2 className="w-4 h-4" /> ลบโลโก้
+               </button>
+             </div>
+-            <p className="text-[10px] text-[#8A8A85]">PNG / JPEG / WebP ขนาดไม่เกิน 300 KB</p>
++            <p className="text-[10px] text-[#8A8A85] leading-relaxed">PNG / JPEG / WebP — ระบบจะย่อภาพด้านยาวไม่เกิน 1024px และบีบอัดอัตโนมัติก่อนอัปโหลด โดยไม่ขยายภาพขนาดเล็ก</p>
+           </div>
+ 
+           <div className="space-y-1.5">
+diff --git a/src/utils/logoOptimizer.ts b/src/utils/logoOptimizer.ts
+new file mode 100644
+index 0000000..86af17d
+--- /dev/null
++++ b/src/utils/logoOptimizer.ts
+@@ -0,0 +1,224 @@
++export const WHITE_LABEL_LOGO_MAX_DIMENSION = 1024 as const;
++export const WHITE_LABEL_LOGO_TARGET_BYTES = 286_720 as const;
++
++const LOGO_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp']);
++const QUALITY_STEPS = [0.9, 0.82, 0.74, 0.66, 0.58, 0.5] as const;
++const MAX_RESIZE_PASSES = 5;
++const RESIZE_STEP = 0.82;
++
++export type LogoSourceMeta = Pick<File, 'type' | 'size'>;
++export type LogoResizeDimensions = { width: number; height: number };
++
++export type DecodedLogoImage = {
++  width: number;
++  height: number;
++  source: CanvasImageSource;
++  close?: () => void;
++};
++
++export type LogoEncodeOptions = {
++  width: number;
++  height: number;
++  type: string;
++  quality?: number;
++};
++
++export type LogoRasterAdapter = {
++  decode: (file: File) => Promise<DecodedLogoImage>;
++  encode: (image: DecodedLogoImage, options: LogoEncodeOptions) => Promise<Blob>;
++};
++
++export type OptimizedLogo = {
++  dataUri: string;
++  width: number;
++  height: number;
++  originalWidth: number;
++  originalHeight: number;
++  outputBytes: number;
++  outputType: string;
++  resized: boolean;
++  compressed: boolean;
++};
++
++export function validateLogoSourceFileMeta(file: LogoSourceMeta): { ok: true } | { ok: false; error: string } {
++  if (!LOGO_TYPES.has(file.type)) {
++    return { ok: false, error: 'รองรับเฉพาะ PNG, JPEG และ WebP' };
++  }
++  if (!Number.isFinite(file.size) || file.size < 1) {
++    return { ok: false, error: 'ไฟล์โลโก้ว่างหรือไม่ถูกต้อง' };
++  }
++  return { ok: true };
++}
++
++export function calculateLogoResizeDimensions(
++  width: number,
++  height: number,
++  maxDimension = WHITE_LABEL_LOGO_MAX_DIMENSION,
++): LogoResizeDimensions {
++  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
++    throw new Error('ขนาดรูปโลโก้ไม่ถูกต้อง');
++  }
++  const longest = Math.max(width, height);
++  if (longest <= maxDimension) {
++    return { width: Math.round(width), height: Math.round(height) };
++  }
++  const scale = maxDimension / longest;
++  return {
++    width: Math.max(1, Math.round(width * scale)),
++    height: Math.max(1, Math.round(height * scale)),
++  };
++}
++
++async function blobToDataUri(blob: Blob): Promise<string> {
++  const bytes = new Uint8Array(await blob.arrayBuffer());
++  let binary = '';
++  const chunkSize = 0x8000;
++  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
++    binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
++  }
++  return `data:${blob.type};base64,${btoa(binary)}`;
++}
++
++function nextSmallerDimensions(dimensions: LogoResizeDimensions): LogoResizeDimensions {
++  return {
++    width: Math.max(1, Math.floor(dimensions.width * RESIZE_STEP)),
++    height: Math.max(1, Math.floor(dimensions.height * RESIZE_STEP)),
++  };
++}
++
++async function encodeCandidates(
++  adapter: LogoRasterAdapter,
++  image: DecodedLogoImage,
++  dimensions: LogoResizeDimensions,
++  sourceType: string,
++): Promise<Blob | null> {
++  if (sourceType === 'image/png') {
++    const png = await adapter.encode(image, { ...dimensions, type: 'image/png' });
++    if (png.size > 0 && png.size <= WHITE_LABEL_LOGO_TARGET_BYTES) return png;
++    for (const quality of QUALITY_STEPS) {
++      const webp = await adapter.encode(image, { ...dimensions, type: 'image/webp', quality });
++      if (webp.size > 0 && webp.size <= WHITE_LABEL_LOGO_TARGET_BYTES) return webp;
++    }
++    return null;
++  }
++
++  for (const quality of QUALITY_STEPS) {
++    const blob = await adapter.encode(image, { ...dimensions, type: sourceType, quality });
++    if (blob.size > 0 && blob.size <= WHITE_LABEL_LOGO_TARGET_BYTES) return blob;
++  }
++  return null;
++}
++
++async function decodeWithHtmlImage(file: File): Promise<DecodedLogoImage> {
++  const url = URL.createObjectURL(file);
++  try {
++    const image = new Image();
++    await new Promise<void>((resolve, reject) => {
++      image.onload = () => resolve();
++      image.onerror = () => reject(new Error('IMAGE_DECODE_FAILED'));
++      image.src = url;
++    });
++    return {
++      width: image.naturalWidth,
++      height: image.naturalHeight,
++      source: image,
++      close: () => URL.revokeObjectURL(url),
++    };
++  } catch (error) {
++    URL.revokeObjectURL(url);
++    throw error;
++  }
++}
++
++export const browserLogoRasterAdapter: LogoRasterAdapter = {
++  async decode(file) {
++    if (typeof createImageBitmap === 'function') {
++      const bitmap = await createImageBitmap(file);
++      return {
++        width: bitmap.width,
++        height: bitmap.height,
++        source: bitmap,
++        close: () => bitmap.close(),
++      };
++    }
++    return decodeWithHtmlImage(file);
++  },
++
++  async encode(image, options) {
++    const canvas = document.createElement('canvas');
++    canvas.width = options.width;
++    canvas.height = options.height;
++    const context = canvas.getContext('2d');
++    if (!context) throw new Error('CANVAS_CONTEXT_UNAVAILABLE');
++    context.clearRect(0, 0, options.width, options.height);
++    context.drawImage(image.source, 0, 0, options.width, options.height);
++    return await new Promise<Blob>((resolve, reject) => {
++      canvas.toBlob((blob) => {
++        if (!blob || blob.size < 1) {
++          reject(new Error('CANVAS_ENCODE_FAILED'));
++          return;
++        }
++        resolve(blob);
++      }, options.type, options.quality);
++    });
++  },
++};
++
++export async function optimizeLogoFile(
++  file: File,
++  adapter: LogoRasterAdapter = browserLogoRasterAdapter,
++): Promise<OptimizedLogo> {
++  const meta = validateLogoSourceFileMeta(file);
++  if (meta.ok === false) throw new Error(meta.error);
++
++  let image: DecodedLogoImage;
++  try {
++    image = await adapter.decode(file);
++  } catch {
++    throw new Error('ไม่สามารถอ่านรูปโลโก้ได้ กรุณาเลือกไฟล์ PNG, JPEG หรือ WebP ที่ถูกต้อง');
++  }
++
++  try {
++    const originalWidth = image.width;
++    const originalHeight = image.height;
++    const initial = calculateLogoResizeDimensions(originalWidth, originalHeight);
++    const resized = initial.width !== Math.round(originalWidth) || initial.height !== Math.round(originalHeight);
++
++    if (!resized && file.size <= WHITE_LABEL_LOGO_TARGET_BYTES) {
++      return {
++        dataUri: await blobToDataUri(file),
++        width: initial.width,
++        height: initial.height,
++        originalWidth,
++        originalHeight,
++        outputBytes: file.size,
++        outputType: file.type,
++        resized: false,
++        compressed: false,
++      };
++    }
++
++    let dimensions = initial;
++    for (let pass = 0; pass < MAX_RESIZE_PASSES; pass += 1) {
++      const encoded = await encodeCandidates(adapter, image, dimensions, file.type);
++      if (encoded) {
++        return {
++          dataUri: await blobToDataUri(encoded),
++          width: dimensions.width,
++          height: dimensions.height,
++          originalWidth,
++          originalHeight,
++          outputBytes: encoded.size,
++          outputType: encoded.type || file.type,
++          resized: dimensions.width !== Math.round(originalWidth) || dimensions.height !== Math.round(originalHeight),
++          compressed: true,
++        };
++      }
++      dimensions = nextSmallerDimensions(dimensions);
++    }
++
++    throw new Error('ไม่สามารถลดขนาดโลโก้ให้เล็กพอสำหรับอัปโหลดได้ กรุณาเลือกภาพที่เรียบง่ายหรือมีขนาดเล็กลง');
++  } finally {
++    image.close?.();
++  }
++}
