@@ -26,11 +26,31 @@ jobs:
         with:
           ref: agent/v16-production-gate
 
+      - name: Verify production input chunks exactly
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/chunks.sha256 <<'EOF'
+          c7e6befdae1fee6fc72e24d866659b15de512be517d113c76b62bbb75250c7b3  v16-production-inputs/input-00.b64
+          0906871d06236d87c4cb31012d11e1fba6325c5314d93887b89ab322cdda2610  v16-production-inputs/input-01.b64
+          e8030aadd0d24b99e63d508e1d68326e2b3629ed13c411a9fe851d402968b0f2  v16-production-inputs/input-02.b64
+          ee56d979081632e485e6c9ffcf6fa21e6d079b2636f29539fcad336f1ffd1d54  v16-production-inputs/input-03.b64
+          35111298cd1e62af2029ee35f86d936a9df3bb8a3a706a378a5c63e3bfaded39  v16-production-inputs/input-04.b64
+          bd23488d3c2830a007f7df2b5883d9b50d54e8f9222f779e22cc10ddb93979b3  v16-production-inputs/input-05.b64
+          EOF
+          sha256sum --check --strict /tmp/chunks.sha256
+          test "$(wc -c < v16-production-inputs/input-00.b64 | tr -d ' ')" = '8000'
+          test "$(wc -c < v16-production-inputs/input-01.b64 | tr -d ' ')" = '8000'
+          test "$(wc -c < v16-production-inputs/input-02.b64 | tr -d ' ')" = '8000'
+          test "$(wc -c < v16-production-inputs/input-03.b64 | tr -d ' ')" = '8000'
+          test "$(wc -c < v16-production-inputs/input-04.b64 | tr -d ' ')" = '8000'
+          test "$(wc -c < v16-production-inputs/input-05.b64 | tr -d ' ')" = '1680'
+
       - name: Reconstruct frozen V16 production inputs
         shell: bash
         run: |
           set -euo pipefail
-          cat v16-production-inputs/input-*.b64 | base64 --decode > /tmp/v16-production-inputs.tar.xz
+          cat v16-production-inputs/input-0{0,1,2,3,4,5}.b64 | base64 --decode > /tmp/v16-production-inputs.tar.xz
           echo "$INPUT_ARCHIVE_SHA256  /tmp/v16-production-inputs.tar.xz" | sha256sum --check --strict
           rm -rf /tmp/v16-inputs
           tar -xJf /tmp/v16-production-inputs.tar.xz -C /tmp
