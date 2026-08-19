@@ -51,15 +51,20 @@ jobs:
           node - <<'NODE'
           const fs = require('node:fs');
           const cryptoNode = require('node:crypto');
-          const input = process.env.LICENSE_SIGNING_PRIVATE_KEY || '';
-          const key = await crypto.subtle.importKey('pkcs8', Buffer.from(input, 'base64'), { name: 'Ed25519' }, true, ['sign']);
-          const jwk = await crypto.subtle.exportKey('jwk', key);
-          if (!jwk.x) throw new Error('Ed25519 public component missing');
-          const raw = Buffer.from(jwk.x.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - jwk.x.length % 4) % 4), 'base64');
-          const publicKeyBase64 = raw.toString('base64');
-          const fingerprint = cryptoNode.createHash('sha256').update(raw).digest('hex');
-          fs.writeFileSync('v16-production-public-key.txt', publicKeyBase64 + '\n');
-          fs.writeFileSync('v16-production-public-key-fingerprint.txt', fingerprint + '\n');
+          (async () => {
+            const input = process.env.LICENSE_SIGNING_PRIVATE_KEY || '';
+            const key = await crypto.subtle.importKey('pkcs8', Buffer.from(input, 'base64'), { name: 'Ed25519' }, true, ['sign']);
+            const jwk = await crypto.subtle.exportKey('jwk', key);
+            if (!jwk.x) throw new Error('Ed25519 public component missing');
+            const raw = Buffer.from(jwk.x.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - jwk.x.length % 4) % 4), 'base64');
+            const publicKeyBase64 = raw.toString('base64');
+            const fingerprint = cryptoNode.createHash('sha256').update(raw).digest('hex');
+            fs.writeFileSync('v16-production-public-key.txt', publicKeyBase64 + '\n');
+            fs.writeFileSync('v16-production-public-key-fingerprint.txt', fingerprint + '\n');
+          })().catch((error) => {
+            console.error(error);
+            process.exit(1);
+          });
           NODE
 
       - name: Persist prerequisite evidence
