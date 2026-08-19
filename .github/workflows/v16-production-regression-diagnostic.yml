@@ -1,0 +1,83 @@
+name: V16 Production Regression Diagnostic
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [agent/v16-production-gate]
+    paths: ['.github/workflows/v16-production-regression-diagnostic.yml']
+
+permissions: { contents: write, actions: read }
+
+env:
+  V15_ARTIFACT_ID: '9330679827'
+  V15_ARTIFACT_SHA256: '5f6e65ae856c1196fcd3a2e3dd7bcffb4da863ab212d3595839e921f0a96e1cf'
+  V15_MASTER_SHA256: 'd05ee110815a29b74498e17adac1b8355dec40d5a705dd016f5ad5f849caa9e9'
+  INPUT_ARCHIVE_SHA256: '43b2d44d508a02a431f2a405b5e95f8fbf850cca17b522446d1d6e0630d4d0f7'
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: agent/v16-production-gate }
+      - name: Reconstruct exact Task 8
+        env: { GH_TOKEN: '${{ github.token }}' }
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat v16-production-inputs/input-00a.b64 v16-production-inputs/input-00b.b64 v16-production-inputs/input-01.b64 v16-production-inputs/input-02.b64 v16-production-inputs/input-03.b64 v16-production-inputs/input-04.b64 v16-production-inputs/input-05.b64 | base64 -d > /tmp/inputs.tar.xz
+          echo "$INPUT_ARCHIVE_SHA256  /tmp/inputs.tar.xz" | sha256sum --check --strict
+          tar -xJf /tmp/inputs.tar.xz -C /tmp
+          curl --fail --location --retry 8 --retry-all-errors --retry-delay 3 -H "Authorization: Bearer ${GH_TOKEN}" -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${V15_ARTIFACT_ID}/zip" -o /tmp/v15.zip
+          echo "$V15_ARTIFACT_SHA256  /tmp/v15.zip" | sha256sum --check --strict
+          mkdir -p /tmp/v15 /tmp/work; unzip -q /tmp/v15.zip -d /tmp/v15
+          echo "$V15_MASTER_SHA256  /tmp/v15/dorm-management-system-master-v15-CUSTOMER-READY.zip" | sha256sum --check --strict
+          unzip -q /tmp/v15/dorm-management-system-master-v15-CUSTOMER-READY.zip -d /tmp/work
+          cd /tmp/work
+          for p in /tmp/v16-inputs/V16_TASK6_EXACT_V15.patch /tmp/v16-inputs/V16_TASK7.patch /tmp/v16-inputs/V16_TASK8_PRODUCTION.patch; do patch -p1 < "$p" >/dev/null; done
+          test ! -f tests/tenant-portal-branding-source.test.mjs
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+      - name: Fresh npm ci
+        working-directory: /tmp/work
+        run: npm ci
+      - name: Run test scripts independently and capture status
+        working-directory: /tmp/work
+        shell: bash
+        run: |
+          set +e
+          : > /tmp/status.txt
+          for s in test:settings test:notes test:regression test:rbac test:navigation test:plans test:license test:setup:master test:upgrade test:backup test:handoff test:bill-branding test:builder; do
+            echo "=== $s ==="
+            npm run "$s" > "/tmp/${s//:/-}.log" 2>&1
+            rc=$?
+            echo "$s=$rc" | tee -a /tmp/status.txt
+            if [ "$rc" -ne 0 ]; then
+              echo "--- failure log: $s ---"
+              cat "/tmp/${s//:/-}.log"
+            fi
+          done
+          set -e
+          cat /tmp/status.txt
+          cp /tmp/status.txt "$GITHUB_WORKSPACE/v16-regression-status.txt"
+          failed="$(grep -vc '=0$' /tmp/status.txt)"
+          echo "failed_scripts=$failed" >> "$GITHUB_OUTPUT"
+          test "$failed" -eq 0
+      - name: Persist diagnostic evidence
+        if: always()
+        env: { JOB_STATUS: '${{ job.status }}' }
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p v16-production-evidence
+          {
+            echo "run_id=${GITHUB_RUN_ID}"
+            echo "source_sha=${GITHUB_SHA}"
+            echo "job_status=${JOB_STATUS}"
+            [ -f v16-regression-status.txt ] && cat v16-regression-status.txt
+          } > v16-production-evidence/regression-diagnostic-latest.txt
+          git config user.name 'github-actions[bot]'; git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add v16-production-evidence/regression-diagnostic-latest.txt
+          git commit -m 'ci(v16): record regression diagnostic' || exit 0
+          git push origin HEAD:agent/v16-production-gate
