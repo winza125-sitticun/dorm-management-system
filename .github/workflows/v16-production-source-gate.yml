@@ -1,0 +1,228 @@
+name: V16 Production Source Gate
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [agent/v16-production-gate]
+    paths:
+      - '.github/workflows/v16-production-source-gate.yml'
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: v16-production-source-gate
+  cancel-in-progress: true
+
+env:
+  V15_ARTIFACT_ID: '9330679827'
+  V15_ARTIFACT_SHA256: '5f6e65ae856c1196fcd3a2e3dd7bcffb4da863ab212d3595839e921f0a96e1cf'
+  V15_MASTER_SHA256: 'd05ee110815a29b74498e17adac1b8355dec40d5a705dd016f5ad5f849caa9e9'
+  INPUT_ARCHIVE_SHA256: '43b2d44d508a02a431f2a405b5e95f8fbf850cca17b522446d1d6e0630d4d0f7'
+  EXPECTED_TASK8_TREE_MANIFEST_SHA256: '1b7c4e8179be6f397061d7999ade081f1bb0791f5ac10a2b5490dbec1d3d7b6c'
+  MIGRATION_CEILING: '0007_add_license_state.sql'
+
+jobs:
+  source-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/v16-production-gate
+
+      - name: Reconstruct and verify frozen V16 inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat \
+            v16-production-inputs/input-00a.b64 \
+            v16-production-inputs/input-00b.b64 \
+            v16-production-inputs/input-01.b64 \
+            v16-production-inputs/input-02.b64 \
+            v16-production-inputs/input-03.b64 \
+            v16-production-inputs/input-04.b64 \
+            v16-production-inputs/input-05.b64 \
+            | base64 --decode > /tmp/v16-production-inputs.tar.xz
+          echo "$INPUT_ARCHIVE_SHA256  /tmp/v16-production-inputs.tar.xz" | sha256sum --check --strict
+          rm -rf /tmp/v16-inputs
+          tar -xJf /tmp/v16-production-inputs.tar.xz -C /tmp
+          (cd /tmp/v16-inputs && sha256sum --check --strict SHA256SUMS.txt)
+
+      - name: Download exact immutable V15 CUSTOMER-READY baseline
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 8 --retry-all-errors --retry-delay 3 \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${V15_ARTIFACT_ID}/zip" \
+            -o /tmp/v15-customer-ready-artifact.zip
+          echo "$V15_ARTIFACT_SHA256  /tmp/v15-customer-ready-artifact.zip" | sha256sum --check --strict
+          rm -rf /tmp/v15-artifact /tmp/v16-work
+          mkdir -p /tmp/v15-artifact /tmp/v16-work
+          unzip -q /tmp/v15-customer-ready-artifact.zip -d /tmp/v15-artifact
+          test -f /tmp/v15-artifact/dorm-management-system-master-v15-CUSTOMER-READY.zip
+          echo "$V15_MASTER_SHA256  /tmp/v15-artifact/dorm-management-system-master-v15-CUSTOMER-READY.zip" | sha256sum --check --strict
+          unzip -q /tmp/v15-artifact/dorm-management-system-master-v15-CUSTOMER-READY.zip -d /tmp/v16-work
+          test "$(find /tmp/v16-work/d1-migrations -maxdepth 1 -type f -printf '%f\n' | sort | tail -n1)" = '0006_add_white_label_settings.sql'
+
+      - name: Apply exact V16 Task 6, 7 and 8 patches
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /tmp/v16-work
+          for patch_file in \
+            /tmp/v16-inputs/V16_TASK6_EXACT_V15.patch \
+            /tmp/v16-inputs/V16_TASK7.patch \
+            /tmp/v16-inputs/V16_TASK8_PRODUCTION.patch; do
+            patch --dry-run -p1 < "$patch_file"
+            patch -p1 < "$patch_file"
+          done
+          latest="$(find d1-migrations -maxdepth 1 -type f -printf '%f\n' | sort | tail -n1)"
+          test "$latest" = "$MIGRATION_CEILING"
+          test ! -e d1-migrations/0008_add_license_state.sql
+          test ! -e control-plane
+
+      - name: Verify exact Task 8 source tree identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /tmp/v16-work
+          find . -type f \
+            ! -path './node_modules/*' \
+            ! -path './dist/*' \
+            ! -path './dist-server/*' \
+            ! -path './preview-v14/*' \
+            ! -path './release-v14/*' \
+            -print0 | sort -z | xargs -0 sha256sum > /tmp/v16-task8-tree.sha256
+          test "$(wc -l < /tmp/v16-task8-tree.sha256 | tr -d ' ')" = '231'
+          echo "$EXPECTED_TASK8_TREE_MANIFEST_SHA256  /tmp/v16-task8-tree.sha256" | sha256sum --check --strict
+          grep -Fq '0007_add_license_state.sql' /tmp/v16-task8-tree.sha256
+
+      - name: Extract isolated vendor Control Plane source
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/cp-review /tmp/control-plane
+          mkdir -p /tmp/cp-review
+          unzip -q /tmp/v16-inputs/V16_TASK5_CONTROL_PLANE_REVIEW.zip -d /tmp/cp-review
+          test -d /tmp/cp-review/V16_TASK5_CONTROL_PLANE
+          cp -a /tmp/cp-review/V16_TASK5_CONTROL_PLANE /tmp/control-plane
+          test -f /tmp/control-plane/migrations/0001_license_schema.sql
+          test -f /tmp/control-plane/src/index.ts
+          test ! -e /tmp/v16-work/control-plane
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: /tmp/v16-work/package-lock.json
+
+      - name: Fresh customer dependency install
+        working-directory: /tmp/v16-work
+        run: npm ci
+
+      - name: Full customer regression suite
+        working-directory: /tmp/v16-work
+        run: npm test
+
+      - name: TypeScript lint
+        working-directory: /tmp/v16-work
+        run: npm run lint
+
+      - name: Cloudflare types
+        working-directory: /tmp/v16-work
+        run: npm run check:cloudflare-types:master
+
+      - name: Pages production build
+        working-directory: /tmp/v16-work
+        run: npm run build:pages
+
+      - name: VPS production build
+        working-directory: /tmp/v16-work
+        run: npm run build:vps
+
+      - name: Generate and audit four PREVIEW customer packages
+        working-directory: /tmp/v16-work
+        run: |
+          set -euo pipefail
+          npm run packages:generate
+          for plan in demo basic standard pro; do
+            zip="preview-v14/dorm-management-system-${plan}-v14-PREVIEW.zip"
+            test -f "$zip"
+            unzip -t "$zip" >/dev/null
+            names="$(unzip -Z1 "$zip")"
+            ! printf '%s\n' "$names" | grep -Eq '^(control-plane/|package-plans/|docs/superpowers/)'
+            tmp="$(mktemp -d)"
+            unzip -q "$zip" -d "$tmp"
+            test "$(find "$tmp/d1-migrations" -maxdepth 1 -type f -printf '%f\n' | sort | tail -n1)" = "$MIGRATION_CEILING"
+            ! grep -RIl --exclude='*.zip' 'LICENSE_SIGNING_PRIVATE_KEY' "$tmp" | grep -q .
+            rm -rf "$tmp"
+          done
+
+      - name: Fresh Control Plane dependency install
+        working-directory: /tmp/control-plane
+        run: npm install --no-audit --no-fund
+
+      - name: Control Plane tests and typecheck
+        working-directory: /tmp/control-plane
+        run: |
+          npm test
+          npm run typecheck
+
+      - name: Freeze source-gated candidate artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf v16-production-source-gate
+          mkdir -p v16-production-source-gate/customer-previews
+          (cd /tmp/v16-work && zip -qr "$GITHUB_WORKSPACE/v16-production-source-gate/dorm-management-system-master-v16-PRODUCTION-SOURCE-GATED.zip" . -x 'node_modules/*' 'dist/*' 'dist-server/*' 'preview-v14/*' 'release-v14/*')
+          (cd /tmp/control-plane && zip -qr "$GITHUB_WORKSPACE/v16-production-source-gate/dorm-control-plane-v16-PRODUCTION-SOURCE-GATED.zip" . -x 'node_modules/*')
+          for plan in demo basic standard pro; do
+            cp "/tmp/v16-work/preview-v14/dorm-management-system-${plan}-v14-PREVIEW.zip" \
+              "v16-production-source-gate/customer-previews/dorm-management-system-${plan}-v16-SOURCE-GATE-PREVIEW.zip"
+          done
+          unzip -t v16-production-source-gate/dorm-management-system-master-v16-PRODUCTION-SOURCE-GATED.zip >/dev/null
+          unzip -t v16-production-source-gate/dorm-control-plane-v16-PRODUCTION-SOURCE-GATED.zip >/dev/null
+          sha256sum v16-production-source-gate/*.zip v16-production-source-gate/customer-previews/*.zip > v16-production-source-gate/SHA256SUMS.txt
+          cp /tmp/v16-task8-tree.sha256 v16-production-source-gate/V16_TASK8_TREE_SHA256.txt
+
+      - name: Upload source-gated V16 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: v16-production-source-gated
+          path: v16-production-source-gate/**
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Persist source gate evidence
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p v16-production-evidence
+          cat > v16-production-evidence/source-gate-latest.txt <<EOF
+          run_id=${GITHUB_RUN_ID}
+          run_attempt=${GITHUB_RUN_ATTEMPT}
+          source_sha=${GITHUB_SHA}
+          job_status=${JOB_STATUS}
+          v15_artifact_id=${V15_ARTIFACT_ID}
+          v15_artifact_sha256=${V15_ARTIFACT_SHA256}
+          v15_master_sha256=${V15_MASTER_SHA256}
+          input_archive_sha256=${INPUT_ARCHIVE_SHA256}
+          task8_tree_manifest_sha256=${EXPECTED_TASK8_TREE_MANIFEST_SHA256}
+          migration_ceiling=${MIGRATION_CEILING}
+          customer_ready=false
+          deployed=false
+          EOF
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add v16-production-evidence/source-gate-latest.txt
+          git commit -m 'ci(v16): record production source gate' || exit 0
+          git push origin HEAD:agent/v16-production-gate
