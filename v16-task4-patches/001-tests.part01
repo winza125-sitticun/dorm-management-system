@@ -1,0 +1,124 @@
+diff --git a/control-plane/tests/customer-contract.test.ts b/control-plane/tests/customer-contract.test.ts
+new file mode 100644
+index 0000000..4fcc58c
+--- /dev/null
++++ b/control-plane/tests/customer-contract.test.ts
+@@ -0,0 +1,92 @@
++import assert from 'node:assert/strict';
++import test from 'node:test';
++
++import {
++  canonicalizeLicenseTokenPayload as canonicalizeVendorPayload,
++  importLicenseSigningPrivateKey,
++  signLicenseToken,
++  type LicenseTokenPayloadV1,
++} from '../src/signing.ts';
++import {
++  canonicalizeLicenseTokenPayload as canonicalizeCustomerPayload,
++  importLicensePublicKey,
++  LicenseTokenError,
++  verifyLicenseToken,
++} from '../../src/server/services/licenseToken.service.ts';
++
++function toBase64Url(bytes: ArrayBuffer | Uint8Array): string {
++  const view = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
++  return Buffer.from(view).toString('base64url');
++}
++
++async function buildKeys(): Promise<{ privateKey: CryptoKey; publicKey: CryptoKey }> {
++  const pair = await crypto.subtle.generateKey({ name: 'Ed25519' }, true, ['sign', 'verify']);
++  const pkcs8 = await crypto.subtle.exportKey('pkcs8', pair.privateKey);
++  const spki = await crypto.subtle.exportKey('spki', pair.publicKey);
++  return {
++    privateKey: await importLicenseSigningPrivateKey(toBase64Url(pkcs8)),
++    publicKey: await importLicensePublicKey(toBase64Url(spki)),
++  };
++}
++
++const basePayload: LicenseTokenPayloadV1 = {
++  v: 1,
++  licenseId: 'lic_contract',
++  installationId: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
++  plan: 'basic',
++  status: 'active',
++  issuedAt: 1786870000,
++  expiresAt: 1789462000,
++  refreshAfter: 1786956400,
++};
++
++test('vendor canonical bytes exactly equal Task 3 customer canonical bytes', () => {
++  assert.equal(
++    canonicalizeVendorPayload(basePayload),
++    canonicalizeCustomerPayload(basePayload),
++  );
++});
++
++test('Task 3 verifier accepts Basic Standard and Pro tokens from Control Plane signer', async () => {
++  const { privateKey, publicKey } = await buildKeys();
++  for (const plan of ['basic', 'standard', 'pro'] as const) {
++    const payload = { ...basePayload, plan, licenseId: `lic_${plan}` };
++    const token = await signLicenseToken(payload, privateKey);
++    const verified = await verifyLicenseToken(
++      token,
++      publicKey,
++      payload.installationId,
++      payload.expiresAt - 1,
++    );
++    assert.deepEqual(verified, payload);
++  }
++});
++
++test('Task 3 verifier rejects payload tamper signature tamper and wrong key', async () => {
++  const { privateKey, publicKey } = await buildKeys();
++  const token = await signLicenseToken(basePayload, privateKey);
++  const [prefix, payloadSegment, signatureSegment] = token.split('.');
++
++  const raw = Buffer.from(payloadSegment, 'base64url').toString('utf8');
++  const tamperedRaw = raw.replace('"basic"', '"standard"');
++  const tamperedPayload = Buffer.from(tamperedRaw, 'utf8').toString('base64url');
++  await assert.rejects(
++    verifyLicenseToken(`${prefix}.${tamperedPayload}.${signatureSegment}`, publicKey, basePayload.installationId, basePayload.expiresAt - 1),
++    (error: unknown) => error instanceof LicenseTokenError && error.code === 'LICENSE_TOKEN_INVALID',
++  );
++
++  const signature = Buffer.from(signatureSegment, 'base64url');
++  signature[0] ^= 1;
++  await assert.rejects(
++    verifyLicenseToken(`${prefix}.${payloadSegment}.${signature.toString('base64url')}`, publicKey, basePayload.installationId, basePayload.expiresAt - 1),
++    (error: unknown) => error instanceof LicenseTokenError && error.code === 'LICENSE_TOKEN_INVALID',
++  );
++
++  const wrongPair = await crypto.subtle.generateKey({ name: 'Ed25519' }, true, ['sign', 'verify']);
++  const wrongSpki = await crypto.subtle.exportKey('spki', wrongPair.publicKey);
++  const wrongPublicKey = await importLicensePublicKey(toBase64Url(wrongSpki));
++  await assert.rejects(
++    verifyLicenseToken(token, wrongPublicKey, basePayload.installationId, basePayload.expiresAt - 1),
++    (error: unknown) => error instanceof LicenseTokenError && error.code === 'LICENSE_TOKEN_INVALID',
++  );
++});
+diff --git a/control-plane/tests/schema.test.ts b/control-plane/tests/schema.test.ts
+new file mode 100644
+index 0000000..ef88777
+--- /dev/null
++++ b/control-plane/tests/schema.test.ts
+@@ -0,0 +1,75 @@
++import assert from 'node:assert/strict';
++import { readFileSync } from 'node:fs';
++import { DatabaseSync } from 'node:sqlite';
++import test from 'node:test';
++
++const migrationUrl = new URL('../migrations/0001_license_schema.sql', import.meta.url);
++
++function freshDb(): DatabaseSync {
++  const db = new DatabaseSync(':memory:');
++  db.exec(readFileSync(migrationUrl, 'utf8'));
++  return db;
++}
++
++test('Control Plane migration creates exact application tables and seat lookup index', () => {
++  const db = freshDb();
++  const tables = db.prepare(`
++    SELECT name FROM sqlite_master
++    WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
++    ORDER BY name
++  `).all().map((row: any) 
