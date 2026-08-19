@@ -70,24 +70,8 @@ jobs:
           patch -p1 < "$GITHUB_WORKSPACE/v16-production-input/V16_PRODUCTION_FIX.patch"
           grep -q 'resolveEffectivePlan' tests/plan-persistence.test.ts
           grep -q 'doesNotMatch(pages, /normalizeSubscriptionPlan/' tests/plan-persistence.test.ts
-
-      - name: Materialize public production license configuration
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd /tmp/v16-work
-          python3 - <<'PY'
-          from pathlib import Path
-          p = Path('src/generated/licenseConfig.ts')
-          s = p.read_text()
-          if "publicKeyBase64: ''," not in s or "controlPlaneUrl: ''," not in s:
-              raise SystemExit('review config is not blank as expected')
-          s = s.replace("publicKeyBase64: '',", "publicKeyBase64: 'fgdHGCi74MiMXHbI5+KVY6S9wnh/L369ekdI8NmrwdY=',", 1)
-          s = s.replace("controlPlaneUrl: '',", "controlPlaneUrl: 'https://dorm-control-plane.winza125.workers.dev',", 1)
-          p.write_text(s)
-          PY
-          grep -Fq "publicKeyBase64: '$SIGNING_PUBLIC_KEY_B64'" src/generated/licenseConfig.ts
-          grep -Fq "controlPlaneUrl: '$CONTROL_PLANE_URL'" src/generated/licenseConfig.ts
+          grep -Fq "publicKeyBase64: ''," src/generated/licenseConfig.ts
+          grep -Fq "controlPlaneUrl: ''," src/generated/licenseConfig.ts
           ! grep -RIl --exclude='*.zip' 'LICENSE_SIGNING_PRIVATE_KEY' . | grep -q .
           find . -type f ! -path './node_modules/*' ! -path './dist/*' ! -path './dist-server/*' ! -path './preview-v14/*' ! -path './release-v14/*' -print0 | sort -z | xargs -0 sha256sum > /tmp/production-tree.sha256
           sha256sum /tmp/production-tree.sha256 > /tmp/production-tree-manifest.sha256
@@ -127,6 +111,9 @@ jobs:
 
       - name: Four-plan preview package gate
         working-directory: /tmp/v16-work
+        env:
+          V16_LICENSE_SIGNING_PUBLIC_KEY: '${{ env.SIGNING_PUBLIC_KEY_B64 }}'
+          V16_LICENSE_CONTROL_PLANE_URL: '${{ env.CONTROL_PLANE_URL }}'
         shell: bash
         run: |
           set -euo pipefail
