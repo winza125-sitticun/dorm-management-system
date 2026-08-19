@@ -1,0 +1,71 @@
+name: V16 Cloudflare Worker Permission Probe
+on:
+  push:
+    branches: [agent/v16-production-gate]
+    paths: ['.github/workflows/v16-cloudflare-worker-permission-probe.yml']
+permissions: { contents: write }
+concurrency: { group: v16-cloudflare-worker-permission-probe, cancel-in-progress: true }
+env:
+  CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+  CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: "fulfilling-communication / production"
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: agent/v16-production-gate }
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+      - name: Verify Worker script write permission with disposable Worker
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${CLOUDFLARE_API_TOKEN:-}"
+          test -n "${CLOUDFLARE_ACCOUNT_ID:-}"
+          npm install --no-save --no-package-lock wrangler@4.124.0 >/dev/null 2>&1
+          M="$(printf '%s' "$GITHUB_RUN_ID" | tr -cd '0-9' | tail -c 9)-${GITHUB_RUN_ATTEMPT}"
+          NAME="v16-worker-perm-${M}"
+          echo "PROBE_WORKER=$NAME" >> "$GITHUB_ENV"
+          mkdir -p /tmp/v16-worker-perm
+          cat > /tmp/v16-worker-perm/index.mjs <<'JS'
+          export default { fetch() { return new Response('v16-worker-permission-ok'); } };
+          JS
+          cat > /tmp/v16-worker-perm/wrangler.jsonc <<EOF
+          {"name":"${NAME}","main":"index.mjs","compatibility_date":"2026-08-05"}
+          EOF
+          if (cd /tmp/v16-worker-perm && "$GITHUB_WORKSPACE/node_modules/.bin/wrangler" deploy --config wrangler.jsonc >/tmp/v16-worker-perm-deploy.log 2>&1); then
+            touch /tmp/v16-worker-permission.ok
+          else
+            cat /tmp/v16-worker-perm-deploy.log
+            exit 1
+          fi
+      - name: Delete disposable Worker
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          if [ -n "${PROBE_WORKER:-}" ] && [ -x "$GITHUB_WORKSPACE/node_modules/.bin/wrangler" ]; then
+            "$GITHUB_WORKSPACE/node_modules/.bin/wrangler" delete --name "$PROBE_WORKER" --config /tmp/v16-worker-perm/wrangler.jsonc --force >/tmp/v16-worker-perm-delete.log 2>&1 || true
+          fi
+      - name: Persist permission evidence
+        if: always()
+        env: { JOB_STATUS: '${{ job.status }}' }
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p v16-production-evidence
+          result=failure; [ -f /tmp/v16-worker-permission.ok ] && result=success
+          cat > v16-production-evidence/cloudflare-worker-permission-latest.txt <<EOF
+          run_id=${GITHUB_RUN_ID}
+          source_sha=${GITHUB_SHA}
+          job_status=${JOB_STATUS}
+          workers_scripts_write=${result}
+          required_permission=Workers Scripts Edit/Write
+          customer_ready=false
+          EOF
+          git config user.name 'github-actions[bot]'; git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add v16-production-evidence/cloudflare-worker-permission-latest.txt
+          git commit -m 'ci(v16): record Cloudflare Worker permission probe' || exit 0
+          git push origin HEAD:agent/v16-production-gate
