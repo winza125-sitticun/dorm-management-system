@@ -1,0 +1,16 @@
+run_id=32249185343
+source_sha=1a7af11e068b179769d7f817df717440165158e3
+job_status=failure
+test:settings=0
+test:notes=0
+test:regression=0
+test:rbac=0
+test:navigation=0
+test:plans=1
+test:license=0
+test:setup:master=0
+test:upgrade=0
+test:backup=0
+test:handoff=0
+test:bill-branding=0
+test:builder=0
