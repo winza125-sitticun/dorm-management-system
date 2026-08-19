@@ -33,49 +33,49 @@ index 0000000..94f548a
 +  assert.equal(canonicalizeLicenseTokenPayload(payload), canonicalizeLicenseTokenPayload({ ...payload }));
 +  assert.deepEqual(new TextEncoder().encode(canonicalizeLicenseTokenPayload(payload)), new TextEncoder().encode(EXPECTED));
 +});
-+diff --git a/tests/license-token-verification.test.ts b/tests/license-token-verification.test.ts
-+new file mode 100644
-+index 0000000..3de43d4
-+--- /dev/null
-++++ b/tests/license-token-verification.test.ts
-+@@ -0,0 +1,222 @@
-++import assert from 'node:assert/strict';
-++import test from 'node:test';
-++
-++import {
-++  canonicalizeLicenseTokenPayload,
-++  importLicensePublicKey,
-++  LicenseTokenError,
-++  verifyLicenseToken,
-++  type LicenseTokenErrorCode,
-++  type LicenseTokenPayloadV1,
-++} from '../src/server/services/licenseToken.service.ts';
-++
-++function toBase64Url(bytes: Uint8Array): string {
-++  return Buffer.from(bytes).toString('base64url');
-++}
-++
-++async function signBytes(privateKey: CryptoKey, bytes: Uint8Array): Promise<string> {
-++  const signature = new Uint8Array(await crypto.subtle.sign({ name: 'Ed25519' }, privateKey, bytes));
-++  return toBase64Url(signature);
-++}
-++
-++async function tokenFromRawJson(privateKey: CryptoKey, rawJson: string): Promise<string> {
-++  const bytes = new TextEncoder().encode(rawJson);
-++  return `dormlic1.${toBase64Url(bytes)}.${await signBytes(privateKey, bytes)}`;
-++}
-++
-++async function tokenFromPayload(privateKey: CryptoKey, payload: LicenseTokenPayloadV1): Promise<string> {
-++  return tokenFromRawJson(privateKey, canonicalizeLicenseTokenPayload(payload));
-++}
-++
-++async function expectCode(promise: Promise<unknown>, code: LicenseTokenErrorCode): Promise<void> {
-++  await assert.rejects(promise, (error: unknown) => {
-++    assert.ok(error instanceof LicenseTokenError);
-++    assert.equal(error.code, code);
-++    assert.equal(error.message, code);
-++    return true;
-++  });
-++}
-++
-++const keyPair = await crypto.subtle.generateKey({ name: 'Ed25519' }, true, ['sign', 'verify']);
+diff --git a/tests/license-token-verification.test.ts b/tests/license-token-verification.test.ts
+new file mode 100644
+index 0000000..3de43d4
+--- /dev/null
++++ b/tests/license-token-verification.test.ts
+@@ -0,0 +1,222 @@
++import assert from 'node:assert/strict';
++import test from 'node:test';
++
++import {
++  canonicalizeLicenseTokenPayload,
++  importLicensePublicKey,
++  LicenseTokenError,
++  verifyLicenseToken,
++  type LicenseTokenErrorCode,
++  type LicenseTokenPayloadV1,
++} from '../src/server/services/licenseToken.service.ts';
++
++function toBase64Url(bytes: Uint8Array): string {
++  return Buffer.from(bytes).toString('base64url');
++}
++
++async function signBytes(privateKey: CryptoKey, bytes: Uint8Array): Promise<string> {
++  const signature = new Uint8Array(await crypto.subtle.sign({ name: 'Ed25519' }, privateKey, bytes));
++  return toBase64Url(signature);
++}
++
++async function tokenFromRawJson(privateKey: CryptoKey, rawJson: string): Promise<string> {
++  const bytes = new TextEncoder().encode(rawJson);
++  return `dormlic1.${toBase64Url(bytes)}.${await signBytes(privateKey, bytes)}`;
++}
++
++async function tokenFromPayload(privateKey: CryptoKey, payload: LicenseTokenPayloadV1): Promise<string> {
++  return tokenFromRawJson(privateKey, canonicalizeLicenseTokenPayload(payload));
++}
++
++async function expectCode(promise: Promise<unknown>, code: LicenseTokenErrorCode): Promise<void> {
++  await assert.rejects(promise, (error: unknown) => {
++    assert.ok(error instanceof LicenseTokenError);
++    assert.equal(error.code, code);
++    assert.equal(error.message, code);
++    return true;
++  });
++}
++
++const keyPair = await crypto.subtle.generateKey({ name: 'Ed25519' }, true, ['sign', 'verify']);
