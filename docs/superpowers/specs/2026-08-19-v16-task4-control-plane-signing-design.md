@@ -8,7 +8,7 @@
 
 ## Goal
 
-Create the vendor-only Control Plane persistence and Ed25519 signing foundation that later activation APIs will use. Task 4 must define the Control Plane D1 schema, hash-only license-key storage contract, private-key import boundary, and signer output that is byte-compatible with the Task 3 customer verifier. Task 4 does not expose activation/refresh/deactivation APIs and does not change customer runtime license authority.
+Create the vendor-only Control Plane persistence and Ed25519 signing foundation that later activation APIs will use. Task 4 defines the Control Plane D1 schema, hash-only license-key storage contract, private-key import boundary, and signer output that is byte-compatible with the Task 3 customer verifier. Task 4 does not expose activation/refresh/deactivation APIs and does not change customer runtime license authority.
 
 ## Immutable Task 3 baseline
 
@@ -17,11 +17,12 @@ Task 4 must reconstruct its candidate from the successful V16 Task 3 REVIEW arti
 - Task 3 workflow run: `32205296206`
 - Task 3 artifact ID: `9348923137`
 - Task 3 artifact digest: `sha256:98382e591e5c9c5027026011ccac6d66702ed18c576603060e7860d66313c682`
+- Task 3 Master REVIEW SHA-256: `c4f6eeed671b96e99f54fcd71504e16ad1b268014636f2d5f57eb4289f3e51c7`
 - customer migration ceiling: `0007_add_license_state.sql`
 - customer package entry count: `206`
 - release status: REVIEW; `customer_ready=false`
 
-Task 4 must not use `main`, V13, or a mutable working tree as product baseline.
+Task 4 must reject the baseline if either the outer artifact digest or inner Master SHA-256 differs. Task 4 must not use `main`, V13, or a mutable working tree as product baseline.
 
 ## Architectural boundary
 
@@ -176,17 +177,7 @@ export async function importLicenseSigningPrivateKey(
 
 Import uses Web Crypto Ed25519 and returns a non-extractable signing key where runtime support permits.
 
-The private key value must never appear in:
-
-- git
-- `wrangler.template.jsonc`
-- `.env.example` or equivalent examples
-- customer Master/PREVIEW ZIPs
-- logs
-- test snapshots
-- CI artifacts
-
-Tests generate ephemeral Ed25519 keypairs at runtime only.
+The private key value must never appear in git, `wrangler.template.jsonc`, environment examples, customer Master/PREVIEW ZIPs, logs, test snapshots, or CI artifacts. Tests generate ephemeral Ed25519 keypairs at runtime only.
 
 ## Signing interface
 
@@ -213,17 +204,7 @@ export async function signLicenseToken(
 ): Promise<string>;
 ```
 
-The signer must:
-
-- construct V1 payload with `v: 1`
-- reject empty license/installation IDs
-- reject unsupported plan/status
-- require finite integer epoch-second timestamps
-- require `issuedAt <= refreshAfter <= expiresAt`
-- canonicalize exactly as Task 3
-- Ed25519-sign canonical UTF-8 bytes
-- return the exact `dormlic1` envelope
-- never log token payload or private-key bytes
+The signer must construct V1 with `v: 1`, reject empty IDs and unsupported plan/status, require finite integer epoch-second timestamps and `issuedAt <= refreshAfter <= expiresAt`, canonicalize exactly as Task 3, Ed25519-sign canonical UTF-8 bytes, return the exact `dormlic1` envelope, and never log token/private-key bytes.
 
 Task 4 does not enforce activation seat counts in the signer.
 
@@ -235,12 +216,7 @@ No HTTP route is added in Task 4.
 
 ## Wrangler template
 
-`control-plane/wrangler.template.jsonc` may define publishable placeholders such as Worker name, compatibility date, and D1 binding name, but it must not contain:
-
-- production D1 IDs
-- `LICENSE_SIGNING_PRIVATE_KEY` value
-- private key material
-- customer secrets
+`control-plane/wrangler.template.jsonc` may define publishable placeholders such as Worker name, compatibility date, and D1 binding name, but it must not contain production D1 IDs, a `LICENSE_SIGNING_PRIVATE_KEY` value, private key material, or customer secrets.
 
 The private signing key is documented only as a secret binding name to be provisioned out-of-band.
 
@@ -267,109 +243,52 @@ Required customer invariants:
 
 Tests must prove RED against pristine Task 3 because `control-plane/` does not exist, then GREEN after implementation.
 
-Verify:
-
-- exact migration filename `0001_initial_license_control_plane.sql`
-- all three tables exist
-- required columns/constraints exist
-- `key_hash` is unique
-- `(license_id, installation_id)` is unique
-- invalid plan fails
-- invalid status fails
-- `max_activations < 1` fails
-- migration contains no raw license/IP/User-Agent columns
+Verify exact migration filename `0001_initial_license_control_plane.sql`, all three tables and required columns/constraints, unique `key_hash`, unique `(license_id, installation_id)`, invalid plan/status rejection, `max_activations < 1` rejection, and absence of raw license/IP/User-Agent columns.
 
 ### License-key hashing
 
-Verify:
-
-- surrounding whitespace is trimmed
-- internal characters/case are preserved
-- SHA-256 result is lowercase hex
-- same normalized key hashes identically
-- distinct keys hash differently
-- empty/whitespace-only input rejects
-- error does not contain raw key
+Verify surrounding whitespace trimming, preservation of internal characters/case, lowercase-hex SHA-256 output, stable normalized hashing, distinct-key separation, rejection of empty input, and errors that do not contain the raw key.
 
 ### Signing
 
-Using runtime-generated ephemeral Ed25519 keypairs:
-
-- valid Basic/Standard/Pro payloads sign
-- token prefix/envelope is exact
-- payload bytes match Task 3 canonical bytes
-- token verifies with the Task 3 verifier using the paired public key
-- payload tamper fails in Task 3 verifier
-- signature from wrong key fails
-- malformed PKCS#8 rejects
-- invalid payload values/timestamp ordering reject
-- signing/private-key errors do not expose key material
+Using runtime-generated ephemeral Ed25519 keypairs, verify valid Basic/Standard/Pro signing, exact envelope, Task 3 canonical-byte compatibility, verification through the Task 3 verifier, tamper/wrong-key rejection, malformed PKCS#8 rejection, invalid payload/timestamp rejection, and errors that do not expose key material.
 
 ### Vendor/customer boundary
 
-All four PREVIEW packages must:
-
-- remain exactly 206 entries
-- contain no `control-plane/`
-- contain no Task 4 vendor tests/source outside explicitly customer-shippable existing files
-- contain no private signing material
-- retain exact migration ceiling `0007_add_license_state.sql`
-- retain byte-identical Task 3 verifier
+All four PREVIEW packages must remain exactly 206 entries, contain no `control-plane/`, contain no Task 4 vendor tests/source outside explicitly customer-shippable existing files, contain no private signing material, retain exact migration ceiling `0007_add_license_state.sql`, and retain byte-identical Task 3 verifier.
 
 ## CI gate
 
-The Task 4 gate must reconstruct from immutable Task 3 artifact `9348923137` and verify its outer SHA-256 before applying Task 4 patches.
+The Task 4 gate must reconstruct from immutable Task 3 artifact `9348923137` and verify both artifact and inner Master SHA-256 before applying Task 4 patches.
 
 Required sequence:
 
 1. checkout Task 4 lineage branch for spec/plan/patches/workflow/evidence only
 2. verify exact Task 4 patch bytes
 3. download Task 3 REVIEW artifact `9348923137`
-4. verify artifact digest `98382e591e5c9c5027026011ccac6d66702ed18c576603060e7860d66313c682`
-5. extract exact Task 3 Master and verify customer migration ceiling `0007`
-6. apply Task 4 tests and prove intended RED
-7. apply implementation and prove focused GREEN
-8. install Control Plane dependencies from lockfile with `npm ci`
-9. run Control Plane schema/hash/signing tests
-10. run customer full regression suite
-11. run TypeScript lint and Cloudflare type checks for affected packages
-12. run customer Pages/VPS builds
-13. generate customer PREVIEW packages
-14. run strict customer boundary/parity audit, exact 206 entries
-15. create/upload V16 Task 4 REVIEW artifact with hashes/evidence
-16. persist `customer_ready=false`
+4. verify outer artifact digest `98382e591e5c9c5027026011ccac6d66702ed18c576603060e7860d66313c682`
+5. extract `dorm-management-system-master-v16-task3-REVIEW-CI.zip` and verify SHA-256 `c4f6eeed671b96e99f54fcd71504e16ad1b268014636f2d5f57eb4289f3e51c7`
+6. verify customer migration ceiling exactly `0007_add_license_state.sql`
+7. apply Task 4 tests and prove intended RED
+8. apply implementation and prove focused GREEN
+9. install Control Plane dependencies from lockfile with `npm ci`
+10. run Control Plane schema/hash/signing tests
+11. run customer full regression suite
+12. run TypeScript lint and Cloudflare type checks for affected packages
+13. run customer Pages/VPS builds
+14. generate customer PREVIEW packages
+15. run strict customer boundary/parity audit, exact 206 entries
+16. create/upload V16 Task 4 REVIEW artifact with hashes/evidence
+17. persist `customer_ready=false`
 
 Task 4 must not deploy a production Control Plane and must not invoke a CUSTOMER-READY release path.
 
 ## Explicit non-goals
 
-Task 4 does not:
-
-- generate customer license keys through an admin UI
-- implement `/v1/licenses/activate`
-- implement `/v1/licenses/refresh`
-- implement `/v1/licenses/deactivate`
-- implement seat allocation or transactional activation-count enforcement
-- implement HTTP rate limiting
-- hash request IP/User-Agent at runtime
-- inject the public key into customer packages
-- implement customer `/api/license/*`
-- persist signed tokens in customer D1
-- implement `resolveEffectivePlan`
-- implement grace/read-only enforcement
-- create License Settings UI
-- deploy to production
+Task 4 does not generate customer license keys through an admin UI, implement `/v1/licenses/activate`, `/refresh`, `/deactivate`, seat-allocation transactions, HTTP rate limiting, request IP/User-Agent hashing runtime, customer public-key injection, customer `/api/license/*`, signed-token persistence, `resolveEffectivePlan`, grace/read-only enforcement, License Settings UI, or production deployment.
 
 ## Exit condition
 
-Task 4 is complete in REVIEW status when:
-
-- Control Plane D1 schema passes fresh local migration tests
-- hash-only license-key contract passes
-- Ed25519 signer emits Task 3-compatible tokens
-- no private signing value is stored or leaked
-- customer packages remain byte-boundary safe with exact 206 entries and migration ceiling `0007`
-- full customer regressions/builds remain green
-- REVIEW artifact/evidence is reproducible and records `customer_ready=false`
+Task 4 is complete in REVIEW status when Control Plane D1 fresh migration tests pass, hash-only license-key contract passes, Ed25519 signer emits Task 3-compatible tokens, no private signing value is stored or leaked, customer packages remain exactly 206 entries with migration ceiling `0007`, full customer regressions/builds remain green, and reproducible REVIEW evidence records `customer_ready=false`.
 
 Task 4 output must not be labeled V16 CUSTOMER-READY.
