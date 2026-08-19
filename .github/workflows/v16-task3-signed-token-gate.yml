@@ -1,0 +1,321 @@
+name: V16 Task 3 Signed Token Gate
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [agent/v16-task3-signed-token-verifier]
+    paths:
+      - 'v16-task3-patches/**'
+      - '.github/workflows/v16-task3-signed-token-gate.yml'
+      - 'docs/superpowers/specs/2026-08-19-v16-task3-signed-license-token-verifier-design.md'
+      - 'docs/superpowers/plans/2026-08-19-v16-task3-signed-license-token-verifier.md'
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: v16-task3-signed-token-gate
+  cancel-in-progress: true
+
+env:
+  BASE_ARTIFACT_ID: '9347482894'
+  BASE_ARTIFACT_SHA256: 'fb613ddafa3ed945dc619e498f66132312e37b1c9ea5005ecd7f3cd1e35692de'
+  BASE_MASTER_SHA256: '47fb6f2d7d67f75b6c19ad73943d4157269d7e059608b7730ff0ed455d235e7b'
+  TEST_PATCH_SHA256: 'e931a7029e7ceeca48b47eeb20ac38a89cf435dfd84a1aff1fdc328daec62475'
+  IMPLEMENTATION_PATCH_SHA256: 'cbb49b87fcb78ce61e0750148cdbfab9e00f83bc89305401c02d0c8a87094eab'
+  MIGRATION_CEILING: '0007_add_license_state.sql'
+  EXPECTED_ENTRY_COUNT: '206'
+
+jobs:
+  task3-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - name: Checkout V16 Task 3 lineage
+        uses: actions/checkout@v4
+        with:
+          ref: agent/v16-task3-signed-token-verifier
+
+      - name: Reconstruct and verify exact Task 3 patch bytes
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat \
+            v16-task3-patches/001-tests.part01 \
+            v16-task3-patches/001-tests.part02 \
+            v16-task3-patches/001-tests.part03 \
+            v16-task3-patches/001-tests.part04 \
+            v16-task3-patches/001-tests.part05 \
+            v16-task3-patches/001-tests.part06 \
+            > v16-task3-patches/001-tests.patch
+          cat \
+            v16-task3-patches/002-implementation.part01 \
+            v16-task3-patches/002-implementation.part02 \
+            v16-task3-patches/002-implementation.part03 \
+            > v16-task3-patches/002-implementation.patch
+          echo "$TEST_PATCH_SHA256  v16-task3-patches/001-tests.patch" | sha256sum --check --strict
+          echo "$IMPLEMENTATION_PATCH_SHA256  v16-task3-patches/002-implementation.patch" | sha256sum --check --strict
+
+      - name: Download immutable Task 2 REVIEW V2 artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 8 --retry-all-errors --retry-delay 3 \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${BASE_ARTIFACT_ID}/zip" \
+            -o v16-task2-license-state-review-v2.zip
+          echo "$BASE_ARTIFACT_SHA256  v16-task2-license-state-review-v2.zip" | sha256sum --check --strict
+          rm -rf candidate && mkdir candidate
+          unzip -q v16-task2-license-state-review-v2.zip -d candidate
+
+      - name: Verify and extract exact Task 2 Master
+        shell: bash
+        run: |
+          set -euo pipefail
+          MASTER_ZIP="$(find candidate -type f -name 'dorm-management-system-master-v16-task2-REVIEW-V2.zip' -print -quit)"
+          test -n "$MASTER_ZIP"
+          echo "$BASE_MASTER_SHA256  $MASTER_ZIP" | sha256sum --check --strict
+          rm -rf work && mkdir work
+          unzip -q "$MASTER_ZIP" -d work
+          latest="$(find work/d1-migrations -maxdepth 1 -type f -printf '%f\n' | sort | tail -n1)"
+          test "$latest" = "$MIGRATION_CEILING"
+          test ! -e work/d1-migrations/0008_add_license_state.sql
+          test ! -e work/src/server/services/licenseToken.service.ts
+          test ! -e work/control-plane
+          node - <<'NODE'
+          const fs = require('node:fs');
+          const expected = { demo: false, basic: true, standard: true, pro: true };
+          for (const [id, requiresLicense] of Object.entries(expected)) {
+            const plan = JSON.parse(fs.readFileSync(`work/package-plans/${id}.json`, 'utf8'));
+            if (plan.requiresLicense !== requiresLicense) throw new Error(`${id} requiresLicense mismatch before Task 3`);
+          }
+          NODE
+
+      - name: Apply Task 3 tests and prove intended RED
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd work
+          patch --dry-run -p1 < ../v16-task3-patches/001-tests.patch
+          patch -p1 < ../v16-task3-patches/001-tests.patch
+          set +e
+          node --experimental-strip-types --test \
+            tests/license-token-canonicalization.test.ts \
+            tests/license-token-verification.test.ts \
+            > ../v16-task3-red-crypto.log 2>&1
+          crypto_status=$?
+          node --test \
+            tests/package-builder.test.mjs \
+            tests/package-audit.test.mjs \
+            tests/package-parity.test.mjs \
+            > ../v16-task3-red-package.log 2>&1
+          package_status=$?
+          set -e
+          cat ../v16-task3-red-crypto.log
+          cat ../v16-task3-red-package.log
+          test "$crypto_status" -ne 0
+          test "$package_status" -ne 0
+          grep -Fq '# fail 2' ../v16-task3-red-crypto.log
+          grep -Fq 'ERR_MODULE_NOT_FOUND' ../v16-task3-red-crypto.log
+          grep -Fq 'licenseToken.service.ts' ../v16-task3-red-crypto.log
+          grep -Fq '# fail 3' ../v16-task3-red-package.log
+          grep -Fq 'customer package audit rejects V16 Task 3 master-only crypto regression tests' ../v16-task3-red-package.log
+          grep -Fq 'builder excludes V16 Task 3 crypto regression tests from customer staging' ../v16-task3-red-package.log
+          grep -Fq 'V16 Task 3 customer package entry count must be exactly 206' ../v16-task3-red-package.log
+
+      - name: Apply Task 3 implementation and prove focused GREEN
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd work
+          patch --dry-run -p1 < ../v16-task3-patches/002-implementation.patch
+          patch -p1 < ../v16-task3-patches/002-implementation.patch
+          latest="$(find d1-migrations -maxdepth 1 -type f -printf '%f\n' | sort | tail -n1)"
+          test "$latest" = "$MIGRATION_CEILING"
+          test -f src/server/services/licenseToken.service.ts
+          test ! -e d1-migrations/0008_add_license_state.sql
+          node --experimental-strip-types --test \
+            tests/license-token-canonicalization.test.ts \
+            tests/license-token-verification.test.ts \
+            | tee ../v16-task3-focused-crypto-green.log
+          node --test \
+            tests/package-builder.test.mjs \
+            tests/package-audit.test.mjs \
+            tests/package-parity.test.mjs \
+            | tee ../v16-task3-focused-package-green.log
+
+      - name: Create immutable Task 3 Master REVIEW candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f dorm-management-system-master-v16-task3-REVIEW-CI.zip
+          (cd work && zip -qr ../dorm-management-system-master-v16-task3-REVIEW-CI.zip .)
+          unzip -t dorm-management-system-master-v16-task3-REVIEW-CI.zip >/dev/null
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: work/package-lock.json
+
+      - name: Fresh dependency install
+        working-directory: work
+        run: npm ci
+
+      - name: Task 3 runtime crypto tests
+        working-directory: work
+        run: npx tsx --test tests/license-token-canonicalization.test.ts tests/license-token-verification.test.ts
+
+      - name: Full regression suite
+        working-directory: work
+        run: npm test
+
+      - name: TypeScript lint
+        working-directory: work
+        run: npm run lint
+
+      - name: Cloudflare types
+        working-directory: work
+        run: npm run check:cloudflare-types:master
+
+      - name: Pages production build
+        working-directory: work
+        run: npm run build:pages
+
+      - name: VPS production build
+        working-directory: work
+        run: npm run build:vps
+
+      - name: Generate PREVIEW packages only
+        working-directory: work
+        run: npm run packages:generate
+
+      - name: Strict Task 3 customer package closure audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf v16-task3-review && mkdir v16-task3-review
+          expected_verifier_sha=''
+          for plan in demo basic standard pro; do
+            src="work/preview-v14/dorm-management-system-${plan}-v14-PREVIEW.zip"
+            dst="v16-task3-review/dorm-management-system-${plan}-v16-TASK3-PREVIEW.zip"
+            test -f "$src"
+            unzip -t "$src" >/dev/null
+            cp "$src" "$dst"
+
+            entry_count="$(unzip -Z1 "$dst" | wc -l | tr -d ' ')"
+            test "$entry_count" = "$EXPECTED_ENTRY_COUNT"
+
+            names="$(unzip -Z1 "$dst")"
+            printf '%s\n' "$names" | grep -Fxq 'src/server/services/licenseToken.service.ts'
+            if printf '%s\n' "$names" | grep -Eq '(^|/)0008[^/]*\.sql$'; then
+              echo "Migration after 0007 leaked in $dst" >&2
+              exit 51
+            fi
+            if printf '%s\n' "$names" | grep -Eq '^(control-plane/|package-plans/|docs/superpowers/|\.env$|\.dev\.vars$)'; then
+              echo "Forbidden root leaked in $dst" >&2
+              exit 52
+            fi
+            if printf '%s\n' "$names" | grep -Eq '^tests/license-token-(canonicalization|verification)\.test\.ts$'; then
+              echo "Task 3 master-only crypto test leaked in $dst" >&2
+              exit 53
+            fi
+
+            tmp="$(mktemp -d)"
+            unzip -q "$dst" -d "$tmp"
+            latest="$(find "$tmp/d1-migrations" -maxdepth 1 -type f -printf '%f\n' | sort | tail -n1)"
+            test "$latest" = "$MIGRATION_CEILING"
+            verifier_sha="$(sha256sum "$tmp/src/server/services/licenseToken.service.ts" | awk '{print $1}')"
+            if [ -z "$expected_verifier_sha" ]; then
+              expected_verifier_sha="$verifier_sha"
+            else
+              test "$verifier_sha" = "$expected_verifier_sha"
+            fi
+
+            if grep -RIl --exclude='*.zip' 'LICENSE_SIGNING_PRIVATE_KEY' "$tmp" | grep -q .; then
+              echo "Signing private secret identifier leaked in $dst" >&2
+              rm -rf "$tmp"
+              exit 54
+            fi
+            if grep -RIl --exclude='*.zip' -- '-----BEGIN PRIVATE KEY-----' "$tmp" | grep -q .; then
+              echo "PKCS8 private key marker leaked in $dst" >&2
+              rm -rf "$tmp"
+              exit 55
+            fi
+            if grep -RIl --exclude='*.zip' -- '-----BEGIN ED25519 PRIVATE KEY-----' "$tmp" | grep -q .; then
+              echo "Ed25519 private key marker leaked in $dst" >&2
+              rm -rf "$tmp"
+              exit 56
+            fi
+            rm -rf "$tmp"
+          done
+
+          test "$(find work/d1-migrations -maxdepth 1 -type f -printf '%f\n' | sort | tail -n1)" = "$MIGRATION_CEILING"
+          test ! -e work/d1-migrations/0008_add_license_state.sql
+          node - <<'NODE'
+          const fs = require('node:fs');
+          const expected = { demo: false, basic: true, standard: true, pro: true };
+          for (const [id, requiresLicense] of Object.entries(expected)) {
+            const plan = JSON.parse(fs.readFileSync(`work/package-plans/${id}.json`, 'utf8'));
+            if (plan.requiresLicense !== requiresLicense) throw new Error(`${id} requiresLicense drift after Task 3`);
+          }
+          NODE
+
+          sha256sum dorm-management-system-master-v16-task3-REVIEW-CI.zip v16-task3-review/*.zip | tee V16_TASK3_REVIEW_SHA256.txt
+          cat > V16_TASK3_BUILD_EVIDENCE.txt <<EOF
+          base_artifact_id=${BASE_ARTIFACT_ID}
+          base_artifact_sha256=${BASE_ARTIFACT_SHA256}
+          base_master_sha256=${BASE_MASTER_SHA256}
+          source_sha=${GITHUB_SHA}
+          run_id=${GITHUB_RUN_ID}
+          migration_ceiling=${MIGRATION_CEILING}
+          expected_customer_entry_count=${EXPECTED_ENTRY_COUNT}
+          customer_ready=false
+          release_status=REVIEW
+          EOF
+
+      - name: Upload V16 Task 3 REVIEW artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: v16-task3-signed-token-review
+          path: |
+            dorm-management-system-master-v16-task3-REVIEW-CI.zip
+            v16-task3-review/**
+            V16_TASK3_REVIEW_SHA256.txt
+            V16_TASK3_BUILD_EVIDENCE.txt
+            v16-task3-red-crypto.log
+            v16-task3-red-package.log
+            v16-task3-focused-crypto-green.log
+            v16-task3-focused-package-green.log
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Persist Task 3 gate evidence
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p v16-task3-evidence
+          cat > v16-task3-evidence/task3-gate-latest.txt <<EOF
+          run_id=${GITHUB_RUN_ID}
+          run_attempt=${GITHUB_RUN_ATTEMPT}
+          source_sha=${GITHUB_SHA}
+          job_status=${JOB_STATUS}
+          base_artifact_id=${BASE_ARTIFACT_ID}
+          base_artifact_sha256=${BASE_ARTIFACT_SHA256}
+          base_master_sha256=${BASE_MASTER_SHA256}
+          migration_ceiling=${MIGRATION_CEILING}
+          expected_customer_entry_count=${EXPECTED_ENTRY_COUNT}
+          customer_ready=false
+          EOF
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add v16-task3-evidence/task3-gate-latest.txt
+          git commit -m 'ci(v16-task3): record signed token gate evidence' || exit 0
+          git push origin HEAD:agent/v16-task3-signed-token-verifier
