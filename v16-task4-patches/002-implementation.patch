@@ -249,3 +249,29 @@ index 0000000..4cbeb7e
 +    }
 +  ]
 +}
+diff --git a/tests/package-builder.test.mjs b/tests/package-builder.test.mjs
+index 8b54c85..8a363d4 100644
+--- a/tests/package-builder.test.mjs
++++ b/tests/package-builder.test.mjs
+@@ -63,16 +63,19 @@ test('license requirement metadata is a strict boolean package contract', async
+ test('builder excludes the vendor-only control-plane root from customer staging', async () => {
+   const { buildPackageTree, loadPlans } = await import('../scripts/build-packages.mjs');
+   const vendorRoot = new URL('../control-plane/', import.meta.url);
++  const marker = new URL('vendor-only-marker.txt', vendorRoot);
++  const vendorRootExisted = existsSync(vendorRoot);
+   const output = await mkdtemp(join(tmpdir(), 'dorm-v16-control-plane-'));
+   try {
+     await mkdir(vendorRoot, { recursive: true });
+-    await writeFile(new URL('vendor-only-marker.txt', vendorRoot), 'vendor only');
++    await writeFile(marker, 'vendor only');
+     const plans = await loadPlans();
+     const destination = join(output, 'demo');
+     await buildPackageTree(plans.demo, { destination, runPortableTests: false, customerReady: false });
+     assert.equal(existsSync(join(destination, 'control-plane', 'vendor-only-marker.txt')), false);
+   } finally {
+-    await rm(vendorRoot, { recursive: true, force: true });
++    await rm(marker, { force: true });
++    if (!vendorRootExisted) await rm(vendorRoot, { recursive: true, force: true });
+     await rm(output, { recursive: true, force: true });
+   }
+ });
