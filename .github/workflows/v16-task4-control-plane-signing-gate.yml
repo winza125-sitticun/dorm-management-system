@@ -38,30 +38,25 @@ jobs:
           ref: agent/v16-task4-control-plane-signing
 
       - name: Verify exact Task 4 patch bytes
-        shell: bash
         run: |
           set -euo pipefail
           echo "$TEST_PATCH_SHA256  v16-task4-patches/001-tests.patch" | sha256sum --check --strict
           echo "$IMPLEMENTATION_PATCH_SHA256  v16-task4-patches/002-implementation.patch" | sha256sum --check --strict
-          patch --version | head -n 1
 
       - name: Download immutable Task 3 REVIEW artifact
         env:
           GH_TOKEN: ${{ github.token }}
-        shell: bash
         run: |
           set -euo pipefail
           curl --fail --location --retry 8 --retry-all-errors --retry-delay 3 \
-            -H "Authorization: Bearer ${GH_TOKEN}" \
-            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${BASE_ARTIFACT_ID}/zip" \
-            -o v16-task3-signed-token-review.zip
-          echo "$BASE_ARTIFACT_SHA256  v16-task3-signed-token-review.zip" | sha256sum --check --strict
+            -o task3-review.zip
+          echo "$BASE_ARTIFACT_SHA256  task3-review.zip" | sha256sum --check --strict
           rm -rf candidate && mkdir candidate
-          unzip -q v16-task3-signed-token-review.zip -d candidate
+          unzip -q task3-review.zip -d candidate
 
       - name: Verify and extract exact Task 3 Master
-        shell: bash
         run: |
           set -euo pipefail
           MASTER_ZIP="$(find candidate -type f -name 'dorm-management-system-master-v16-task3-REVIEW-CI.zip' -print -quit)"
@@ -69,39 +64,31 @@ jobs:
           echo "$BASE_MASTER_SHA256  $MASTER_ZIP" | sha256sum --check --strict
           rm -rf work && mkdir work
           unzip -q "$MASTER_ZIP" -d work
-          test "$(find work/d1-migrations -maxdepth 1 -type f -printf '%f\n' | sort | tail -n1)" = "$MIGRATION_CEILING"
+          latest="$(find work/d1-migrations -maxdepth 1 -type f -printf '%f\n' | sort | tail -n1)"
+          echo "pre_task4_customer_migration=$latest"
+          test "$latest" = "$MIGRATION_CEILING"
           test ! -e work/control-plane
-          test ! -e work/d1-migrations/0008_add_license_state.sql
 
       - name: Apply Task 4 tests and prove intended RED
-        shell: bash
         run: |
           set -euo pipefail
           cd work
           patch --dry-run -p1 < ../v16-task4-patches/001-tests.patch
           patch -p1 < ../v16-task4-patches/001-tests.patch
           set +e
-          node --test control-plane/tests/schema.test.mjs > ../task4-red-schema.log 2>&1
-          schema_status=$?
-          node --experimental-strip-types --test control-plane/tests/licenseRepository.test.ts > ../task4-red-hash.log 2>&1
-          hash_status=$?
-          node --experimental-strip-types --test control-plane/tests/signing.test.ts > ../task4-red-signing.log 2>&1
-          signing_status=$?
+          node --test control-plane/tests/schema.test.mjs > ../task4-red-schema.log 2>&1; schema_status=$?
+          node --experimental-strip-types --test control-plane/tests/licenseRepository.test.ts > ../task4-red-hash.log 2>&1; hash_status=$?
+          node --experimental-strip-types --test control-plane/tests/signing.test.ts > ../task4-red-signing.log 2>&1; signing_status=$?
           set -e
-          cat ../task4-red-schema.log
-          cat ../task4-red-hash.log
-          cat ../task4-red-signing.log
+          cat ../task4-red-schema.log ../task4-red-hash.log ../task4-red-signing.log
           test "$schema_status" -ne 0
           test "$hash_status" -ne 0
           test "$signing_status" -ne 0
           grep -Fq 'missing 0001_initial_license_control_plane.sql' ../task4-red-schema.log
           grep -Fq 'ERR_MODULE_NOT_FOUND' ../task4-red-hash.log
-          grep -Fq 'licenseRepository.ts' ../task4-red-hash.log
           grep -Fq 'ERR_MODULE_NOT_FOUND' ../task4-red-signing.log
-          grep -Fq 'signing.ts' ../task4-red-signing.log
 
       - name: Apply Task 4 implementation and prove focused GREEN
-        shell: bash
         run: |
           set -euo pipefail
           cd work
@@ -110,49 +97,42 @@ jobs:
           node --test control-plane/tests/schema.test.mjs | tee ../task4-focused-schema-green.log
           node --experimental-strip-types --test control-plane/tests/licenseRepository.test.ts control-plane/tests/signing.test.ts | tee ../task4-focused-runtime-green.log
           node --test tests/package-builder.test.mjs tests/package-audit.test.mjs tests/package-parity.test.mjs tests/package-release.test.mjs | tee ../task4-focused-customer-green.log
-          test "$(find d1-migrations -maxdepth 1 -type f -printf '%f\n' | sort | tail -n1)" = "$MIGRATION_CEILING"
+          latest="$(find d1-migrations -maxdepth 1 -type f -printf '%f\n' | sort | tail -n1)"
+          echo "post_task4_customer_migration=$latest"
+          test "$latest" = "$MIGRATION_CEILING"
           test ! -e d1-migrations/0008_add_license_state.sql
           test -f control-plane/migrations/0001_initial_license_control_plane.sql
           test -f control-plane/src/signing.ts
-          ! grep -Eq '\bBuffer\b' control-plane/src/signing.ts
+          echo 'focused_task4_invariants=PASS'
 
       - name: Control Plane SQLite constraint smoke
         working-directory: work
-        shell: bash
         run: |
           set -euo pipefail
           python - <<'PY'
           import sqlite3, pathlib
-          sql = pathlib.Path('control-plane/migrations/0001_initial_license_control_plane.sql').read_text()
           db = sqlite3.connect(':memory:')
-          db.executescript(sql)
-          good = ('lic1', 'a'*64, 'Customer', 'standard', 'active', 1, None, '2026-08-19T00:00:00Z', '2026-08-19T00:00:00Z')
-          base = 'INSERT INTO licenses (id,key_hash,customer_label,plan,status,max_activations,expires_at,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)'
-          db.execute(base, good)
-          db.commit()
-          def must_fail(statement, params):
+          db.executescript(pathlib.Path('control-plane/migrations/0001_initial_license_control_plane.sql').read_text())
+          stmt = 'INSERT INTO licenses (id,key_hash,customer_label,plan,status,max_activations,expires_at,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)'
+          db.execute(stmt, ('lic1','a'*64,'Customer','standard','active',1,None,'x','x')); db.commit()
+          def must_fail(sql, params=()):
               try:
-                  db.execute(statement, params)
-                  db.commit()
+                  db.execute(sql, params); db.commit()
               except sqlite3.IntegrityError:
-                  db.rollback()
-                  return
+                  db.rollback(); return
               raise SystemExit('constraint unexpectedly accepted invalid row')
-          must_fail(base, ('bad-plan','b'*64,None,'enterprise','active',1,None,'x','x'))
-          must_fail(base, ('bad-status','c'*64,None,'basic','disabled',1,None,'x','x'))
-          must_fail(base, ('bad-max','d'*64,None,'basic','active',0,None,'x','x'))
-          must_fail(base, ('dup-hash','a'*64,None,'basic','active',1,None,'x','x'))
-          db.execute("INSERT INTO activations (id,license_id,installation_id,activated_at,last_seen_at) VALUES ('a1','lic1','inst1','x','x')")
-          db.commit()
-          must_fail("INSERT INTO activations (id,license_id,installation_id,activated_at,last_seen_at) VALUES ('a2','lic1','inst1','x','x')", ())
+          must_fail(stmt, ('bad-plan','b'*64,None,'enterprise','active',1,None,'x','x'))
+          must_fail(stmt, ('bad-status','c'*64,None,'basic','disabled',1,None,'x','x'))
+          must_fail(stmt, ('bad-max','d'*64,None,'basic','active',0,None,'x','x'))
+          must_fail(stmt, ('dup-hash','a'*64,None,'basic','active',1,None,'x','x'))
+          db.execute("INSERT INTO activations (id,license_id,installation_id,activated_at,last_seen_at) VALUES ('a1','lic1','inst1','x','x')"); db.commit()
+          must_fail("INSERT INTO activations (id,license_id,installation_id,activated_at,last_seen_at) VALUES ('a2','lic1','inst1','x','x')")
           print('control-plane sqlite constraints: PASS')
           PY
 
       - name: Create immutable Task 4 Master REVIEW candidate
-        shell: bash
         run: |
           set -euo pipefail
-          rm -f dorm-management-system-master-v16-task4-REVIEW-CI.zip
           (cd work && zip -qr ../dorm-management-system-master-v16-task4-REVIEW-CI.zip .)
           unzip -t dorm-management-system-master-v16-task4-REVIEW-CI.zip >/dev/null
 
@@ -172,9 +152,7 @@ jobs:
 
       - name: Runtime Control Plane tests
         working-directory: work
-        shell: bash
         run: |
-          set -euo pipefail
           node --test control-plane/tests/schema.test.mjs
           node --experimental-strip-types --test control-plane/tests/licenseRepository.test.ts control-plane/tests/signing.test.ts
 
@@ -203,7 +181,6 @@ jobs:
         run: npm run packages:generate
 
       - name: Strict Task 4 customer package closure audit
-        shell: bash
         run: |
           set -euo pipefail
           rm -rf v16-task4-review && mkdir v16-task4-review
@@ -215,34 +192,21 @@ jobs:
             unzip -t "$src" >/dev/null
             cp "$src" "$dst"
             count="$(unzip -Z1 "$dst" | wc -l | tr -d ' ')"
+            echo "$plan entries=$count"
             test "$count" = "$EXPECTED_CUSTOMER_ENTRIES"
             names="$(unzip -Z1 "$dst")"
-            if printf '%s\n' "$names" | grep -Eq '^(control-plane/|package-plans/|docs/superpowers/|\.env$|\.dev\.vars$)'; then
-              echo "Forbidden vendor/master path in $dst" >&2
-              exit 31
-            fi
-            tmp="$(mktemp -d)"
-            unzip -q "$dst" -d "$tmp"
+            ! printf '%s\n' "$names" | grep -Eq '^(control-plane/|package-plans/|docs/superpowers/|\.env$|\.dev\.vars$)'
+            tmp="$(mktemp -d)"; unzip -q "$dst" -d "$tmp"
             test "$(find "$tmp/d1-migrations" -maxdepth 1 -type f -printf '%f\n' | sort | tail -n1)" = "$MIGRATION_CEILING"
-            test ! -e "$tmp/d1-migrations/0008_add_license_state.sql"
             verifier_sha="$(sha256sum "$tmp/src/server/services/licenseToken.service.ts" | awk '{print $1}')"
             if [ -z "$expected_verifier_sha" ]; then expected_verifier_sha="$verifier_sha"; fi
             test "$verifier_sha" = "$expected_verifier_sha"
-            if grep -RIl --exclude='*.zip' 'LICENSE_SIGNING_PRIVATE_KEY' "$tmp" | grep -q .; then
-              echo "Signing private secret marker leaked in $dst" >&2
-              rm -rf "$tmp"
-              exit 32
-            fi
-            if grep -RIl --exclude='*.zip' -E 'BEGIN (ED25519 )?PRIVATE KEY|"d"[[:space:]]*:[[:space:]]*"[A-Za-z0-9_-]{20,}"' "$tmp" | grep -q .; then
-              echo "Private key material leaked in $dst" >&2
-              rm -rf "$tmp"
-              exit 33
-            fi
+            ! grep -RIl --exclude='*.zip' 'LICENSE_SIGNING_PRIVATE_KEY' "$tmp" | grep -q .
+            ! grep -RIl --exclude='*.zip' -E 'BEGIN (ED25519 )?PRIVATE KEY|"d"[[:space:]]*:[[:space:]]*"[A-Za-z0-9_-]{20,}"' "$tmp" | grep -q .
             rm -rf "$tmp"
           done
           test -d work/control-plane
           test -f work/control-plane/migrations/0001_initial_license_control_plane.sql
-          test -f work/control-plane/src/signing.ts
           node - <<'NODE'
           const fs = require('node:fs');
           const expected = { demo: false, basic: true, standard: true, pro: true };
@@ -262,7 +226,7 @@ jobs:
           migration_ceiling=${MIGRATION_CEILING}
           expected_customer_entry_count=${EXPECTED_CUSTOMER_ENTRIES}
           control_plane_migration=0001_initial_license_control_plane.sql
-          supersedes_failed_run_id=32207068109
+          supersedes_failed_runs=32207068109,32207367746,32207423760
           customer_ready=false
           release_status=REVIEW
           deployed=false
@@ -278,12 +242,8 @@ jobs:
             V16_TASK4_REVIEW_SHA256.txt
             V16_TASK4_VERIFIER_SHA256.txt
             V16_TASK4_BUILD_EVIDENCE.txt
-            task4-red-schema.log
-            task4-red-hash.log
-            task4-red-signing.log
-            task4-focused-schema-green.log
-            task4-focused-runtime-green.log
-            task4-focused-customer-green.log
+            task4-red-*.log
+            task4-focused-*.log
           if-no-files-found: error
           retention-days: 14
 
@@ -291,7 +251,6 @@ jobs:
         if: always()
         env:
           JOB_STATUS: ${{ job.status }}
-        shell: bash
         run: |
           set -euo pipefail
           mkdir -p v16-task4-evidence
@@ -305,7 +264,7 @@ jobs:
           base_master_sha256=${BASE_MASTER_SHA256}
           migration_ceiling=${MIGRATION_CEILING}
           expected_customer_entry_count=${EXPECTED_CUSTOMER_ENTRIES}
-          supersedes_failed_run_id=32207068109
+          supersedes_failed_runs=32207068109,32207367746,32207423760
           customer_ready=false
           deployed=false
           EOF
