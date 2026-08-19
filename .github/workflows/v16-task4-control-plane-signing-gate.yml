@@ -1,0 +1,275 @@
+name: V16 Task 4 Control Plane Signing Gate
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [agent/v16-task4-control-plane-signing]
+    paths:
+      - 'v16-task4-patches/**'
+      - '.github/workflows/v16-task4-control-plane-signing-gate.yml'
+      - 'docs/superpowers/specs/2026-08-19-v16-task4-control-plane-signing-design.md'
+      - 'docs/superpowers/plans/2026-08-19-v16-task4-control-plane-signing.md'
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: v16-task4-control-plane-signing-gate
+  cancel-in-progress: true
+
+env:
+  BASE_ARTIFACT_ID: '9348923137'
+  BASE_ARTIFACT_SHA256: '98382e591e5c9c5027026011ccac6d66702ed18c576603060e7860d66313c682'
+  BASE_MASTER_SHA256: 'c4f6eeed671b96e99f54fcd71504e16ad1b268014636f2d5f57eb4289f3e51c7'
+  TEST_PATCH_SHA256: 'cba638b84b0ba3cd3b6a2b24068ac3e7010f12a18c7327b9262ea4c49cae2e9d'
+  IMPLEMENTATION_PATCH_SHA256: '7a62207aaaf44cd20af84ba88be3dd08e085331e15b518ff3be6c9c1cedc130b'
+  MIGRATION_CEILING: '0007_add_license_state.sql'
+  EXPECTED_CUSTOMER_ENTRIES: '206'
+
+jobs:
+  task4-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - name: Checkout V16 Task 4 lineage
+        uses: actions/checkout@v4
+        with:
+          ref: agent/v16-task4-control-plane-signing
+
+      - name: Verify exact Task 4 patch bytes
+        run: |
+          set -euo pipefail
+          echo "$TEST_PATCH_SHA256  v16-task4-patches/001-tests.patch" | sha256sum --check --strict
+          echo "$IMPLEMENTATION_PATCH_SHA256  v16-task4-patches/002-implementation.patch" | sha256sum --check --strict
+
+      - name: Download immutable Task 3 REVIEW artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 8 --retry-all-errors --retry-delay 3 \
+            -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${BASE_ARTIFACT_ID}/zip" \
+            -o task3-review.zip
+          echo "$BASE_ARTIFACT_SHA256  task3-review.zip" | sha256sum --check --strict
+          rm -rf candidate && mkdir candidate
+          unzip -q task3-review.zip -d candidate
+
+      - name: Verify and extract exact Task 3 Master
+        run: |
+          set -euo pipefail
+          MASTER_ZIP="$(find candidate -type f -name 'dorm-management-system-master-v16-task3-REVIEW-CI.zip' -print -quit)"
+          test -n "$MASTER_ZIP"
+          echo "$BASE_MASTER_SHA256  $MASTER_ZIP" | sha256sum --check --strict
+          rm -rf work && mkdir work
+          unzip -q "$MASTER_ZIP" -d work
+          latest="$(find work/d1-migrations -maxdepth 1 -type f -printf '%f\n' | sort | tail -n1)"
+          echo "pre_task4_customer_migration=$latest"
+          test "$latest" = "$MIGRATION_CEILING"
+          test ! -e work/control-plane
+
+      - name: Apply Task 4 tests and prove intended RED
+        run: |
+          set -euo pipefail
+          cd work
+          patch --dry-run -p1 < ../v16-task4-patches/001-tests.patch
+          patch -p1 < ../v16-task4-patches/001-tests.patch
+          set +e
+          node --test control-plane/tests/schema.test.mjs > ../task4-red-schema.log 2>&1; schema_status=$?
+          node --experimental-strip-types --test control-plane/tests/licenseRepository.test.ts > ../task4-red-hash.log 2>&1; hash_status=$?
+          node --experimental-strip-types --test control-plane/tests/signing.test.ts > ../task4-red-signing.log 2>&1; signing_status=$?
+          set -e
+          cat ../task4-red-schema.log ../task4-red-hash.log ../task4-red-signing.log
+          test "$schema_status" -ne 0
+          test "$hash_status" -ne 0
+          test "$signing_status" -ne 0
+          grep -Fq 'missing 0001_initial_license_control_plane.sql' ../task4-red-schema.log
+          grep -Fq 'ERR_MODULE_NOT_FOUND' ../task4-red-hash.log
+          grep -Fq 'ERR_MODULE_NOT_FOUND' ../task4-red-signing.log
+
+      - name: Apply Task 4 implementation and prove focused GREEN
+        run: |
+          set -euo pipefail
+          cd work
+          patch --dry-run -p1 < ../v16-task4-patches/002-implementation.patch
+          patch -p1 < ../v16-task4-patches/002-implementation.patch
+          node --test control-plane/tests/schema.test.mjs | tee ../task4-focused-schema-green.log
+          node --experimental-strip-types --test control-plane/tests/licenseRepository.test.ts control-plane/tests/signing.test.ts | tee ../task4-focused-runtime-green.log
+          node --test tests/package-builder.test.mjs tests/package-audit.test.mjs tests/package-parity.test.mjs tests/package-release.test.mjs | tee ../task4-focused-customer-green.log
+          latest="$(find d1-migrations -maxdepth 1 -type f -printf '%f\n' | sort | tail -n1)"
+          echo "post_task4_customer_migration=$latest"
+          test "$latest" = "$MIGRATION_CEILING"
+          test ! -e d1-migrations/0008_add_license_state.sql
+          test -f control-plane/migrations/0001_initial_license_control_plane.sql
+          test -f control-plane/src/signing.ts
+          echo 'focused_task4_invariants=PASS'
+
+      - name: Control Plane SQLite constraint smoke
+        working-directory: work
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import sqlite3, pathlib
+          db = sqlite3.connect(':memory:')
+          db.executescript(pathlib.Path('control-plane/migrations/0001_initial_license_control_plane.sql').read_text())
+          stmt = 'INSERT INTO licenses (id,key_hash,customer_label,plan,status,max_activations,expires_at,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)'
+          db.execute(stmt, ('lic1','a'*64,'Customer','standard','active',1,None,'x','x')); db.commit()
+          def must_fail(sql, params=()):
+              try:
+                  db.execute(sql, params); db.commit()
+              except sqlite3.IntegrityError:
+                  db.rollback(); return
+              raise SystemExit('constraint unexpectedly accepted invalid row')
+          must_fail(stmt, ('bad-plan','b'*64,None,'enterprise','active',1,None,'x','x'))
+          must_fail(stmt, ('bad-status','c'*64,None,'basic','disabled',1,None,'x','x'))
+          must_fail(stmt, ('bad-max','d'*64,None,'basic','active',0,None,'x','x'))
+          must_fail(stmt, ('dup-hash','a'*64,None,'basic','active',1,None,'x','x'))
+          db.execute("INSERT INTO activations (id,license_id,installation_id,activated_at,last_seen_at) VALUES ('a1','lic1','inst1','x','x')"); db.commit()
+          must_fail("INSERT INTO activations (id,license_id,installation_id,activated_at,last_seen_at) VALUES ('a2','lic1','inst1','x','x')")
+          print('control-plane sqlite constraints: PASS')
+          PY
+
+      - name: Create immutable Task 4 Master REVIEW candidate
+        run: |
+          set -euo pipefail
+          (cd work && zip -qr ../dorm-management-system-master-v16-task4-REVIEW-CI.zip .)
+          unzip -t dorm-management-system-master-v16-task4-REVIEW-CI.zip >/dev/null
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: work/package-lock.json
+
+      - name: Fresh customer dependency install
+        working-directory: work
+        run: npm ci
+
+      - name: Fresh Control Plane dependency install
+        working-directory: work/control-plane
+        run: npm ci
+
+      - name: Runtime Control Plane tests
+        working-directory: work
+        run: |
+          node --test control-plane/tests/schema.test.mjs
+          node --experimental-strip-types --test control-plane/tests/licenseRepository.test.ts control-plane/tests/signing.test.ts
+
+      - name: Full customer regression suite
+        working-directory: work
+        run: npm test
+
+      - name: TypeScript lint
+        working-directory: work
+        run: npm run lint
+
+      - name: Cloudflare types
+        working-directory: work
+        run: npm run check:cloudflare-types:master
+
+      - name: Pages production build
+        working-directory: work
+        run: npm run build:pages
+
+      - name: VPS production build
+        working-directory: work
+        run: npm run build:vps
+
+      - name: Generate PREVIEW packages only
+        working-directory: work
+        run: npm run packages:generate
+
+      - name: Strict Task 4 customer package closure audit
+        run: |
+          set -euo pipefail
+          rm -rf v16-task4-review && mkdir v16-task4-review
+          expected_verifier_sha=''
+          for plan in demo basic standard pro; do
+            src="work/preview-v14/dorm-management-system-${plan}-v14-PREVIEW.zip"
+            dst="v16-task4-review/dorm-management-system-${plan}-v16-TASK4-PREVIEW.zip"
+            test -f "$src"
+            unzip -t "$src" >/dev/null
+            cp "$src" "$dst"
+            count="$(unzip -Z1 "$dst" | wc -l | tr -d ' ')"
+            echo "$plan entries=$count"
+            test "$count" = "$EXPECTED_CUSTOMER_ENTRIES"
+            names="$(unzip -Z1 "$dst")"
+            ! printf '%s\n' "$names" | grep -Eq '^(control-plane/|package-plans/|docs/superpowers/|\.env$|\.dev\.vars$)'
+            tmp="$(mktemp -d)"; unzip -q "$dst" -d "$tmp"
+            test "$(find "$tmp/d1-migrations" -maxdepth 1 -type f -printf '%f\n' | sort | tail -n1)" = "$MIGRATION_CEILING"
+            verifier_sha="$(sha256sum "$tmp/src/server/services/licenseToken.service.ts" | awk '{print $1}')"
+            if [ -z "$expected_verifier_sha" ]; then expected_verifier_sha="$verifier_sha"; fi
+            test "$verifier_sha" = "$expected_verifier_sha"
+            ! grep -RIl --exclude='*.zip' 'LICENSE_SIGNING_PRIVATE_KEY' "$tmp" | grep -q .
+            ! grep -RIl --exclude='*.zip' -E 'BEGIN (ED25519 )?PRIVATE KEY|"d"[[:space:]]*:[[:space:]]*"[A-Za-z0-9_-]{20,}"' "$tmp" | grep -q .
+            rm -rf "$tmp"
+          done
+          test -d work/control-plane
+          test -f work/control-plane/migrations/0001_initial_license_control_plane.sql
+          node - <<'NODE'
+          const fs = require('node:fs');
+          const expected = { demo: false, basic: true, standard: true, pro: true };
+          for (const [id, requiresLicense] of Object.entries(expected)) {
+            const plan = JSON.parse(fs.readFileSync(`work/package-plans/${id}.json`, 'utf8'));
+            if (plan.requiresLicense !== requiresLicense) throw new Error(`${id} requiresLicense mismatch`);
+          }
+          NODE
+          echo "verifier_sha256=${expected_verifier_sha}" | tee V16_TASK4_VERIFIER_SHA256.txt
+          sha256sum dorm-management-system-master-v16-task4-REVIEW-CI.zip v16-task4-review/*.zip | tee V16_TASK4_REVIEW_SHA256.txt
+          cat > V16_TASK4_BUILD_EVIDENCE.txt <<EOF
+          base_artifact_id=${BASE_ARTIFACT_ID}
+          base_artifact_sha256=${BASE_ARTIFACT_SHA256}
+          base_master_sha256=${BASE_MASTER_SHA256}
+          source_sha=${GITHUB_SHA}
+          run_id=${GITHUB_RUN_ID}
+          migration_ceiling=${MIGRATION_CEILING}
+          expected_customer_entry_count=${EXPECTED_CUSTOMER_ENTRIES}
+          control_plane_migration=0001_initial_license_control_plane.sql
+          supersedes_failed_runs=32207068109,32207367746,32207423760,32207525791
+          customer_ready=false
+          release_status=REVIEW
+          deployed=false
+          EOF
+
+      - name: Upload V16 Task 4 REVIEW artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: v16-task4-control-plane-signing-review
+          path: |
+            dorm-management-system-master-v16-task4-REVIEW-CI.zip
+            v16-task4-review/**
+            V16_TASK4_REVIEW_SHA256.txt
+            V16_TASK4_VERIFIER_SHA256.txt
+            V16_TASK4_BUILD_EVIDENCE.txt
+            task4-red-*.log
+            task4-focused-*.log
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Persist Task 4 gate evidence
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          set -euo pipefail
+          mkdir -p v16-task4-evidence
+          cat > v16-task4-evidence/task4-gate-latest.txt <<EOF
+          run_id=${GITHUB_RUN_ID}
+          run_attempt=${GITHUB_RUN_ATTEMPT}
+          source_sha=${GITHUB_SHA}
+          job_status=${JOB_STATUS}
+          base_artifact_id=${BASE_ARTIFACT_ID}
+          base_artifact_sha256=${BASE_ARTIFACT_SHA256}
+          base_master_sha256=${BASE_MASTER_SHA256}
+          migration_ceiling=${MIGRATION_CEILING}
+          expected_customer_entry_count=${EXPECTED_CUSTOMER_ENTRIES}
+          supersedes_failed_runs=32207068109,32207367746,32207423760,32207525791
+          customer_ready=false
+          deployed=false
+          EOF
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add v16-task4-evidence/task4-gate-latest.txt
+          git commit -m 'ci(v16-task4): record control plane signing gate evidence' || exit 0
+          git push origin HEAD:agent/v16-task4-control-plane-signing
