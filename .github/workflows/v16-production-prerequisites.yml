@@ -1,0 +1,88 @@
+name: V16 Production Prerequisites
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [agent/v16-production-gate]
+    paths:
+      - '.github/workflows/v16-production-prerequisites.yml'
+
+permissions:
+  contents: write
+
+env:
+  CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+  CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+  LICENSE_SIGNING_PRIVATE_KEY: ${{ secrets.V16_LICENSE_SIGNING_PRIVATE_KEY }}
+
+jobs:
+  prerequisites:
+    runs-on: ubuntu-latest
+    environment: "fulfilling-communication / production"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/v16-production-gate
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Check required production secrets without exposing them
+        id: check
+        shell: bash
+        run: |
+          set -euo pipefail
+          missing=()
+          [ -n "${CLOUDFLARE_API_TOKEN:-}" ] || missing+=(CLOUDFLARE_API_TOKEN)
+          [ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ] || missing+=(CLOUDFLARE_ACCOUNT_ID)
+          [ -n "${LICENSE_SIGNING_PRIVATE_KEY:-}" ] || missing+=(V16_LICENSE_SIGNING_PRIVATE_KEY)
+          if [ "${#missing[@]}" -gt 0 ]; then
+            printf 'missing=%s\n' "$(IFS=,; echo "${missing[*]}")" >> "$GITHUB_OUTPUT"
+            exit 2
+          fi
+          echo 'missing=' >> "$GITHUB_OUTPUT"
+
+      - name: Validate Ed25519 private key and derive public key fingerprint
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          node - <<'NODE'
+          const fs = require('node:fs');
+          const cryptoNode = require('node:crypto');
+          const input = process.env.LICENSE_SIGNING_PRIVATE_KEY || '';
+          const key = await crypto.subtle.importKey('pkcs8', Buffer.from(input, 'base64'), { name: 'Ed25519' }, true, ['sign']);
+          const jwk = await crypto.subtle.exportKey('jwk', key);
+          if (!jwk.x) throw new Error('Ed25519 public component missing');
+          const raw = Buffer.from(jwk.x.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - jwk.x.length % 4) % 4), 'base64');
+          const publicKeyBase64 = raw.toString('base64');
+          const fingerprint = cryptoNode.createHash('sha256').update(raw).digest('hex');
+          fs.writeFileSync('v16-production-public-key.txt', publicKeyBase64 + '\n');
+          fs.writeFileSync('v16-production-public-key-fingerprint.txt', fingerprint + '\n');
+          NODE
+
+      - name: Persist prerequisite evidence
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+          MISSING: ${{ steps.check.outputs.missing }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p v16-production-evidence
+          fp='unavailable'
+          [ -f v16-production-public-key-fingerprint.txt ] && fp="$(cat v16-production-public-key-fingerprint.txt)"
+          cat > v16-production-evidence/prerequisites-latest.txt <<EOF
+          run_id=${GITHUB_RUN_ID}
+          run_attempt=${GITHUB_RUN_ATTEMPT}
+          source_sha=${GITHUB_SHA}
+          job_status=${JOB_STATUS}
+          missing=${MISSING:-}
+          public_key_sha256=${fp}
+          EOF
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add v16-production-evidence/prerequisites-latest.txt
+          git commit -m 'ci(v16): record production prerequisites' || exit 0
+          git push origin HEAD:agent/v16-production-gate
