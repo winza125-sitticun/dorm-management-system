@@ -14,6 +14,7 @@ env:
   CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
   CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
   LICENSE_SIGNING_PRIVATE_KEY: ${{ secrets.V16_LICENSE_SIGNING_PRIVATE_KEY }}
+  EXPECTED_PUBLIC_KEY_SHA256: 6c8a2c8fda3dbf224148ff77464fda9bc252c082e05755f211c52a232ae3db82
 
 jobs:
   prerequisites:
@@ -52,17 +53,39 @@ jobs:
           const fs = require('node:fs');
           const cryptoNode = require('node:crypto');
           (async () => {
-            const input = process.env.LICENSE_SIGNING_PRIVATE_KEY || '';
-            const key = await crypto.subtle.importKey('pkcs8', Buffer.from(input, 'base64'), { name: 'Ed25519' }, true, ['sign']);
+            let input = (process.env.LICENSE_SIGNING_PRIVATE_KEY || '').trim();
+            if ((input.startsWith('"') && input.endsWith('"')) || (input.startsWith("'") && input.endsWith("'"))) {
+              input = input.slice(1, -1).trim();
+            }
+            if (/^V16_LICENSE_SIGNING_PRIVATE_KEY\s*=/.test(input)) {
+              input = input.replace(/^V16_LICENSE_SIGNING_PRIVATE_KEY\s*=\s*/, '').trim();
+            }
+
+            let der;
+            if (input.includes('BEGIN PRIVATE KEY')) {
+              const privateKey = cryptoNode.createPrivateKey(input);
+              der = privateKey.export({ format: 'der', type: 'pkcs8' });
+            } else {
+              const compact = input.replace(/\s+/g, '');
+              if (!/^[A-Za-z0-9+/]+={0,2}$/.test(compact)) {
+                throw new Error('V16_LICENSE_SIGNING_PRIVATE_KEY is neither PKCS#8 base64 nor PEM');
+              }
+              der = Buffer.from(compact, 'base64');
+            }
+
+            const key = await crypto.subtle.importKey('pkcs8', der, { name: 'Ed25519' }, true, ['sign']);
             const jwk = await crypto.subtle.exportKey('jwk', key);
             if (!jwk.x) throw new Error('Ed25519 public component missing');
             const raw = Buffer.from(jwk.x.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - jwk.x.length % 4) % 4), 'base64');
             const publicKeyBase64 = raw.toString('base64');
             const fingerprint = cryptoNode.createHash('sha256').update(raw).digest('hex');
+            if (fingerprint !== process.env.EXPECTED_PUBLIC_KEY_SHA256) {
+              throw new Error(`production signing key fingerprint mismatch: ${fingerprint}`);
+            }
             fs.writeFileSync('v16-production-public-key.txt', publicKeyBase64 + '\n');
             fs.writeFileSync('v16-production-public-key-fingerprint.txt', fingerprint + '\n');
           })().catch((error) => {
-            console.error(error);
+            console.error(error.message || error);
             process.exit(1);
           });
           NODE
