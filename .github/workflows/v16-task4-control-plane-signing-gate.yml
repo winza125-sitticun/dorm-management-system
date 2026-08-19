@@ -37,14 +37,12 @@ jobs:
         with:
           ref: agent/v16-task4-control-plane-signing
 
-      - name: Reconstruct and verify exact Task 4 patch bytes
+      - name: Verify exact Task 4 patch bytes
         shell: bash
         run: |
           set -euo pipefail
-          cat v16-task4-patches/tests.b64.part* | tr -d '\n\r ' | base64 -d > /tmp/task4-tests.patch
-          cat v16-task4-patches/impl.b64.part* | tr -d '\n\r ' | base64 -d > /tmp/task4-implementation.patch
-          echo "$TEST_PATCH_SHA256  /tmp/task4-tests.patch" | sha256sum --check --strict
-          echo "$IMPLEMENTATION_PATCH_SHA256  /tmp/task4-implementation.patch" | sha256sum --check --strict
+          echo "$TEST_PATCH_SHA256  v16-task4-patches/001-tests.patch" | sha256sum --check --strict
+          echo "$IMPLEMENTATION_PATCH_SHA256  v16-task4-patches/002-implementation.patch" | sha256sum --check --strict
           patch --version | head -n 1
 
       - name: Download immutable Task 3 REVIEW artifact
@@ -80,8 +78,8 @@ jobs:
         run: |
           set -euo pipefail
           cd work
-          patch --dry-run -p1 < /tmp/task4-tests.patch
-          patch -p1 < /tmp/task4-tests.patch
+          patch --dry-run -p1 < ../v16-task4-patches/001-tests.patch
+          patch -p1 < ../v16-task4-patches/001-tests.patch
           set +e
           node --test control-plane/tests/schema.test.mjs > ../task4-red-schema.log 2>&1
           schema_status=$?
@@ -107,8 +105,8 @@ jobs:
         run: |
           set -euo pipefail
           cd work
-          patch --dry-run -p1 < /tmp/task4-implementation.patch
-          patch -p1 < /tmp/task4-implementation.patch
+          patch --dry-run -p1 < ../v16-task4-patches/002-implementation.patch
+          patch -p1 < ../v16-task4-patches/002-implementation.patch
           node --test control-plane/tests/schema.test.mjs | tee ../task4-focused-schema-green.log
           node --experimental-strip-types --test control-plane/tests/licenseRepository.test.ts control-plane/tests/signing.test.ts | tee ../task4-focused-runtime-green.log
           node --test tests/package-builder.test.mjs tests/package-audit.test.mjs tests/package-parity.test.mjs tests/package-release.test.mjs | tee ../task4-focused-customer-green.log
@@ -128,8 +126,10 @@ jobs:
           sql = pathlib.Path('control-plane/migrations/0001_initial_license_control_plane.sql').read_text()
           db = sqlite3.connect(':memory:')
           db.executescript(sql)
-          good = ("lic1", "a"*64, "Customer", "standard", "active", 1, None, "2026-08-19T00:00:00Z", "2026-08-19T00:00:00Z")
-          db.execute('INSERT INTO licenses VALUES (?,?,?,?,?,?,?,?,?)', good)
+          good = ('lic1', 'a'*64, 'Customer', 'standard', 'active', 1, None, '2026-08-19T00:00:00Z', '2026-08-19T00:00:00Z')
+          base = 'INSERT INTO licenses (id,key_hash,customer_label,plan,status,max_activations,expires_at,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)'
+          db.execute(base, good)
+          db.commit()
           def must_fail(statement, params):
               try:
                   db.execute(statement, params)
@@ -138,12 +138,12 @@ jobs:
                   db.rollback()
                   return
               raise SystemExit('constraint unexpectedly accepted invalid row')
-          base = 'INSERT INTO licenses (id,key_hash,customer_label,plan,status,max_activations,expires_at,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)'
           must_fail(base, ('bad-plan','b'*64,None,'enterprise','active',1,None,'x','x'))
           must_fail(base, ('bad-status','c'*64,None,'basic','disabled',1,None,'x','x'))
           must_fail(base, ('bad-max','d'*64,None,'basic','active',0,None,'x','x'))
           must_fail(base, ('dup-hash','a'*64,None,'basic','active',1,None,'x','x'))
           db.execute("INSERT INTO activations (id,license_id,installation_id,activated_at,last_seen_at) VALUES ('a1','lic1','inst1','x','x')")
+          db.commit()
           must_fail("INSERT INTO activations (id,license_id,installation_id,activated_at,last_seen_at) VALUES ('a2','lic1','inst1','x','x')", ())
           print('control-plane sqlite constraints: PASS')
           PY
@@ -262,6 +262,7 @@ jobs:
           migration_ceiling=${MIGRATION_CEILING}
           expected_customer_entry_count=${EXPECTED_CUSTOMER_ENTRIES}
           control_plane_migration=0001_initial_license_control_plane.sql
+          supersedes_failed_run_id=32207068109
           customer_ready=false
           release_status=REVIEW
           deployed=false
@@ -304,6 +305,7 @@ jobs:
           base_master_sha256=${BASE_MASTER_SHA256}
           migration_ceiling=${MIGRATION_CEILING}
           expected_customer_entry_count=${EXPECTED_CUSTOMER_ENTRIES}
+          supersedes_failed_run_id=32207068109
           customer_ready=false
           deployed=false
           EOF
