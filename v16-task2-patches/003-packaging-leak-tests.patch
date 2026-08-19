@@ -1,0 +1,51 @@
+diff --git a/tests/package-audit.test.mjs b/tests/package-audit.test.mjs
+index 554e758..11822d8 100644
+--- a/tests/package-audit.test.mjs
++++ b/tests/package-audit.test.mjs
+@@ -57,3 +57,19 @@ test('customer package audit rejects the license signing private secret identifi
+     assert.ok(issues.some((x) => /LICENSE_SIGNING_PRIVATE_KEY|signing private key/i.test(x)));
+   } finally { await rm(root, { recursive: true, force: true }); }
+ });
++
++test('customer package audit rejects V16 Task 2 master-only regression tests', async () => {
++  const { auditCustomerTree } = await import('../scripts/package-audit.mjs');
++  const root = await mkdtemp(join(tmpdir(), 'dorm-v16-task2-test-audit-'));
++  try {
++    await mkdir(join(root, 'tests'), { recursive: true });
++    for (const name of ['license-state-migration.test.mjs', 'license-state-service.test.ts', 'license-state-backup-boundary.test.mjs']) {
++      await writeFile(join(root, 'tests', name), 'test-only');
++    }
++    await writeFile(join(root, 'package.json'), JSON.stringify({ name: 'dorm-management-system-demo', scripts: {} }));
++    const issues = await auditCustomerTree(root, { id: 'demo', packageName: 'dorm-management-system-demo' });
++    for (const name of ['license-state-migration.test.mjs', 'license-state-service.test.ts', 'license-state-backup-boundary.test.mjs']) {
++      assert.ok(issues.some((x) => x.includes(`tests/${name}`)), `audit did not reject tests/${name}`);
++    }
++  } finally { await rm(root, { recursive: true, force: true }); }
++});
+diff --git a/tests/package-builder.test.mjs b/tests/package-builder.test.mjs
+index 1f7ac5e..59e0101 100644
+--- a/tests/package-builder.test.mjs
++++ b/tests/package-builder.test.mjs
+@@ -116,3 +116,22 @@ test('package descriptions advertise the approved V15 White-label availability',
+     assert.ok(plans[id].features.includes('ตั้งค่า White-label: ชื่อหอ สีแบรนด์ เบอร์ติดต่อ และข้อความท้ายบิล'), `${id} White-label copy missing`);
+   }
+ });
++
++test('builder excludes V16 Task 2 master-only regression tests from customer staging', async () => {
++  const { buildPackageTree, loadPlans } = await import('../scripts/build-packages.mjs');
++  const output = await mkdtemp(join(tmpdir(), 'dorm-v16-task2-master-only-'));
++  try {
++    const plans = await loadPlans();
++    const destination = join(output, 'demo');
++    await buildPackageTree(plans.demo, { destination, runPortableTests: false, customerReady: false });
++    for (const rel of [
++      'tests/license-state-migration.test.mjs',
++      'tests/license-state-service.test.ts',
++      'tests/license-state-backup-boundary.test.mjs',
++    ]) {
++      assert.equal(existsSync(join(destination, rel)), false, `customer package leaked ${rel}`);
++    }
++  } finally {
++    await rm(output, { recursive: true, force: true });
++  }
++});

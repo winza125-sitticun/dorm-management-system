@@ -1,0 +1,190 @@
+diff --git a/d1-migrations/0007_add_license_state.sql b/d1-migrations/0007_add_license_state.sql
+new file mode 100644
+index 0000000..40c278b
+--- /dev/null
++++ b/d1-migrations/0007_add_license_state.sql
+@@ -0,0 +1,12 @@
++CREATE TABLE IF NOT EXISTS license_state (
++  id INTEGER PRIMARY KEY CHECK(id = 1),
++  installation_id TEXT NOT NULL,
++  signed_token TEXT,
++  status TEXT NOT NULL DEFAULT 'unlicensed',
++  effective_plan TEXT,
++  last_checked_at TEXT,
++  grace_until TEXT,
++  expires_at TEXT,
++  control_plane_url TEXT NOT NULL,
++  updated_at TEXT NOT NULL
++);
+diff --git a/schema_d1.sql b/schema_d1.sql
+index 3e4b77a..d7b66bc 100644
+--- a/schema_d1.sql
++++ b/schema_d1.sql
+@@ -261,3 +261,16 @@ CREATE TABLE IF NOT EXISTS housekeeping_tasks (
+ );
+ CREATE UNIQUE INDEX IF NOT EXISTS idx_housekeeping_checkout_once ON housekeeping_tasks(contract_id) WHERE source = 'checkout' AND contract_id IS NOT NULL;
+ CREATE INDEX IF NOT EXISTS idx_housekeeping_owner_status ON housekeeping_tasks(user_id, status, created_at DESC);
++
++CREATE TABLE IF NOT EXISTS license_state (
++  id INTEGER PRIMARY KEY CHECK(id = 1),
++  installation_id TEXT NOT NULL,
++  signed_token TEXT,
++  status TEXT NOT NULL DEFAULT 'unlicensed',
++  effective_plan TEXT,
++  last_checked_at TEXT,
++  grace_until TEXT,
++  expires_at TEXT,
++  control_plane_url TEXT NOT NULL,
++  updated_at TEXT NOT NULL
++);
+diff --git a/scripts/build-packages.mjs b/scripts/build-packages.mjs
+index cdbb825..b285dc2 100644
+--- a/scripts/build-packages.mjs
++++ b/scripts/build-packages.mjs
+@@ -20,6 +20,7 @@ const APPROVED = Object.freeze({
+ const MASTER_ONLY = new Set([
+   'scripts/build-packages.mjs', 'scripts/release-packages.mjs', 'scripts/package-audit.mjs', 'scripts/zip-utils.mjs',
+   'tests/package-builder.test.mjs', 'tests/package-parity.test.mjs', 'tests/package-audit.test.mjs', 'tests/package-release.test.mjs', 'tests/master-launchers.test.mjs', 'tests/zip-utils.test.mjs',
++  'tests/license-state-migration.test.mjs', 'tests/license-state-service.test.ts', 'tests/license-state-backup-boundary.test.mjs',
+   'BUILD-PACKAGES-WINDOWS.cmd', 'BUILD-PACKAGES-ANDROID.sh', 'MASTER_PROJECT_TH.md', 'wrangler.master.jsonc', 'RELEASE_NOTES_V13_TH.md', 'TASK12_STATUS_TH.md',
+ ]);
+ const MASTER_PREFIXES = ['.git/', 'node_modules/', 'docs/superpowers/', 'package-plans/', 'control-plane/', 'release-v13/', 'preview-v13/', '.staging-v13/', 'release-v14/', 'preview-v14/', '.staging-v14/', 'dist/', 'dist-server/', 'backups/'];
+diff --git a/scripts/package-audit.mjs b/scripts/package-audit.mjs
+index cbcc23a..d87bef3 100644
+--- a/scripts/package-audit.mjs
++++ b/scripts/package-audit.mjs
+@@ -9,6 +9,7 @@ const FORBIDDEN_EXACT = new Set([
+   '.git', 'node_modules', 'wrangler.jsonc', '.env', '.dev.vars',
+   'scripts/build-packages.mjs', 'scripts/release-packages.mjs', 'scripts/package-audit.mjs', 'scripts/zip-utils.mjs',
+   'tests/package-builder.test.mjs', 'tests/package-parity.test.mjs', 'tests/package-audit.test.mjs', 'tests/package-release.test.mjs', 'tests/master-launchers.test.mjs', 'tests/zip-utils.test.mjs',
++  'tests/license-state-migration.test.mjs', 'tests/license-state-service.test.ts', 'tests/license-state-backup-boundary.test.mjs',
+   'BUILD-PACKAGES-WINDOWS.cmd', 'BUILD-PACKAGES-ANDROID.sh', 'MASTER_PROJECT_TH.md', 'wrangler.master.jsonc', 'TASK12_STATUS_TH.md',
+ ]);
+ const TEXT_EXTENSIONS = /\.(?:md|txt|json|jsonc|js|mjs|cjs|ts|tsx|sql|cmd|sh|html|css|yml|yaml|toml)$/i;
+diff --git a/src/db/schema.ts b/src/db/schema.ts
+index e6c7d80..4062f68 100644
+--- a/src/db/schema.ts
++++ b/src/db/schema.ts
+@@ -138,6 +138,19 @@ export const settings = sqliteTable('settings', {
+   updatedAt: text('updated_at').default(sql`(CURRENT_TIMESTAMP)`),
+ });
+ 
++export const licenseState = sqliteTable('license_state', {
++  id: integer('id').primaryKey(),
++  installationId: text('installation_id').notNull(),
++  signedToken: text('signed_token'),
++  status: text('status').default('unlicensed').notNull(),
++  effectivePlan: text('effective_plan'),
++  lastCheckedAt: text('last_checked_at'),
++  graceUntil: text('grace_until'),
++  expiresAt: text('expires_at'),
++  controlPlaneUrl: text('control_plane_url').notNull(),
++  updatedAt: text('updated_at').notNull(),
++});
++
+ // Define 'maintenance_tickets' table
+ export const maintenanceTickets = sqliteTable('maintenance_tickets', {
+   id: integer('id').primaryKey({ autoIncrement: true }),
+diff --git a/src/server/services/backup.service.ts b/src/server/services/backup.service.ts
+index 53e284b..b59f6fe 100644
+--- a/src/server/services/backup.service.ts
++++ b/src/server/services/backup.service.ts
+@@ -32,6 +32,7 @@ export const BACKUP_EXCLUDED = [
+   'integration_secrets',
+   'room_line_linkage',
+   'subscription_metadata',
++  'license_state',
+ ] as const;
+ 
+ export interface CurrentIntegrationState {
+diff --git a/src/server/services/license.service.ts b/src/server/services/license.service.ts
+new file mode 100644
+index 0000000..1aacafe
+--- /dev/null
++++ b/src/server/services/license.service.ts
+@@ -0,0 +1,85 @@
++export interface LicenseStateRow {
++  id: 1;
++  installationId: string;
++  signedToken: string | null;
++  status: string;
++  effectivePlan: string | null;
++  lastCheckedAt: string | null;
++  graceUntil: string | null;
++  expiresAt: string | null;
++  controlPlaneUrl: string;
++  updatedAt: string;
++}
++
++export interface LicenseD1StatementLike {
++  bind(...values: unknown[]): LicenseD1StatementLike;
++  first<T = Record<string, unknown>>(): Promise<T | null>;
++  run(): Promise<{ success?: boolean }>;
++}
++
++export interface LicenseD1DatabaseLike {
++  prepare(sql: string): LicenseD1StatementLike;
++}
++
++type LicenseStateDbRow = Record<string, unknown>;
++
++const LICENSE_STATE_SELECT = `SELECT id, installation_id, signed_token, status, effective_plan,
++  last_checked_at, grace_until, expires_at, control_plane_url, updated_at
++  FROM license_state WHERE id = 1 LIMIT 1`;
++
++function requiredString(row: LicenseStateDbRow, key: string): string {
++  const value = row[key];
++  if (typeof value !== 'string' || !value.trim()) throw new Error('LICENSE_STATE_INVALID');
++  return value;
++}
++
++function nullableString(row: LicenseStateDbRow, key: string): string | null {
++  const value = row[key];
++  if (value == null) return null;
++  if (typeof value !== 'string') throw new Error('LICENSE_STATE_INVALID');
++  return value;
++}
++
++function normalizeLicenseState(row: LicenseStateDbRow): LicenseStateRow {
++  if (row.id !== 1) throw new Error('LICENSE_STATE_INVALID');
++  return {
++    id: 1,
++    installationId: requiredString(row, 'installation_id'),
++    signedToken: nullableString(row, 'signed_token'),
++    status: requiredString(row, 'status'),
++    effectivePlan: nullableString(row, 'effective_plan'),
++    lastCheckedAt: nullableString(row, 'last_checked_at'),
++    graceUntil: nullableString(row, 'grace_until'),
++    expiresAt: nullableString(row, 'expires_at'),
++    controlPlaneUrl: requiredString(row, 'control_plane_url'),
++    updatedAt: requiredString(row, 'updated_at'),
++  };
++}
++
++export async function readLicenseState(db: LicenseD1DatabaseLike): Promise<LicenseStateRow | null> {
++  const row = await db.prepare(LICENSE_STATE_SELECT).first<LicenseStateDbRow>();
++  return row ? normalizeLicenseState(row) : null;
++}
++
++export async function ensureLicenseState(
++  db: LicenseD1DatabaseLike,
++  controlPlaneUrl: string,
++): Promise<LicenseStateRow> {
++  const normalizedUrl = String(controlPlaneUrl ?? '').trim();
++  if (!normalizedUrl) throw new Error('LICENSE_CONTROL_PLANE_URL_REQUIRED');
++
++  const existing = await readLicenseState(db);
++  if (existing) return existing;
++
++  const installationId = crypto.randomUUID();
++  const updatedAt = new Date().toISOString();
++  await db.prepare(`INSERT OR IGNORE INTO license_state
++    (id, installation_id, status, control_plane_url, updated_at)
++    VALUES (?, ?, ?, ?, ?)`)
++    .bind(1, installationId, 'unlicensed', normalizedUrl, updatedAt)
++    .run();
++
++  const persisted = await readLicenseState(db);
++  if (!persisted) throw new Error('LICENSE_STATE_BOOTSTRAP_FAILED');
++  return persisted;
++}
