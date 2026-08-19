@@ -1,0 +1,115 @@
+name: V16 Task 4 Control Plane Signing Closure V2
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [agent/v16-task4-control-plane-signing-foundation]
+    paths:
+      - 'v16-task4-patch-parts/**'
+      - 'v16-task4-closure-script-parts/**'
+      - '.github/workflows/v16-task4-control-plane-signing-closure-v2.yml'
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: v16-task4-control-plane-signing-closure-v2
+  cancel-in-progress: true
+
+env:
+  BASE_ARTIFACT_ID: '9348923137'
+  BASE_ARTIFACT_SHA256: '98382e591e5c9c5027026011ccac6d66702ed18c576603060e7860d66313c682'
+  BASE_MASTER_SHA256: 'c4f6eeed671b96e99f54fcd71504e16ad1b268014636f2d5f57eb4289f3e51c7'
+  TEST_PATCH_SHA256: '2618833d90a75548ae21656e77645445b528558dc52aca69214af67ae5c7e1a4'
+  IMPLEMENTATION_PATCH_SHA256: 'ce91020c29af9ed8e94ff4b4117d9ee8e288afead19d974cf28e07b0d20409ce'
+  CLOSURE_SCRIPT_SHA256: 'd349661b12a44d7d3673d744756f8e3c03b7faa3f9a7fbdbe37a6d60e350ae49'
+  MIGRATION_CEILING: '0007_add_license_state.sql'
+  CONTROL_PLANE_MIGRATION: '0001_license_schema.sql'
+  EXPECTED_ENTRY_COUNT: '206'
+  TASK3_VERIFIER_SHA256: '2b2a0144ba6b01ed9f9bfbf16d7df1d4a7ed2fcc5655e6c2c2fb43d53ff76180'
+  BLOCKED_RUN_ID: '32209021416'
+
+jobs:
+  task4-closure-v2:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout Task 4 lineage
+        uses: actions/checkout@v4
+        with:
+          ref: agent/v16-task4-control-plane-signing-foundation
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Reconstruct and run verified Task 4 closure script
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat v16-task4-closure-script-parts/part01 v16-task4-closure-script-parts/part02 > /tmp/task4-closure.b64
+          base64 -d /tmp/task4-closure.b64 | gzip -dc > /tmp/task4-closure.sh
+          echo "$CLOSURE_SCRIPT_SHA256  /tmp/task4-closure.sh" | sha256sum --check --strict
+          bash -n /tmp/task4-closure.sh
+          bash /tmp/task4-closure.sh
+
+      - name: Upload V16 Task 4 REVIEW V2 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: v16-task4-control-plane-signing-review-v2
+          path: |
+            dorm-management-system-master-v16-task4-REVIEW-CI.zip
+            task4-review/**
+            V16_TASK4_REVIEW_SHA256.txt
+            V16_TASK4_BUILD_EVIDENCE.txt
+            V16_TASK4_CUSTOMER_MANIFEST_OK
+            task4-d1-smoke.json
+            task4-red-vendor.log
+            task4-red-package.log
+            task4-green-vendor.log
+            task4-green-package.log
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Persist Task 4 Closure V2 evidence
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p v16-task4-evidence
+          master_sha=''
+          manifests=false
+          [ ! -f dorm-management-system-master-v16-task4-REVIEW-CI.zip ] || master_sha="$(sha256sum dorm-management-system-master-v16-task4-REVIEW-CI.zip | awk '{print $1}')"
+          [ ! -f V16_TASK4_CUSTOMER_MANIFEST_OK ] || manifests=true
+          cat > v16-task4-evidence/task4-closure-v2-latest.txt <<EOF
+          run_id=${GITHUB_RUN_ID}
+          run_attempt=${GITHUB_RUN_ATTEMPT}
+          source_sha=${GITHUB_SHA}
+          job_status=${JOB_STATUS}
+          base_artifact_id=${BASE_ARTIFACT_ID}
+          base_artifact_sha256=${BASE_ARTIFACT_SHA256}
+          base_master_sha256=${BASE_MASTER_SHA256}
+          task4_master_sha256=${master_sha}
+          tests_patch_sha256=${TEST_PATCH_SHA256}
+          implementation_patch_sha256=${IMPLEMENTATION_PATCH_SHA256}
+          closure_script_sha256=${CLOSURE_SCRIPT_SHA256}
+          blocked_run_id=${BLOCKED_RUN_ID}
+          migration_ceiling=${MIGRATION_CEILING}
+          control_plane_migration=${CONTROL_PLANE_MIGRATION}
+          expected_customer_entry_count=${EXPECTED_ENTRY_COUNT}
+          customer_manifests_equal_task3=${manifests}
+          task3_verifier_sha256=${TASK3_VERIFIER_SHA256}
+          customer_ready=false
+          closure_version=2
+          EOF
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add v16-task4-evidence/task4-closure-v2-latest.txt
+          git commit -m 'ci(v16-task4): record closure v2 evidence' || exit 0
+          git push origin HEAD:agent/v16-task4-control-plane-signing-foundation

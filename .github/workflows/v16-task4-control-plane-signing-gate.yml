@@ -1,0 +1,403 @@
+name: V16 Task 4 Control Plane Signing Gate
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [agent/v16-task4-control-plane-signing-foundation]
+    paths:
+      - 'v16-task4-patches/**'
+      - '.github/workflows/v16-task4-control-plane-signing-gate.yml'
+      - 'docs/superpowers/specs/2026-08-19-v16-task4-control-plane-signing-foundation-design.md'
+      - 'docs/superpowers/plans/2026-08-19-v16-task4-control-plane-signing-foundation.md'
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: v16-task4-control-plane-signing-gate
+  cancel-in-progress: true
+
+env:
+  BASE_ARTIFACT_ID: '9348923137'
+  BASE_ARTIFACT_SHA256: '98382e591e5c9c5027026011ccac6d66702ed18c576603060e7860d66313c682'
+  BASE_MASTER_SHA256: 'c4f6eeed671b96e99f54fcd71504e16ad1b268014636f2d5f57eb4289f3e51c7'
+  TEST_PATCH_SHA256: '2618833d90a75548ae21656e77645445b528558dc52aca69214af67ae5c7e1a4'
+  IMPLEMENTATION_PATCH_SHA256: 'ce91020c29af9ed8e94ff4b4117d9ee8e288afead19d974cf28e07b0d20409ce'
+  MIGRATION_CEILING: '0007_add_license_state.sql'
+  CONTROL_PLANE_MIGRATION: '0001_license_schema.sql'
+  EXPECTED_ENTRY_COUNT: '206'
+  TASK3_VERIFIER_SHA256: '2b2a0144ba6b01ed9f9bfbf16d7df1d4a7ed2fcc5655e6c2c2fb43d53ff76180'
+
+jobs:
+  task4-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout V16 Task 4 lineage
+        uses: actions/checkout@v4
+        with:
+          ref: agent/v16-task4-control-plane-signing-foundation
+
+      - name: Decode and verify exact Task 4 patch bytes
+        shell: bash
+        run: |
+          set -euo pipefail
+          base64 -d v16-task4-patches/001-tests.patch.gz.b64 | gzip -dc > v16-task4-patches/001-tests.patch
+          base64 -d v16-task4-patches/002-implementation.patch.gz.b64 | gzip -dc > v16-task4-patches/002-implementation.patch
+          echo "$TEST_PATCH_SHA256  v16-task4-patches/001-tests.patch" | sha256sum --check --strict
+          echo "$IMPLEMENTATION_PATCH_SHA256  v16-task4-patches/002-implementation.patch" | sha256sum --check --strict
+
+      - name: Download immutable Task 3 REVIEW artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 8 --retry-all-errors --retry-delay 3 \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${BASE_ARTIFACT_ID}/zip" \
+            -o v16-task3-signed-token-review.zip
+          echo "$BASE_ARTIFACT_SHA256  v16-task3-signed-token-review.zip" | sha256sum --check --strict
+          rm -rf candidate && mkdir candidate
+          unzip -q v16-task3-signed-token-review.zip -d candidate
+
+      - name: Verify exact Task 3 Master and baseline customer artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          MASTER_ZIP="candidate/dorm-management-system-master-v16-task3-REVIEW-CI.zip"
+          test -f "$MASTER_ZIP"
+          echo "$BASE_MASTER_SHA256  $MASTER_ZIP" | sha256sum --check --strict
+          for plan in demo basic standard pro; do
+            baseline="candidate/v16-task3-review/dorm-management-system-${plan}-v16-TASK3-PREVIEW.zip"
+            test -f "$baseline"
+            unzip -t "$baseline" >/dev/null
+          done
+          rm -rf work && mkdir work
+          unzip -q "$MASTER_ZIP" -d work
+          latest="$(find work/d1-migrations -maxdepth 1 -type f -name '*.sql' -printf '%f\n' | sort -V | tail -n1)"
+          test "$latest" = "$MIGRATION_CEILING"
+          test ! -e work/d1-migrations/0008_add_license_state.sql
+          test ! -e work/control-plane
+          test "$(sha256sum work/src/server/services/licenseToken.service.ts | awk '{print $1}')" = "$TASK3_VERIFIER_SHA256"
+          node - <<'NODE'
+          const fs = require('node:fs');
+          const expected = { demo: false, basic: true, standard: true, pro: true };
+          for (const [id, requiresLicense] of Object.entries(expected)) {
+            const plan = JSON.parse(fs.readFileSync(`work/package-plans/${id}.json`, 'utf8'));
+            if (plan.requiresLicense !== requiresLicense) throw new Error(`${id} requiresLicense mismatch before Task 4`);
+          }
+          NODE
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Apply Task 4 tests and prove intended RED
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd work
+          patch --dry-run -p1 < ../v16-task4-patches/001-tests.patch
+          patch -p1 < ../v16-task4-patches/001-tests.patch
+          set +e
+          node --experimental-strip-types --test \
+            control-plane/tests/schema.test.ts \
+            control-plane/tests/signing.test.ts \
+            control-plane/tests/customer-contract.test.ts \
+            control-plane/tests/worker.test.ts \
+            > ../v16-task4-red-vendor.log 2>&1
+          vendor_status=$?
+          node --test \
+            tests/control-plane-package-boundary.test.mjs \
+            tests/package-audit.test.mjs \
+            tests/package-builder.test.mjs \
+            > ../v16-task4-red-package.log 2>&1
+          package_status=$?
+          set -e
+          cat ../v16-task4-red-vendor.log
+          cat ../v16-task4-red-package.log
+          test "$vendor_status" -ne 0
+          test "$package_status" -ne 0
+          grep -Fq '# fail 7' ../v16-task4-red-vendor.log
+          grep -Fq '0001_license_schema.sql' ../v16-task4-red-vendor.log
+          grep -Fq 'signing.ts' ../v16-task4-red-vendor.log
+          grep -Fq 'src/index.ts' ../v16-task4-red-vendor.log
+          grep -Fq '# fail 5' ../v16-task4-red-package.log
+          grep -Fq 'control-plane-package-boundary.test.mjs' ../v16-task4-red-package.log
+
+      - name: Apply Task 4 implementation and prove focused GREEN
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd work
+          patch --dry-run -p1 < ../v16-task4-patches/002-implementation.patch
+          patch -p1 < ../v16-task4-patches/002-implementation.patch
+          latest="$(find d1-migrations -maxdepth 1 -type f -name '*.sql' -printf '%f\n' | sort -V | tail -n1)"
+          test "$latest" = "$MIGRATION_CEILING"
+          test ! -e d1-migrations/0008_add_license_state.sql
+          test -f "control-plane/migrations/$CONTROL_PLANE_MIGRATION"
+          test -f control-plane/src/signing.ts
+          test -f control-plane/src/index.ts
+          node --experimental-strip-types --test \
+            control-plane/tests/schema.test.ts \
+            control-plane/tests/signing.test.ts \
+            control-plane/tests/customer-contract.test.ts \
+            control-plane/tests/worker.test.ts \
+            | tee ../v16-task4-focused-vendor-green.log
+          node --test \
+            tests/control-plane-package-boundary.test.mjs \
+            tests/package-audit.test.mjs \
+            tests/package-builder.test.mjs \
+            tests/package-parity.test.mjs \
+            tests/package-release.test.mjs \
+            | tee ../v16-task4-focused-package-green.log
+
+      - name: Verify Task 4 source and secret boundaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(sha256sum work/src/server/services/licenseToken.service.ts | awk '{print $1}')" = "$TASK3_VERIFIER_SHA256"
+          test "$(find work/d1-migrations -maxdepth 1 -type f -name '*.sql' -printf '%f\n' | sort -V | tail -n1)" = "$MIGRATION_CEILING"
+          test ! -e work/d1-migrations/0008_add_license_state.sql
+          test ! -e work/control-plane/.env
+          test ! -e work/control-plane/.dev.vars
+          ! grep -RIl --exclude='package-lock.json' -- '-----BEGIN PRIVATE KEY-----' work/control-plane | grep -q .
+          ! grep -RIl --exclude='package-lock.json' -- '-----BEGIN ED25519 PRIVATE KEY-----' work/control-plane | grep -q .
+          grep -Fq '"database_id": "00000000-0000-0000-0000-000000000000"' work/control-plane/wrangler.template.jsonc
+          grep -Fq '"binding": "LICENSE_DB"' work/control-plane/wrangler.template.jsonc
+          grep -Fq '"migrations_dir": "migrations"' work/control-plane/wrangler.template.jsonc
+          if grep -Fq 'LICENSE_SIGNING_PRIVATE_KEY' work/control-plane/wrangler.template.jsonc; then
+            echo "Private signing secret must not be in Wrangler vars/template" >&2
+            exit 61
+          fi
+
+      - name: Create immutable Task 4 Master REVIEW candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f dorm-management-system-master-v16-task4-REVIEW-CI.zip
+          (cd work && zip -qr ../dorm-management-system-master-v16-task4-REVIEW-CI.zip .)
+          unzip -t dorm-management-system-master-v16-task4-REVIEW-CI.zip >/dev/null
+
+      - name: Fresh root dependency install
+        working-directory: work
+        run: npm ci
+
+      - name: Full root regression suite
+        working-directory: work
+        run: npm test
+
+      - name: Root TypeScript lint
+        working-directory: work
+        run: npm run lint
+
+      - name: Root Cloudflare types
+        working-directory: work
+        run: npm run check:cloudflare-types:master
+
+      - name: Pages production build
+        working-directory: work
+        run: npm run build:pages
+
+      - name: VPS production build
+        working-directory: work
+        run: npm run build:vps
+
+      - name: Fresh Control Plane dependency install
+        working-directory: work/control-plane
+        run: npm ci
+
+      - name: Control Plane tests
+        working-directory: work/control-plane
+        run: npm test
+
+      - name: Control Plane typecheck
+        working-directory: work/control-plane
+        run: npm run typecheck
+
+      - name: Control Plane local D1 migration smoke
+        working-directory: work/control-plane
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf .wrangler/task4-smoke
+          npm run d1:migrate:local
+          npx wrangler d1 execute LICENSE_DB \
+            --local \
+            --config wrangler.template.jsonc \
+            --persist-to .wrangler/task4-smoke \
+            --command "SELECT (SELECT COUNT(*) FROM licenses) AS licenses_count, (SELECT COUNT(*) FROM activations) AS activations_count, (SELECT COUNT(*) FROM license_events) AS events_count;" \
+            --json | tee ../../v16-task4-d1-smoke.json
+          grep -Fq '"licenses_count": 0' ../../v16-task4-d1-smoke.json
+          grep -Fq '"activations_count": 0' ../../v16-task4-d1-smoke.json
+          grep -Fq '"events_count": 0' ../../v16-task4-d1-smoke.json
+
+      - name: Generate customer PREVIEW packages only
+        working-directory: work
+        run: npm run packages:generate
+
+      - name: Strict Task 4 customer immutability closure
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf v16-task4-review && mkdir v16-task4-review
+          python3 - <<'PY'
+          import hashlib
+          import os
+          import pathlib
+          import zipfile
+
+          root = pathlib.Path('.')
+          expected_count = int(os.environ['EXPECTED_ENTRY_COUNT'])
+          migration_ceiling = os.environ['MIGRATION_CEILING']
+          verifier_sha_expected = os.environ['TASK3_VERIFIER_SHA256']
+          plans = ('demo', 'basic', 'standard', 'pro')
+
+          def manifest(path):
+              with zipfile.ZipFile(path) as zf:
+                  rows = []
+                  for info in zf.infolist():
+                      data = b'' if info.is_dir() else zf.read(info.filename)
+                      rows.append((info.filename, hashlib.sha256(data).hexdigest()))
+                  return sorted(rows)
+
+          for plan in plans:
+              src = root / 'work' / 'preview-v14' / f'dorm-management-system-{plan}-v14-PREVIEW.zip'
+              baseline = root / 'candidate' / 'v16-task3-review' / f'dorm-management-system-{plan}-v16-TASK3-PREVIEW.zip'
+              dst = root / 'v16-task4-review' / f'dorm-management-system-{plan}-v16-TASK4-PREVIEW.zip'
+              if not src.is_file() or not baseline.is_file():
+                  raise SystemExit(f'missing package for {plan}')
+              dst.write_bytes(src.read_bytes())
+
+              with zipfile.ZipFile(dst) as zf:
+                  infos = zf.infolist()
+                  if len(infos) != expected_count:
+                      raise SystemExit(f'{plan}: expected {expected_count} entries, got {len(infos)}')
+                  names = [i.filename for i in infos]
+                  if any(n.startswith('control-plane/') for n in names):
+                      raise SystemExit(f'{plan}: control-plane leaked')
+                  if any(n.startswith('tests/control-plane') for n in names):
+                      raise SystemExit(f'{plan}: Control Plane test leaked')
+                  if any('/0008' in f'/{n}' and n.endswith('.sql') for n in names):
+                      raise SystemExit(f'{plan}: customer migration after 0007 leaked')
+                  migrations = sorted(n.split('/')[-1] for n in names if n.startswith('d1-migrations/') and n.endswith('.sql'))
+                  if not migrations or migrations[-1] != migration_ceiling:
+                      raise SystemExit(f'{plan}: migration ceiling drift: {migrations[-1] if migrations else None}')
+                  verifier = zf.read('src/server/services/licenseToken.service.ts')
+                  verifier_sha = hashlib.sha256(verifier).hexdigest()
+                  if verifier_sha != verifier_sha_expected:
+                      raise SystemExit(f'{plan}: verifier SHA drift {verifier_sha}')
+                  for info in infos:
+                      if info.is_dir():
+                          continue
+                      data = zf.read(info.filename)
+                      if b'LICENSE_SIGNING_PRIVATE_KEY' in data:
+                          raise SystemExit(f'{plan}: private signing secret identifier leaked in {info.filename}')
+                      if b'-----BEGIN PRIVATE KEY-----' in data or b'-----BEGIN ED25519 PRIVATE KEY-----' in data:
+                          raise SystemExit(f'{plan}: private key marker leaked in {info.filename}')
+
+              current_manifest = manifest(dst)
+              baseline_manifest = manifest(baseline)
+              if current_manifest != baseline_manifest:
+                  current = dict(current_manifest)
+                  old = dict(baseline_manifest)
+                  extra = sorted(set(current) - set(old))
+                  missing = sorted(set(old) - set(current))
+                  changed = sorted(k for k in set(current) & set(old) if current[k] != old[k])
+                  raise SystemExit(f'{plan}: Task 3 manifest drift extra={extra[:8]} missing={missing[:8]} changed={changed[:8]}')
+
+              manifest_path = root / 'v16-task4-review' / f'{plan}-normalized-manifest.txt'
+              manifest_path.write_text(''.join(f'{sha}  {name}\n' for name, sha in current_manifest))
+              print(f'{plan}: {len(current_manifest)} entries, manifest identical to Task 3')
+
+          (root / 'V16_TASK4_CUSTOMER_MANIFEST_OK').write_text('true\n')
+          PY
+
+          node - <<'NODE'
+          const fs = require('node:fs');
+          const expected = { demo: false, basic: true, standard: true, pro: true };
+          for (const [id, requiresLicense] of Object.entries(expected)) {
+            const plan = JSON.parse(fs.readFileSync(`work/package-plans/${id}.json`, 'utf8'));
+            if (plan.requiresLicense !== requiresLicense) throw new Error(`${id} requiresLicense drift after Task 4`);
+          }
+          NODE
+
+          sha256sum dorm-management-system-master-v16-task4-REVIEW-CI.zip v16-task4-review/*.zip | tee V16_TASK4_REVIEW_SHA256.txt
+          cat > V16_TASK4_BUILD_EVIDENCE.txt <<EOF
+          base_artifact_id=${BASE_ARTIFACT_ID}
+          base_artifact_sha256=${BASE_ARTIFACT_SHA256}
+          base_master_sha256=${BASE_MASTER_SHA256}
+          source_sha=${GITHUB_SHA}
+          run_id=${GITHUB_RUN_ID}
+          tests_patch_sha256=${TEST_PATCH_SHA256}
+          implementation_patch_sha256=${IMPLEMENTATION_PATCH_SHA256}
+          migration_ceiling=${MIGRATION_CEILING}
+          control_plane_migration=${CONTROL_PLANE_MIGRATION}
+          expected_customer_entry_count=${EXPECTED_ENTRY_COUNT}
+          customer_manifests_equal_task3=true
+          task3_verifier_sha256=${TASK3_VERIFIER_SHA256}
+          customer_ready=false
+          release_status=REVIEW
+          EOF
+
+      - name: Upload V16 Task 4 REVIEW artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: v16-task4-control-plane-signing-review
+          path: |
+            dorm-management-system-master-v16-task4-REVIEW-CI.zip
+            v16-task4-review/**
+            V16_TASK4_REVIEW_SHA256.txt
+            V16_TASK4_BUILD_EVIDENCE.txt
+            V16_TASK4_CUSTOMER_MANIFEST_OK
+            v16-task4-d1-smoke.json
+            v16-task4-red-vendor.log
+            v16-task4-red-package.log
+            v16-task4-focused-vendor-green.log
+            v16-task4-focused-package-green.log
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Persist Task 4 gate evidence
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p v16-task4-evidence
+          task4_master_sha256=''
+          customer_manifests_equal_task3=false
+          if [ -f dorm-management-system-master-v16-task4-REVIEW-CI.zip ]; then
+            task4_master_sha256="$(sha256sum dorm-management-system-master-v16-task4-REVIEW-CI.zip | awk '{print $1}')"
+          fi
+          if [ -f V16_TASK4_CUSTOMER_MANIFEST_OK ]; then
+            customer_manifests_equal_task3=true
+          fi
+          cat > v16-task4-evidence/task4-gate-latest.txt <<EOF
+          run_id=${GITHUB_RUN_ID}
+          run_attempt=${GITHUB_RUN_ATTEMPT}
+          source_sha=${GITHUB_SHA}
+          job_status=${JOB_STATUS}
+          base_artifact_id=${BASE_ARTIFACT_ID}
+          base_artifact_sha256=${BASE_ARTIFACT_SHA256}
+          base_master_sha256=${BASE_MASTER_SHA256}
+          task4_master_sha256=${task4_master_sha256}
+          tests_patch_sha256=${TEST_PATCH_SHA256}
+          implementation_patch_sha256=${IMPLEMENTATION_PATCH_SHA256}
+          migration_ceiling=${MIGRATION_CEILING}
+          control_plane_migration=${CONTROL_PLANE_MIGRATION}
+          expected_customer_entry_count=${EXPECTED_ENTRY_COUNT}
+          customer_manifests_equal_task3=${customer_manifests_equal_task3}
+          task3_verifier_sha256=${TASK3_VERIFIER_SHA256}
+          customer_ready=false
+          EOF
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add v16-task4-evidence/task4-gate-latest.txt
+          git commit -m 'ci(v16-task4): record control plane signing gate evidence' || exit 0
+          git push origin HEAD:agent/v16-task4-control-plane-signing-foundation
