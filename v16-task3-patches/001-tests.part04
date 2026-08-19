@@ -1,0 +1,56 @@
++  assert.equal((await verifyLicenseToken(token, publicKey, INSTALLATION, NOW + 9)).licenseId, signed.licenseId);
++  await expectCode(verifyLicenseToken(token, publicKey, INSTALLATION, NOW + 10), 'LICENSE_TOKEN_EXPIRED');
++  await expectCode(verifyLicenseToken(token, publicKey, INSTALLATION, NOW + 11), 'LICENSE_TOKEN_EXPIRED');
++});
++
++test('payload tamper, signature tamper, and a different signing key reject', async () => {
++  const publicKey = await importLicensePublicKey(spkiBase64Url);
++  const originalPayload = payload();
++  const originalToken = await tokenFromPayload(keyPair.privateKey, originalPayload);
++  const [, , originalSignature] = originalToken.split('.');
++
++  const changedPayload = payload({ licenseId: 'lic_tampered' });
++  const changedBytes = new TextEncoder().encode(canonicalizeLicenseTokenPayload(changedPayload));
++  const payloadTamperToken = `dormlic1.${toBase64Url(changedBytes)}.${originalSignature}`;
++  await expectCode(verifyLicenseToken(payloadTamperToken, publicKey, INSTALLATION, NOW), 'LICENSE_TOKEN_INVALID');
++
++  const signatureBytes = Buffer.from(originalSignature, 'base64url');
++  signatureBytes[0] ^= 0x01;
++  const [prefix, payloadPart] = originalToken.split('.');
++  await expectCode(
++    verifyLicenseToken(`${prefix}.${payloadPart}.${signatureBytes.toString('base64url')}`, publicKey, INSTALLATION, NOW),
++    'LICENSE_TOKEN_INVALID',
++  );
++
++  const otherToken = await tokenFromPayload(otherKeyPair.privateKey, originalPayload);
++  await expectCode(verifyLicenseToken(otherToken, publicKey, INSTALLATION, NOW), 'LICENSE_TOKEN_INVALID');
++});
++
++test('SPKI import accepts runtime Ed25519 public keys and rejects malformed or invalid public key bytes', async () => {
++  const imported = await importLicensePublicKey(spkiBase64Url);
++  assert.equal(imported.type, 'public');
++  assert.equal(imported.algorithm.name, 'Ed25519');
++
++  await expectCode(importLicensePublicKey('***'), 'LICENSE_PUBLIC_KEY_INVALID');
++  await expectCode(importLicensePublicKey(toBase64Url(new Uint8Array([1, 2, 3]))), 'LICENSE_PUBLIC_KEY_INVALID');
++});
+diff --git a/tests/package-audit.test.mjs b/tests/package-audit.test.mjs
+index 11822d8..5933046 100644
+--- a/tests/package-audit.test.mjs
++++ b/tests/package-audit.test.mjs
+@@ -73,3 +73,20 @@ test('customer package audit rejects V16 Task 2 master-only regression tests', a
+     }
+   } finally { await rm(root, { recursive: true, force: true }); }
+ });
++
++
++test('customer package audit rejects V16 Task 3 master-only crypto regression tests', async () => {
++  const { auditCustomerTree } = await import('../scripts/package-audit.mjs');
++  const root = await mkdtemp(join(tmpdir(), 'dorm-v16-task3-test-audit-'));
++  try {
++    await mkdir(join(root, 'tests'), { recursive: true });
++    for (const name of ['license-token-canonicalization.test.ts', 'license-token-verification.test.ts']) {
++      await writeFile(join(root, 'tests', name), 'test-only');
++    }
++    await writeFile(join(root, 'package.json'), JSON.stringify({ name: 'dorm-management-system-demo', scripts: {} }));
++    const issues = await auditCustomerTree(root, { id: 'demo', packageName: 'dorm-management-system-demo' });
