@@ -1,0 +1,90 @@
+name: V16 Production Dependency Audit Probe
+on:
+  push:
+    branches: [agent/v16-production-gate]
+    paths: ['.github/workflows/v16-production-dependency-audit-probe.yml']
+permissions: { contents: write, actions: read }
+env:
+  V15_ARTIFACT_ID: '9330679827'
+  V15_ARTIFACT_SHA256: '5f6e65ae856c1196fcd3a2e3dd7bcffb4da863ab212d3595839e921f0a96e1cf'
+  V15_MASTER_SHA256: 'd05ee110815a29b74498e17adac1b8355dec40d5a705dd016f5ad5f849caa9e9'
+  INPUT_ARCHIVE_SHA256: '43b2d44d508a02a431f2a405b5e95f8fbf850cca17b522446d1d6e0630d4d0f7'
+  TASK8_TREE_SHA256: '1b7c4e8179be6f397061d7999ade081f1bb0791f5ac10a2b5490dbec1d3d7b6c'
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: agent/v16-production-gate }
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+      - name: Reconstruct candidate and probe lock repair
+        id: probe
+        env: { GH_TOKEN: '${{ github.token }}' }
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat v16-production-inputs/input-00a.b64 v16-production-inputs/input-00b.b64 v16-production-inputs/input-01.b64 v16-production-inputs/input-02.b64 v16-production-inputs/input-03.b64 v16-production-inputs/input-04.b64 v16-production-inputs/input-05.b64 | base64 -d > /tmp/inputs.tar.xz
+          echo "$INPUT_ARCHIVE_SHA256  /tmp/inputs.tar.xz" | sha256sum -c -
+          rm -rf /tmp/v16-inputs /tmp/v15 /tmp/work /tmp/before
+          tar -xJf /tmp/inputs.tar.xz -C /tmp
+          curl --fail --location --retry 8 --retry-all-errors --retry-delay 3 -H "Authorization: Bearer ${GH_TOKEN}" -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${V15_ARTIFACT_ID}/zip" -o /tmp/v15.zip
+          echo "$V15_ARTIFACT_SHA256  /tmp/v15.zip" | sha256sum -c -
+          mkdir -p /tmp/v15 /tmp/work /tmp/before
+          unzip -q /tmp/v15.zip -d /tmp/v15
+          echo "$V15_MASTER_SHA256  /tmp/v15/dorm-management-system-master-v15-CUSTOMER-READY.zip" | sha256sum -c -
+          unzip -q /tmp/v15/dorm-management-system-master-v15-CUSTOMER-READY.zip -d /tmp/work
+          cd /tmp/work
+          for p in /tmp/v16-inputs/V16_TASK6_EXACT_V15.patch /tmp/v16-inputs/V16_TASK7.patch /tmp/v16-inputs/V16_TASK8_PRODUCTION.patch; do patch -p1 < "$p"; done
+          find . -type f ! -path './node_modules/*' ! -path './dist/*' ! -path './dist-server/*' ! -path './preview-v14/*' ! -path './release-v14/*' -print0 | sort -z | xargs -0 sha256sum > /tmp/task8.sha
+          echo "$TASK8_TREE_SHA256  /tmp/task8.sha" | sha256sum -c -
+          for p in "$GITHUB_WORKSPACE/v16-production-input/V16_PRODUCTION_FIX.patch" "$GITHUB_WORKSPACE/v16-production-input/V16_PRODUCTION_FIX_2.patch" "$GITHUB_WORKSPACE/v16-production-input/V16_PRODUCTION_FIX_3.patch"; do patch -p1 < "$p"; done
+          cp package.json /tmp/before/package.json; cp package-lock.json /tmp/before/package-lock.json
+          npm ci >/tmp/npm-ci.log 2>&1
+          set +e
+          npm audit fix --package-lock-only >/tmp/audit-fix.log 2>&1
+          fix_rc=$?
+          npm audit --omit=dev --json >/tmp/audit-after.json 2>/tmp/audit-after.err
+          audit_rc=$?
+          set -e
+          cmp package.json /tmp/before/package.json && package_json_changed=false || package_json_changed=true
+          { diff -u --label a/package-lock.json --label b/package-lock.json /tmp/before/package-lock.json package-lock.json || true; } > "$GITHUB_WORKSPACE/V16_PRODUCTION_FIX_4_DEPENDENCIES.patch"
+          node - <<'NODE' >/tmp/counts.txt
+          const fs=require('fs'); const x=JSON.parse(fs.readFileSync('/tmp/audit-after.json','utf8'));
+          const v=x.metadata?.vulnerabilities||{};
+          console.log(`low=${v.low||0}`); console.log(`moderate=${v.moderate||0}`); console.log(`high=${v.high||0}`); console.log(`critical=${v.critical||0}`); console.log(`total=${v.total||0}`);
+          NODE
+          sha256sum "$GITHUB_WORKSPACE/V16_PRODUCTION_FIX_4_DEPENDENCIES.patch" > "$GITHUB_WORKSPACE/fix4.sha256"
+          echo "fix_rc=$fix_rc" >> "$GITHUB_OUTPUT"
+          echo "audit_rc=$audit_rc" >> "$GITHUB_OUTPUT"
+          echo "package_json_changed=$package_json_changed" >> "$GITHUB_OUTPUT"
+      - name: Persist probe evidence
+        if: always()
+        env:
+          FIX_RC: '${{ steps.probe.outputs.fix_rc }}'
+          AUDIT_RC: '${{ steps.probe.outputs.audit_rc }}'
+          PACKAGE_JSON_CHANGED: '${{ steps.probe.outputs.package_json_changed }}'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p v16-production-evidence
+          counts='unavailable'; [ -f /tmp/counts.txt ] && counts="$(tr '\n' ' ' </tmp/counts.txt)"
+          fix4='unavailable'; [ -f fix4.sha256 ] && fix4="$(cut -d' ' -f1 fix4.sha256)"
+          patch_bytes=0; [ -f V16_PRODUCTION_FIX_4_DEPENDENCIES.patch ] && patch_bytes="$(wc -c < V16_PRODUCTION_FIX_4_DEPENDENCIES.patch | tr -d ' ')"
+          cat > v16-production-evidence/dependency-audit-probe-latest.txt <<EOF
+          run_id=${GITHUB_RUN_ID}
+          source_sha=${GITHUB_SHA}
+          fix_command_rc=${FIX_RC:-unavailable}
+          production_audit_rc=${AUDIT_RC:-unavailable}
+          package_json_changed=${PACKAGE_JSON_CHANGED:-unavailable}
+          audit_counts=${counts}
+          fix4_sha256=${fix4}
+          fix4_patch_bytes=${patch_bytes}
+          customer_ready=false
+          EOF
+          if [ -f V16_PRODUCTION_FIX_4_DEPENDENCIES.patch ]; then cp V16_PRODUCTION_FIX_4_DEPENDENCIES.patch v16-production-evidence/dependency-fix4-probe.patch; fi
+          git config user.name 'github-actions[bot]'; git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add v16-production-evidence/dependency-audit-probe-latest.txt v16-production-evidence/dependency-fix4-probe.patch || true
+          git commit -m 'ci(v16): record dependency audit probe' || exit 0
+          git push origin HEAD:agent/v16-production-gate
