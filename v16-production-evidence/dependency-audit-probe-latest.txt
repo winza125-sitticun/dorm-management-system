@@ -1,0 +1,9 @@
+run_id=32251279137
+source_sha=343e51da3c054d59adb32f9fef441fd5fe0c8728
+fix_command_rc=1
+production_audit_rc=1
+package_json_changed=false
+audit_counts=low=0 moderate=4 high=0 critical=0 total=4 
+fix4_sha256=b095ee7a1c5f091543c413e9f24ec410f62a61c612f17b379f770cb1016b1e2b
+fix4_patch_bytes=15573
+customer_ready=false
