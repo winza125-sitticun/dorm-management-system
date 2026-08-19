@@ -1,0 +1,104 @@
+diff --git a/control-plane/tests/licenseRepository.test.ts b/control-plane/tests/licenseRepository.test.ts
+new file mode 100644
+index 0000000..d59d849
+--- /dev/null
++++ b/control-plane/tests/licenseRepository.test.ts
+@@ -0,0 +1,23 @@
++import assert from 'node:assert/strict';
++import test from 'node:test';
++import { hashLicenseKey } from '../src/licenseRepository.ts';
++
++test('hashLicenseKey trims edges only and returns lowercase sha256 hex', async () => {
++  const normalized = await hashLicenseKey('  AbC-123  ');
++  const exact = await hashLicenseKey('AbC-123');
++  const changedCase = await hashLicenseKey('abc-123');
++  assert.equal(normalized, exact);
++  assert.match(normalized, /^[0-9a-f]{64}$/);
++  assert.notEqual(normalized, changedCase);
++});
++
++test('hashLicenseKey rejects empty input without echoing the raw value', async () => {
++  const raw = '   ';
++  await assert.rejects(hashLicenseKey(raw), (error: unknown) => {
++    assert.ok(error instanceof Error);
++    assert.equal(error.message.includes(raw), false);
++    return true;
++  });
++});
++diff --git a/control-plane/tests/schema.test.mjs b/control-plane/tests/schema.test.mjs
++new file mode 100644
++index 0000000..96d5f55
++--- /dev/null
+++++ b/control-plane/tests/schema.test.mjs
++@@ -0,0 +1,24 @@
+++import assert from 'node:assert/strict';
+++import fs from 'node:fs';
+++import path from 'node:path';
+++import test from 'node:test';
+++
+++const migrationPath = path.resolve('control-plane/migrations/0001_initial_license_control_plane.sql');
+++
+++test('Task 4 control-plane migration defines the exact vendor license schema', () => {
+++  assert.equal(fs.existsSync(migrationPath), true, 'missing 0001_initial_license_control_plane.sql');
+++  const sql = fs.readFileSync(migrationPath, 'utf8');
+++  for (const table of ['licenses', 'activations', 'license_events']) {
+++    assert.match(sql, new RegExp(`CREATE TABLE\\s+${table}\\b`, 'i'));
+++  }
+++  assert.match(sql, /key_hash\s+TEXT\s+NOT NULL\s+UNIQUE/i);
+++  assert.match(sql, /CHECK\s*\(\s*plan\s+IN\s*\(\s*'basic'\s*,\s*'standard'\s*,\s*'pro'\s*\)\s*\)/i);
+++  assert.match(sql, /CHECK\s*\(\s*status\s+IN\s*\(\s*'active'\s*,\s*'suspended'\s*,\s*'revoked'\s*,\s*'expired'\s*\)\s*\)/i);
+++  assert.match(sql, /CHECK\s*\(\s*max_activations\s*>=\s*1\s*\)/i);
+++  assert.match(sql, /UNIQUE\s*\(\s*license_id\s*,\s*installation_id\s*\)/i);
+++  assert.match(sql, /FOREIGN KEY\s*\(\s*license_id\s*\)\s+REFERENCES\s+licenses\s*\(\s*id\s*\)/i);
+++  for (const forbidden of ['raw_license_key', 'license_key_plaintext', 'raw_ip', 'raw_user_agent', 'tenant_name', 'room_number', 'bill_amount']) {
+++    assert.doesNotMatch(sql, new RegExp(`\\b${forbidden}\\b`, 'i'));
+++  }
+++});
++diff --git a/control-plane/tests/signing.test.ts b/control-plane/tests/signing.test.ts
++new file mode 100644
++index 0000000..da1748d
++--- /dev/null
+++++ b/control-plane/tests/signing.test.ts
++@@ -0,0 +1,48 @@
+++import assert from 'node:assert/strict';
+++import test from 'node:test';
+++import { canonicalizeLicenseTokenPayload, importLicensePublicKey, verifyLicenseToken } from '../../src/server/services/licenseToken.service.ts';
+++import { importLicenseSigningPrivateKey, signLicenseToken } from '../src/signing.ts';
+++
+++const enc = (bytes: ArrayBuffer) => Buffer.from(bytes).toString('base64url');
+++const pair = await crypto.subtle.generateKey({ name: 'Ed25519' }, true, ['sign', 'verify']);
+++const privatePkcs8 = enc(await crypto.subtle.exportKey('pkcs8', pair.privateKey));
+++const publicSpki = enc(await crypto.subtle.exportKey('spki', pair.publicKey));
+++const importedPrivate = await importLicenseSigningPrivateKey(privatePkcs8);
+++const importedPublic = await importLicensePublicKey(publicSpki);
+++
+++const base = {
+++  licenseId: 'lic_task4_001', installationId: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+++  plan: 'standard' as const, status: 'active' as const,
+++  issuedAt: 1786870000, refreshAfter: 1786956400, expiresAt: 1789462000,
+++};
+++
+++test('Task 4 signer emits exact Task 3-compatible token bytes', async () => {
+++  const token = await signLicenseToken(base, importedPrivate);
+++  assert.match(token, /^dormlic1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
+++  const payload = await verifyLicenseToken(token, importedPublic, base.installationId, base.issuedAt + 1);
+++  assert.equal(canonicalizeLicenseTokenPayload(payload), canonicalizeLicenseTokenPayload({ v: 1, ...base }));
+++});
+++
+++test('Task 4 signer supports Basic and Pro and rejects malformed payloads', async () => {
+++  for (const plan of ['basic', 'pro'] as const) {
+++    const token = await signLicenseToken({ ...base, plan }, importedPrivate);
+++    const payload = await verifyLicenseToken(token, importedPublic, base.installationId, base.issuedAt + 1);
+++    assert.equal(payload.plan, plan);
+++  }
+++  await assert.rejects(signLicenseToken({ ...base, licenseId: ' ' }, importedPrivate));
+++  await assert.rejects(signLicenseToken({ ...base, refreshAfter: base.expiresAt + 1 }, importedPrivate));
+++});
+++
+++test('malformed PKCS8 and wrong verification key fail closed', async () => {
+++  await assert.rejects(importLicenseSigningPrivateKey('not+base64url'));
+++  const other = await crypto.subtle.generateKey({ name: 'Ed25519' }, true, ['sign', 'verify']);
+++  const otherPublic = await importLicensePublicKey(enc(await crypto.subtle.exportKey('spki', other.publicKey)));
+++  const token = await signLicenseToken(base, importedPrivate);
+++  await assert.rejects(verifyLicenseToken(token, otherPublic, base.installationId, base.issuedAt + 1));
+++});
