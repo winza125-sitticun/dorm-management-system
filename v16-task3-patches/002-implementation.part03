@@ -1,0 +1,87 @@
++    issuedAt: row.issuedAt,
++    expiresAt: row.expiresAt,
++    refreshAfter: row.refreshAfter,
++  };
++}
++
++function equalBytes(left: Uint8Array, right: Uint8Array): boolean {
++  if (left.byteLength !== right.byteLength) return false;
++  for (let index = 0; index < left.byteLength; index += 1) {
++    if (left[index] !== right[index]) return false;
++  }
++  return true;
++}
++
++export async function importLicensePublicKey(spkiBase64Url: string): Promise<CryptoKey> {
++  try {
++    const keyBytes = decodeBase64UrlStrict(spkiBase64Url);
++    return await crypto.subtle.importKey(
++      'spki',
++      keyBytes,
++      { name: 'Ed25519' },
++      false,
++      ['verify'],
++    );
++  } catch {
++    throw new LicenseTokenError('LICENSE_PUBLIC_KEY_INVALID');
++  }
++}
++
++export async function verifyLicenseToken(
++  token: string,
++  publicKey: CryptoKey,
++  expectedInstallationId: string,
++  nowEpochSeconds: number,
++): Promise<LicenseTokenPayloadV1> {
++  if (!isIntegerEpoch(nowEpochSeconds)) invalidToken();
++  if (typeof token !== 'string') invalidToken();
++
++  const segments = token.split('.');
++  if (segments.length !== 3) invalidToken();
++  const [prefix, payloadSegment, signatureSegment] = segments;
++  if (prefix !== LICENSE_TOKEN_PREFIX || !payloadSegment || !signatureSegment) invalidToken();
++
++  let payloadBytes: Uint8Array;
++  let signatureBytes: Uint8Array;
++  try {
++    payloadBytes = decodeBase64UrlStrict(payloadSegment);
++    signatureBytes = decodeBase64UrlStrict(signatureSegment);
++  } catch {
++    invalidToken();
++  }
++
++  let parsed: unknown;
++  try {
++    const rawJson = new TextDecoder('utf-8', { fatal: true }).decode(payloadBytes);
++    parsed = JSON.parse(rawJson);
++  } catch {
++    invalidToken();
++  }
++
++  const payload = validatePayload(parsed);
++  const canonicalBytes = new TextEncoder().encode(canonicalizeLicenseTokenPayload(payload));
++  if (!equalBytes(payloadBytes, canonicalBytes)) invalidToken();
++
++  if (payload.installationId !== expectedInstallationId) {
++    throw new LicenseTokenError('LICENSE_TOKEN_WRONG_INSTALLATION');
++  }
++
++  if (nowEpochSeconds >= payload.expiresAt) {
++    throw new LicenseTokenError('LICENSE_TOKEN_EXPIRED');
++  }
++
++  let verified = false;
++  try {
++    verified = await crypto.subtle.verify(
++      { name: 'Ed25519' },
++      publicKey,
++      signatureBytes,
++      canonicalBytes,
++    );
++  } catch {
++    invalidToken();
++  }
++  if (!verified) invalidToken();
++
++  return payload;
++}
