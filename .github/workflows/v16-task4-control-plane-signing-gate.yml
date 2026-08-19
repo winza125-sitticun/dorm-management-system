@@ -23,7 +23,7 @@ env:
   BASE_ARTIFACT_SHA256: '98382e591e5c9c5027026011ccac6d66702ed18c576603060e7860d66313c682'
   BASE_MASTER_SHA256: 'c4f6eeed671b96e99f54fcd71504e16ad1b268014636f2d5f57eb4289f3e51c7'
   TEST_PATCH_SHA256: 'cba638b84b0ba3cd3b6a2b24068ac3e7010f12a18c7327b9262ea4c49cae2e9d'
-  IMPLEMENTATION_PATCH_SHA256: '97ab2e655eaf564ccc5d34bde3d87a4cce30bd801d84e1270eb91540e92974c9'
+  IMPLEMENTATION_PATCH_SHA256: '7a62207aaaf44cd20af84ba88be3dd08e085331e15b518ff3be6c9c1cedc130b'
   MIGRATION_CEILING: '0007_add_license_state.sql'
   EXPECTED_CUSTOMER_ENTRIES: '206'
 
@@ -226,7 +226,7 @@ jobs:
           migration_ceiling=${MIGRATION_CEILING}
           expected_customer_entry_count=${EXPECTED_CUSTOMER_ENTRIES}
           control_plane_migration=0001_initial_license_control_plane.sql
-          supersedes_failed_runs=32207068109,32207367746,32207423760
+          supersedes_failed_runs=32207068109,32207367746,32207423760,32207525791
           customer_ready=false
           release_status=REVIEW
           deployed=false
@@ -264,7 +264,7 @@ jobs:
           base_master_sha256=${BASE_MASTER_SHA256}
           migration_ceiling=${MIGRATION_CEILING}
           expected_customer_entry_count=${EXPECTED_CUSTOMER_ENTRIES}
-          supersedes_failed_runs=32207068109,32207367746,32207423760
+          supersedes_failed_runs=32207068109,32207367746,32207423760,32207525791
           customer_ready=false
           deployed=false
           EOF
