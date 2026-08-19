@@ -1,0 +1,11 @@
+--- a/functions/api/[[path]].ts
++++ b/functions/api/[[path]].ts
+@@ -205,7 +205,7 @@
+ };
+ 
+ class PlanAccessError extends Error {
+-  constructor(public code: 'PLAN_REQUIRED' | 'PLAN_LIMIT_REACHED', message: string, public status = 403) {
++  constructor(public code: 'PLAN_REQUIRED' | 'PLAN_LIMIT_REACHED' | 'LICENSE_REQUIRED', message: string, public status = 403) {
+     super(message);
+     this.name = 'PlanAccessError';
+   }
