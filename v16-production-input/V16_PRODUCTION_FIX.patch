@@ -1,0 +1,18 @@
+--- a/tests/plan-persistence.test.ts
++++ b/tests/plan-persistence.test.ts
+@@ -26,8 +26,14 @@
+     assert.match(source, /subscriptionPlan/);
+     assert.match(source, /subscriptionStatus/);
+     assert.match(source, /subscriptionExpiresAt/);
+-    assert.match(source, /normalizeSubscriptionPlan/);
+   }
++  // V16 Pages plan authority comes from the verified signed license, not the
++  // compatibility/cache value in settings.subscription_plan. The legacy
++  // Express path may still normalize its compatibility value during migration.
++  assert.match(pages, /resolveEffectivePlan/);
++  assert.match(pages, /resolveLicenseState/);
++  assert.doesNotMatch(pages, /normalizeSubscriptionPlan/);
++  assert.match(express, /normalizeSubscriptionPlan/);
+   assert.doesNotMatch(validators, /subscriptionPlan\s*:/);
+ });
+ 
