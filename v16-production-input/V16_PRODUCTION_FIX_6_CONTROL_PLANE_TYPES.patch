@@ -1,0 +1,22 @@
+--- a/package.json
++++ b/package.json
+@@ -8,6 +8,7 @@
+   },
+   "devDependencies": {
+     "typescript": "~5.8.2",
+-    "wrangler": "^4.118.0"
++    "wrangler": "^4.118.0",
++    "@types/node": "^22.0.0"
+   }
+ }
+--- a/tests/license.service.test.ts
++++ b/tests/license.service.test.ts
+@@ -19,7 +19,7 @@
+   events: any[] = [];
+   prepare(sql: string) { return new FakeStmt(this, sql); }
+   first(sql: string, v: unknown[]) {
+-    if (sql.includes("FROM license_events WHERE kind = 'activate_attempt'")) return { count: this.events.filter((x) => x.kind === 'activate_attempt' && x.ip_hash === v[0] && x.created_at >= v[1]).length };
++    if (sql.includes("FROM license_events WHERE kind = 'activate_attempt'")) return { count: this.events.filter((x) => x.kind === 'activate_attempt' && x.ip_hash === String(v[0]) && x.created_at >= String(v[1])).length };
+     if (sql.includes('FROM licenses WHERE key_hash')) return [...this.licenses.values()].find((x) => x.key_hash === v[0]) ?? null;
+     if (sql.includes('FROM licenses WHERE id')) return this.licenses.get(String(v[0])) ?? null;
+     if (sql.includes('FROM activations WHERE license_id')) return [...this.activations.values()].find((x) => x.license_id === v[0] && x.installation_id === v[1]) ?? null;
