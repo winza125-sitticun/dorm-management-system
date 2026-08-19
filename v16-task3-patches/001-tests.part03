@@ -1,0 +1,73 @@
++    licenseId: p.licenseId,
++    v: p.v,
++    installationId: p.installationId,
++    plan: p.plan,
++    status: p.status,
++    issuedAt: p.issuedAt,
++    expiresAt: p.expiresAt,
++    refreshAfter: p.refreshAfter,
++  });
++  const unknownField = canonicalizeLicenseTokenPayload(p).replace('}', ',"extra":"x"}');
++  const whitespace = canonicalizeLicenseTokenPayload(p).replace('{"v":1,', '{ "v":1,');
++  const duplicateKey = canonicalizeLicenseTokenPayload(p).replace('"licenseId":"lic_001"', '"licenseId":"old","licenseId":"lic_001"');
++
++  for (const raw of [reordered, unknownField, whitespace, duplicateKey]) {
++    await expectCode(
++      verifyLicenseToken(await tokenFromRawJson(keyPair.privateKey, raw), publicKey, INSTALLATION, NOW),
++      'LICENSE_TOKEN_INVALID',
++    );
++  }
++});
++
++test('unsupported version, empty identifiers, unknown plan/status, and invalid timestamp values reject', async () => {
++  const publicKey = await importLicensePublicKey(spkiBase64Url);
++  const invalidPayloads: Array<Record<string, unknown>> = [
++    { ...payload(), v: 2 },
++    { ...payload(), licenseId: '   ' },
++    { ...payload(), installationId: '   ' },
++    { ...payload(), plan: 'enterprise' },
++    { ...payload(), status: 'trial' },
++    { ...payload(), issuedAt: 1786870000.5 },
++    { ...payload(), issuedAt: Number.NaN },
++    { ...payload(), issuedAt: 1787000001, refreshAfter: 1787000000 },
++    { ...payload(), refreshAfter: 1789462001, expiresAt: 1789462000 },
++  ];
++
++  for (const invalid of invalidPayloads) {
++    const raw = JSON.stringify({
++      v: invalid.v,
++      licenseId: invalid.licenseId,
++      installationId: invalid.installationId,
++      plan: invalid.plan,
++      status: invalid.status,
++      issuedAt: invalid.issuedAt,
++      expiresAt: invalid.expiresAt,
++      refreshAfter: invalid.refreshAfter,
++    });
++    await expectCode(
++      verifyLicenseToken(await tokenFromRawJson(keyPair.privateKey, raw), publicKey, INSTALLATION, NOW),
++      'LICENSE_TOKEN_INVALID',
++    );
++  }
++});
++
++test('invalid nowEpochSeconds rejects before token acceptance', async () => {
++  const publicKey = await importLicensePublicKey(spkiBase64Url);
++  const token = await tokenFromPayload(keyPair.privateKey, payload());
++  await expectCode(verifyLicenseToken(token, publicKey, INSTALLATION, Number.NaN), 'LICENSE_TOKEN_INVALID');
++  await expectCode(verifyLicenseToken(token, publicKey, INSTALLATION, NOW + 0.5), 'LICENSE_TOKEN_INVALID');
++});
++
++test('installation binding rejects a token signed for another installation', async () => {
++  const publicKey = await importLicensePublicKey(spkiBase64Url);
++  const token = await tokenFromPayload(keyPair.privateKey, payload());
++  await expectCode(
++    verifyLicenseToken(token, publicKey, 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee', NOW),
++    'LICENSE_TOKEN_WRONG_INSTALLATION',
++  );
++});
++
++test('expiry boundary is valid one second before expiry and expired at or after expiresAt', async () => {
++  const publicKey = await importLicensePublicKey(spkiBase64Url);
++  const signed = payload({ expiresAt: NOW + 10, refreshAfter: NOW });
++  const token = await tokenFromPayload(keyPair.privateKey, signed);
