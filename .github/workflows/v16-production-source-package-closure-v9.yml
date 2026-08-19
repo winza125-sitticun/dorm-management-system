@@ -1,0 +1,199 @@
+name: V16 Production Source Package Closure V9
+on:
+  push:
+    branches: [agent/v16-production-gate]
+    paths: ['.github/workflows/v16-production-source-package-closure-v9.yml']
+permissions: { contents: write, actions: read }
+concurrency: { group: v16-production-source-package-closure-v9, cancel-in-progress: true }
+env:
+  V15_ARTIFACT_ID: '9330679827'
+  V15_ARTIFACT_SHA256: '5f6e65ae856c1196fcd3a2e3dd7bcffb4da863ab212d3595839e921f0a96e1cf'
+  V15_MASTER_SHA256: 'd05ee110815a29b74498e17adac1b8355dec40d5a705dd016f5ad5f849caa9e9'
+  INPUT_ARCHIVE_SHA256: '43b2d44d508a02a431f2a405b5e95f8fbf850cca17b522446d1d6e0630d4d0f7'
+  TASK8_TREE_SHA256: '1b7c4e8179be6f397061d7999ade081f1bb0791f5ac10a2b5490dbec1d3d7b6c'
+  FIX1_SHA256: '0bd14b991e38e86b0b8a742a17d56a6dde837f32f248663335fc8e59e3e4eb30'
+  FIX2_SHA256: 'e86a42d82a8b9c5ce7c78015e91d94b63f7ef35848316a27e645f9a6fca8828d'
+  FIX3_SHA256: 'bb2c8fee9301fadb15427020ecbe838cc1111d4deecd16c8b8f9aeb368118753'
+  FIX4_SHA256: 'b095ee7a1c5f091543c413e9f24ec410f62a61c612f17b379f770cb1016b1e2b'
+  FIX5_SHA256: 'e05b99aa4ee92766e223b7de4065fe5cb0a4e2f86c421a64448eb26e28734a8a'
+  SIGNING_PUBLIC_KEY_B64: 'fgdHGCi74MiMXHbI5+KVY6S9wnh/L369ekdI8NmrwdY='
+  SIGNING_PUBLIC_KEY_FINGERPRINT: '6c8a2c8fda3dbf224148ff77464fda9bc252c082e05755f211c52a232ae3db82'
+  CONTROL_PLANE_URL: 'https://dorm-control-plane.winza125.workers.dev'
+  MIGRATION_CEILING: '0007_add_license_state.sql'
+jobs:
+  closure:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: agent/v16-production-gate }
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+
+      - name: Reconstruct exact candidate and apply locked fixes 1-5
+        env: { GH_TOKEN: '${{ github.token }}' }
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f /tmp/v16-v9-*.ok
+          echo "$FIX1_SHA256  v16-production-input/V16_PRODUCTION_FIX.patch" | sha256sum -c -
+          echo "$FIX2_SHA256  v16-production-input/V16_PRODUCTION_FIX_2.patch" | sha256sum -c -
+          echo "$FIX3_SHA256  v16-production-input/V16_PRODUCTION_FIX_3.patch" | sha256sum -c -
+          echo "$FIX4_SHA256  v16-production-input/V16_PRODUCTION_FIX_4_DEPENDENCIES.patch" | sha256sum -c -
+          echo "$FIX5_SHA256  v16-production-evidence/V16_PRODUCTION_FIX_5_CLOUDFLARE_TYPES.patch" | sha256sum -c -
+          cat v16-production-inputs/input-00a.b64 v16-production-inputs/input-00b.b64 v16-production-inputs/input-01.b64 v16-production-inputs/input-02.b64 v16-production-inputs/input-03.b64 v16-production-inputs/input-04.b64 v16-production-inputs/input-05.b64 | base64 -d > /tmp/inputs.tar.xz
+          echo "$INPUT_ARCHIVE_SHA256  /tmp/inputs.tar.xz" | sha256sum -c -
+          rm -rf /tmp/v16-inputs /tmp/v15 /tmp/work /tmp/cp-review /tmp/control-plane
+          tar -xJf /tmp/inputs.tar.xz -C /tmp
+          (cd /tmp/v16-inputs && sha256sum -c SHA256SUMS.txt)
+          mkdir -p /tmp/v15 /tmp/work /tmp/cp-review
+          curl --fail --location --retry 8 --retry-all-errors --retry-delay 3 -H "Authorization: Bearer ${GH_TOKEN}" -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${V15_ARTIFACT_ID}/zip" -o /tmp/v15.zip
+          echo "$V15_ARTIFACT_SHA256  /tmp/v15.zip" | sha256sum -c -
+          unzip -q /tmp/v15.zip -d /tmp/v15
+          echo "$V15_MASTER_SHA256  /tmp/v15/dorm-management-system-master-v15-CUSTOMER-READY.zip" | sha256sum -c -
+          unzip -q /tmp/v15/dorm-management-system-master-v15-CUSTOMER-READY.zip -d /tmp/work
+          cd /tmp/work
+          for p in /tmp/v16-inputs/V16_TASK6_EXACT_V15.patch /tmp/v16-inputs/V16_TASK7.patch /tmp/v16-inputs/V16_TASK8_PRODUCTION.patch; do patch -p1 < "$p"; done
+          find . -type f ! -path './node_modules/*' ! -path './dist/*' ! -path './dist-server/*' ! -path './preview-v14/*' ! -path './release-v14/*' -print0 | sort -z | xargs -0 sha256sum > /tmp/task8.sha
+          echo "$TASK8_TREE_SHA256  /tmp/task8.sha" | sha256sum -c -
+          for p in "$GITHUB_WORKSPACE/v16-production-input/V16_PRODUCTION_FIX.patch" "$GITHUB_WORKSPACE/v16-production-input/V16_PRODUCTION_FIX_2.patch" "$GITHUB_WORKSPACE/v16-production-input/V16_PRODUCTION_FIX_3.patch" "$GITHUB_WORKSPACE/v16-production-input/V16_PRODUCTION_FIX_4_DEPENDENCIES.patch" "$GITHUB_WORKSPACE/v16-production-evidence/V16_PRODUCTION_FIX_5_CLOUDFLARE_TYPES.patch"; do patch -p1 < "$p"; done
+          test "$(find d1-migrations -maxdepth 1 -type f -printf '%f\n' | sort | tail -n1)" = "$MIGRATION_CEILING"
+          test ! -e control-plane
+          unzip -q /tmp/v16-inputs/V16_TASK5_CONTROL_PLANE_REVIEW.zip -d /tmp/cp-review
+          cp -a /tmp/cp-review/V16_TASK5_CONTROL_PLANE /tmp/control-plane
+          touch /tmp/v16-v9-reconstruct.ok
+
+      - name: Fresh install and production dependency audit
+        working-directory: /tmp/work
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci
+          npm audit --omit=dev --json > /tmp/v9-audit.json 2>/tmp/v9-audit.err || true
+          node - <<'NODE'
+          const a=require('/tmp/v9-audit.json'); const v=a.metadata?.vulnerabilities||{};
+          console.log(`audit low=${v.low||0} moderate=${v.moderate||0} high=${v.high||0} critical=${v.critical||0} total=${v.total||0}`);
+          if((v.high||0)!==0 || (v.critical||0)!==0) process.exit(1);
+          NODE
+          touch /tmp/v16-v9-audit.ok
+
+      - name: Full customer tests types and production builds
+        working-directory: /tmp/work
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm test
+          npm run lint
+          npm run check:cloudflare-types:master
+          npm run build:pages
+          npm run build:vps
+          touch /tmp/v16-v9-customer.ok
+
+      - name: Generate and semantically verify all four customer packages
+        working-directory: /tmp/work
+        env:
+          V16_LICENSE_SIGNING_PUBLIC_KEY: '${{ env.SIGNING_PUBLIC_KEY_B64 }}'
+          V16_LICENSE_CONTROL_PLANE_URL: '${{ env.CONTROL_PLANE_URL }}'
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run packages:generate
+          for plan in demo basic standard pro; do
+            z="preview-v14/dorm-management-system-${plan}-v14-PREVIEW.zip"
+            test -f "$z"; unzip -t "$z" >/dev/null
+            tmp="$(mktemp -d)"; unzip -q "$z" -d "$tmp"
+            cfg="$tmp/src/generated/licenseConfig.ts"; test -f "$cfg"
+            test "$(find "$tmp/d1-migrations" -maxdepth 1 -type f -printf '%f\n' | sort | tail -n1)" = "$MIGRATION_CEILING"
+            test ! -e "$tmp/control-plane"
+            ! grep -RIl --exclude='*.zip' 'LICENSE_SIGNING_PRIVATE_KEY' "$tmp" | grep -q .
+            CFG="$cfg" PLAN="$plan" PUBLIC_KEY="$SIGNING_PUBLIC_KEY_B64" CONTROL_URL="$CONTROL_PLANE_URL" node - <<'NODE'
+          const fs=require('fs'); const s=fs.readFileSync(process.env.CFG,'utf8');
+          const get=(name)=>s.match(new RegExp(name+'\\s*:\\s*["\\\']([^"\\\']*)["\\\']'))?.[1];
+          const req=s.match(/requiresLicense\s*:\s*(true|false)/)?.[1];
+          if(get('publicKeyBase64')!==process.env.PUBLIC_KEY) process.exit(11);
+          if(get('controlPlaneUrl')!==process.env.CONTROL_URL) process.exit(12);
+          if(get('packagePlan')!==process.env.PLAN) process.exit(13);
+          if(req!==(process.env.PLAN==='demo'?'false':'true')) process.exit(14);
+          NODE
+            rm -rf "$tmp"
+          done
+          touch /tmp/v16-v9-packages.ok
+
+      - name: Control Plane tests and typecheck
+        working-directory: /tmp/control-plane
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install --no-audit --no-fund
+          npm test
+          npm run typecheck
+          touch /tmp/v16-v9-control-plane.ok
+
+      - name: Private signing material scan
+        working-directory: /tmp/work
+        shell: bash
+        run: |
+          set -euo pipefail
+          ! grep -RIl --exclude='*.zip' --exclude-dir=node_modules --exclude-dir=dist --exclude-dir=dist-server 'LICENSE_SIGNING_PRIVATE_KEY' . | grep -q .
+          ! grep -RIl --exclude='*.zip' --exclude-dir=node_modules --exclude-dir=dist --exclude-dir=dist-server 'BEGIN PRIVATE KEY' . | grep -q .
+          touch /tmp/v16-v9-private.ok
+
+      - name: Freeze source-gated production artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          for m in reconstruct audit customer packages control-plane private; do test -f "/tmp/v16-v9-${m}.ok"; done
+          rm -rf v16-production-source-package-v9
+          mkdir -p v16-production-source-package-v9/customer-previews
+          (cd /tmp/work && zip -qr "$GITHUB_WORKSPACE/v16-production-source-package-v9/dorm-management-system-master-v16-PRODUCTION-SOURCE-GATED.zip" . -x 'node_modules/*' 'dist/*' 'dist-server/*' 'preview-v14/*' 'release-v14/*')
+          (cd /tmp/control-plane && zip -qr "$GITHUB_WORKSPACE/v16-production-source-package-v9/dorm-control-plane-v16-PRODUCTION-SOURCE-GATED.zip" . -x 'node_modules/*')
+          for p in demo basic standard pro; do cp "/tmp/work/preview-v14/dorm-management-system-${p}-v14-PREVIEW.zip" "v16-production-source-package-v9/customer-previews/dorm-management-system-${p}-v16-SOURCE-GATE-PREVIEW.zip"; done
+          cp v16-production-input/V16_PRODUCTION_FIX.patch v16-production-input/V16_PRODUCTION_FIX_2.patch v16-production-input/V16_PRODUCTION_FIX_3.patch v16-production-input/V16_PRODUCTION_FIX_4_DEPENDENCIES.patch v16-production-source-package-v9/
+          cp v16-production-evidence/V16_PRODUCTION_FIX_5_CLOUDFLARE_TYPES.patch v16-production-source-package-v9/
+          find /tmp/work -type f ! -path '/tmp/work/node_modules/*' ! -path '/tmp/work/dist/*' ! -path '/tmp/work/dist-server/*' ! -path '/tmp/work/preview-v14/*' ! -path '/tmp/work/release-v14/*' -print0 | sort -z | xargs -0 sha256sum > v16-production-source-package-v9/V16_FINAL_SOURCE_TREE_SHA256.txt
+          sha256sum v16-production-source-package-v9/*.zip v16-production-source-package-v9/customer-previews/*.zip > v16-production-source-package-v9/SHA256SUMS.txt
+          touch /tmp/v16-v9-freeze.ok
+
+      - uses: actions/upload-artifact@v4
+        with: { name: v16-production-source-package-v9, path: 'v16-production-source-package-v9/**', if-no-files-found: error, retention-days: 14 }
+
+      - name: Persist closure evidence
+        if: always()
+        env: { JOB_STATUS: '${{ job.status }}' }
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p v16-production-evidence v16-production-input
+          val(){ if [ -f "/tmp/v16-v9-$1.ok" ]; then printf success; else printf failure; fi; }
+          audit='unavailable'; if [ -s /tmp/v9-audit.json ]; then audit="$(node -e "const a=require('/tmp/v9-audit.json'),v=a.metadata?.vulnerabilities||{};process.stdout.write('low='+(v.low||0)+' moderate='+(v.moderate||0)+' high='+(v.high||0)+' critical='+(v.critical||0)+' total='+(v.total||0))")"; fi
+          finaltree='unavailable'; [ -f v16-production-source-package-v9/V16_FINAL_SOURCE_TREE_SHA256.txt ] && finaltree="$(sha256sum v16-production-source-package-v9/V16_FINAL_SOURCE_TREE_SHA256.txt | cut -d' ' -f1)"
+          cat > v16-production-evidence/source-package-v9-latest.txt <<EOF
+          run_id=${GITHUB_RUN_ID}
+          source_sha=${GITHUB_SHA}
+          job_status=${JOB_STATUS}
+          reconstruct=$(val reconstruct)
+          dependency_audit=$(val audit)
+          audit_counts=${audit}
+          customer_tests_types_builds=$(val customer)
+          four_packages=$(val packages)
+          control_plane_tests_typecheck=$(val control-plane)
+          private_material_scan=$(val private)
+          artifact_freeze=$(val freeze)
+          exact_task8_tree_manifest_sha256=${TASK8_TREE_SHA256}
+          fix1_sha256=${FIX1_SHA256}
+          fix2_sha256=${FIX2_SHA256}
+          fix3_sha256=${FIX3_SHA256}
+          fix4_sha256=${FIX4_SHA256}
+          fix5_sha256=${FIX5_SHA256}
+          final_source_tree_manifest_sha256=${finaltree}
+          signing_public_key_fingerprint=${SIGNING_PUBLIC_KEY_FINGERPRINT}
+          control_plane_url=${CONTROL_PLANE_URL}
+          migration_ceiling=${MIGRATION_CEILING}
+          customer_ready=false
+          deployed=false
+          EOF
+          cp v16-production-evidence/V16_PRODUCTION_FIX_5_CLOUDFLARE_TYPES.patch v16-production-input/V16_PRODUCTION_FIX_5_CLOUDFLARE_TYPES.patch
+          git config user.name 'github-actions[bot]'; git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add v16-production-evidence/source-package-v9-latest.txt v16-production-input/V16_PRODUCTION_FIX_5_CLOUDFLARE_TYPES.patch
+          git commit -m 'fix(v16): accept Cloudflare type refresh and source closure evidence' || exit 0
+          git push origin HEAD:agent/v16-production-gate
