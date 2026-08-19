@@ -1,0 +1,6 @@
+run_id=32253864146
+source_sha=5a299b3a5bfd57e469f90917b565392508a4655c
+job_status=failure
+workers_scripts_write=failure
+required_permission=Workers Scripts Edit/Write
+customer_ready=false
