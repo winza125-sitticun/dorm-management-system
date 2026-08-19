@@ -339,10 +339,14 @@ Required properties:
 
 - Worker entrypoint: `src/index.ts`
 - D1 binding name: `LICENSE_DB`
+- database name placeholder exactly `dorm-license-control-plane-placeholder`
+- database ID placeholder exactly `00000000-0000-0000-0000-000000000000`
 - `migrations_dir`: `migrations`
-- placeholder database name/ID only; no production database ID
+- no production database ID
 - no private key under `vars`
 - no active `.dev.vars`, `.env`, or secret value
+
+The all-zero UUID is a syntactically valid non-production placeholder only. Production provisioning must replace it outside the Task 4 source artifact. CI may generate a temporary runtime Wrangler config from the template when needed, but must not commit a provisioned resource ID.
 
 The private key must be supplied as a Cloudflare Worker secret outside source control in a later deployment task.
 
@@ -366,11 +370,21 @@ Task 3 Master contains a test named:
 builder excludes the vendor-only control-plane root from customer staging
 ```
 
-That test currently creates `control-plane/` at the real repository root and deletes the entire directory in `finally`. This was safe only while no real Control Plane source existed.
+That test currently creates `control-plane/` at the real repository root and deletes the entire directory recursively in `finally`. This was safe only while no real Control Plane source existed.
 
 Task 4 must change this regression before or atomically with creation of the real vendor package so that tests can never delete vendor source.
 
-The replacement regression must use a temporary/synthetic Master fixture or another non-destructive injection path. It must still prove that a real `control-plane/` tree is excluded by the builder.
+The replacement test must use this safety pattern:
+
+1. record whether the repository-root `control-plane/` directory existed before the test
+2. create the directory only if it did not already exist
+3. write one uniquely named test marker file inside that directory
+4. run the builder and prove the marker is absent from customer staging
+5. in `finally`, delete only the marker file
+6. remove the `control-plane/` directory only when the test itself created it and the directory is still empty
+7. never call recursive `rm` on a pre-existing `control-plane/` directory
+
+This keeps the regression meaningful against pristine Task 3, where the directory does not yet exist, while becoming non-destructive once Task 4 creates real vendor source.
 
 The existing customer audit regression that creates `control-plane/` under a temporary customer-tree root is already isolated and may remain conceptually unchanged.
 
@@ -399,8 +413,9 @@ Task 4 tests must prove RED against pristine Task 3 REVIEW Master, then GREEN af
 
 ### Package-builder safety
 
-- existing real-root `control-plane/` cleanup behavior is replaced with a non-destructive fixture
-- builder excludes an actual nested vendor tree from customer staging
+- the old recursive real-root cleanup is removed
+- the safe marker-file pattern above cannot delete a pre-existing vendor directory
+- builder excludes the marker and actual nested vendor tree from customer staging
 - audit rejects a forced customer tree containing `control-plane/`
 
 ### Schema
