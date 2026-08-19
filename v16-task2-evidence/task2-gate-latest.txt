@@ -1,0 +1,9 @@
+run_id=32200435545
+run_attempt=1
+source_sha=e852d3f2fdce2d7465a26884fbb796985f9d65ae
+job_status=success
+base_artifact_id=9345425396
+base_artifact_sha256=56f5be6a25f0d831d3ac611d4cce531213a6704da772ad28ee3bccc0a7654001
+base_master_sha256=6551a8778f39e5f1a3dd7c2cbc18655a316c29906d02d0df428dd00d6ac522eb
+migration_ceiling=0007_add_license_state.sql
+customer_ready=false
