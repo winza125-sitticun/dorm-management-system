@@ -1,0 +1,73 @@
++const otherKeyPair = await crypto.subtle.generateKey({ name: 'Ed25519' }, true, ['sign', 'verify']);
++const spki = new Uint8Array(await crypto.subtle.exportKey('spki', keyPair.publicKey));
++const spkiBase64Url = toBase64Url(spki);
++
++const INSTALLATION = '11111111-2222-4333-8444-555555555555';
++const NOW = 1787000000;
++
++function payload(overrides: Partial<LicenseTokenPayloadV1> = {}): LicenseTokenPayloadV1 {
++  return {
++    v: 1,
++    licenseId: 'lic_001',
++    installationId: INSTALLATION,
++    plan: 'standard',
++    status: 'active',
++    issuedAt: 1786870000,
++    refreshAfter: 1786956400,
++    expiresAt: 1789462000,
++    ...overrides,
++  };
++}
++
++test('valid Basic, Standard, and Pro tokens verify and return the signed payload', async () => {
++  const publicKey = await importLicensePublicKey(spkiBase64Url);
++  for (const plan of ['basic', 'standard', 'pro'] as const) {
++    const signed = payload({ plan, licenseId: `lic_${plan}` });
++    const token = await tokenFromPayload(keyPair.privateKey, signed);
++    assert.deepEqual(await verifyLicenseToken(token, publicKey, INSTALLATION, NOW), signed);
++  }
++});
++
++test('allowed non-active statuses remain verifiable data before authority wiring', async () => {
++  const publicKey = await importLicensePublicKey(spkiBase64Url);
++  for (const status of ['suspended', 'revoked', 'expired'] as const) {
++    const signed = payload({ status, licenseId: `lic_${status}` });
++    const token = await tokenFromPayload(keyPair.privateKey, signed);
++    assert.equal((await verifyLicenseToken(token, publicKey, INSTALLATION, NOW)).status, status);
++  }
++});
++
++test('envelope shape and strict base64url errors map to LICENSE_TOKEN_INVALID', async () => {
++  const publicKey = await importLicensePublicKey(spkiBase64Url);
++  const valid = await tokenFromPayload(keyPair.privateKey, payload());
++  const [prefix, payloadPart, signaturePart] = valid.split('.');
++  for (const token of [
++    `wrong.${payloadPart}.${signaturePart}`,
++    `${prefix}.${payloadPart}`,
++    `${prefix}.${payloadPart}.${signaturePart}.extra`,
++    `${prefix}..${signaturePart}`,
++    `${prefix}.${payloadPart}.`,
++    `${prefix}.${payloadPart}=.${signaturePart}`,
++    `${prefix}.***.${signaturePart}`,
++  ]) {
++    await expectCode(verifyLicenseToken(token, publicKey, INSTALLATION, NOW), 'LICENSE_TOKEN_INVALID');
++  }
++});
++
++test('malformed UTF-8 and malformed JSON reject', async () => {
++  const publicKey = await importLicensePublicKey(spkiBase64Url);
++  const badUtf8 = new Uint8Array([0xff, 0xfe, 0xfd]);
++  const badUtf8Token = `dormlic1.${toBase64Url(badUtf8)}.${await signBytes(keyPair.privateKey, badUtf8)}`;
++  await expectCode(verifyLicenseToken(badUtf8Token, publicKey, INSTALLATION, NOW), 'LICENSE_TOKEN_INVALID');
++
++  const malformedJson = '{"v":1';
++  await expectCode(
++    verifyLicenseToken(await tokenFromRawJson(keyPair.privateKey, malformedJson), publicKey, INSTALLATION, NOW),
++    'LICENSE_TOKEN_INVALID',
++  );
++});
++
++test('non-canonical JSON representations reject even when signed', async () => {
++  const publicKey = await importLicensePublicKey(spkiBase64Url);
++  const p = payload();
++  const reordered = JSON.stringify({

@@ -1,0 +1,56 @@
++    for (const name of ['license-token-canonicalization.test.ts', 'license-token-verification.test.ts']) {
++      assert.ok(issues.some((x) => x.includes(`tests/${name}`)), `audit did not reject tests/${name}`);
++    }
++  } finally { await rm(root, { recursive: true, force: true }); }
++});
+diff --git a/tests/package-builder.test.mjs b/tests/package-builder.test.mjs
+index 59e0101..8b54c85 100644
+--- a/tests/package-builder.test.mjs
++++ b/tests/package-builder.test.mjs
+@@ -135,3 +135,22 @@ test('builder excludes V16 Task 2 master-only regression tests from customer sta
+     await rm(output, { recursive: true, force: true });
+   }
+ });
++
++
++test('builder excludes V16 Task 3 crypto regression tests from customer staging', async () => {
++  const { buildPackageTree, loadPlans } = await import('../scripts/build-packages.mjs');
++  const output = await mkdtemp(join(tmpdir(), 'dorm-v16-task3-master-only-'));
++  try {
++    const plans = await loadPlans();
++    const destination = join(output, 'demo');
++    await buildPackageTree(plans.demo, { destination, runPortableTests: false, customerReady: false });
++    for (const rel of [
++      'tests/license-token-canonicalization.test.ts',
++      'tests/license-token-verification.test.ts',
++    ]) {
++      assert.equal(existsSync(join(destination, rel)), false, `customer package leaked ${rel}`);
++    }
++  } finally {
++    await rm(output, { recursive: true, force: true });
++  }
++});
+diff --git a/tests/package-parity.test.mjs b/tests/package-parity.test.mjs
+index b5f996b..e71e25e 100644
+--- a/tests/package-parity.test.mjs
++++ b/tests/package-parity.test.mjs
+@@ -77,11 +77,12 @@ test('all four V14 package trees share identical implementation outside the appr
+     const roots = await buildAllPackages({ forPlan: (plan) => ({ destination: join(temp, plan.id), runPortableTests: false, customerReady: false }) });
+     const ids = ['demo','basic','standard','pro'];
+     const baselineFiles = await listFiles(roots.demo);
++    assert.equal(baselineFiles.length, 206, 'V16 Task 3 customer package entry count must be exactly 206');
+     for (const id of ids) assert.deepEqual(await listFiles(roots[id]), baselineFiles, `${id} file set drift`);
+     const implementationFiles = [
+       'src/utils/backupFormat.ts','src/utils/backupArchive.ts','src/utils/backupRestoreUi.ts',
+       'src/server/validators/backup.ts','src/server/services/backup.service.ts','src/server/services/restore.service.ts',
+-      'src/server/services/license.service.ts',
++      'src/server/services/license.service.ts','src/server/services/licenseToken.service.ts',
+       'src/server/validators/logo.ts','src/server/services/branding.service.ts',
+       'src/components/BackupRestoreSettings.tsx','tests/backup-archive.test.ts','tests/backup-validation.test.ts','tests/backup-restore.test.ts','tests/backup-restore-api.test.ts',
+     ];
+@@ -98,6 +99,31 @@ test('all four V14 package trees share identical implementation outside the appr
+       assert.equal(new Set(digests).size, 1, `V16 Task 2 package drift: ${file}`);
+     }
+ 
++    const task3SharedFiles = ['src/server/services/licenseToken.service.ts'];
++    for (const file of task3SharedFiles) {

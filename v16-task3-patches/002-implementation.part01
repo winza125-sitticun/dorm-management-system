@@ -1,0 +1,65 @@
+diff --git a/scripts/build-packages.mjs b/scripts/build-packages.mjs
+index b285dc2..de2369e 100644
+--- a/scripts/build-packages.mjs
++++ b/scripts/build-packages.mjs
+@@ -21,6 +21,7 @@ const MASTER_ONLY = new Set([
+   'scripts/build-packages.mjs', 'scripts/release-packages.mjs', 'scripts/package-audit.mjs', 'scripts/zip-utils.mjs',
+   'tests/package-builder.test.mjs', 'tests/package-parity.test.mjs', 'tests/package-audit.test.mjs', 'tests/package-release.test.mjs', 'tests/master-launchers.test.mjs', 'tests/zip-utils.test.mjs',
+   'tests/license-state-migration.test.mjs', 'tests/license-state-service.test.ts', 'tests/license-state-backup-boundary.test.mjs',
++  'tests/license-token-canonicalization.test.ts', 'tests/license-token-verification.test.ts',
+   'BUILD-PACKAGES-WINDOWS.cmd', 'BUILD-PACKAGES-ANDROID.sh', 'MASTER_PROJECT_TH.md', 'wrangler.master.jsonc', 'RELEASE_NOTES_V13_TH.md', 'TASK12_STATUS_TH.md',
+ ]);
+ const MASTER_PREFIXES = ['.git/', 'node_modules/', 'docs/superpowers/', 'package-plans/', 'control-plane/', 'release-v13/', 'preview-v13/', '.staging-v13/', 'release-v14/', 'preview-v14/', '.staging-v14/', 'dist/', 'dist-server/', 'backups/'];
+diff --git a/scripts/package-audit.mjs b/scripts/package-audit.mjs
+index d87bef3..c80b4cd 100644
+--- a/scripts/package-audit.mjs
++++ b/scripts/package-audit.mjs
+@@ -10,6 +10,7 @@ const FORBIDDEN_EXACT = new Set([
+   'scripts/build-packages.mjs', 'scripts/release-packages.mjs', 'scripts/package-audit.mjs', 'scripts/zip-utils.mjs',
+   'tests/package-builder.test.mjs', 'tests/package-parity.test.mjs', 'tests/package-audit.test.mjs', 'tests/package-release.test.mjs', 'tests/master-launchers.test.mjs', 'tests/zip-utils.test.mjs',
+   'tests/license-state-migration.test.mjs', 'tests/license-state-service.test.ts', 'tests/license-state-backup-boundary.test.mjs',
++  'tests/license-token-canonicalization.test.ts', 'tests/license-token-verification.test.ts',
+   'BUILD-PACKAGES-WINDOWS.cmd', 'BUILD-PACKAGES-ANDROID.sh', 'MASTER_PROJECT_TH.md', 'wrangler.master.jsonc', 'TASK12_STATUS_TH.md',
+ ]);
+ const TEXT_EXTENSIONS = /\.(?:md|txt|json|jsonc|js|mjs|cjs|ts|tsx|sql|cmd|sh|html|css|yml|yaml|toml)$/i;
+diff --git a/src/server/services/licenseToken.service.ts b/src/server/services/licenseToken.service.ts
+new file mode 100644
+index 0000000..235c63f
+--- /dev/null
++++ b/src/server/services/licenseToken.service.ts
+@@ -0,0 +1,206 @@
++export type LicenseTokenPlan = 'basic' | 'standard' | 'pro';
++
++export type LicenseTokenStatus =
++  | 'active'
++  | 'suspended'
++  | 'revoked'
++  | 'expired';
++
++export interface LicenseTokenPayloadV1 {
++  v: 1;
++  licenseId: string;
++  installationId: string;
++  plan: LicenseTokenPlan;
++  status: LicenseTokenStatus;
++  issuedAt: number;
++  expiresAt: number;
++  refreshAfter: number;
++}
++
++export type LicenseTokenErrorCode =
++  | 'LICENSE_TOKEN_INVALID'
++  | 'LICENSE_TOKEN_WRONG_INSTALLATION'
++  | 'LICENSE_TOKEN_EXPIRED'
++  | 'LICENSE_PUBLIC_KEY_INVALID';
++
++export class LicenseTokenError extends Error {
++  readonly code: LicenseTokenErrorCode;
++
++  constructor(code: LicenseTokenErrorCode) {
++    super(code);
++    this.name = 'LicenseTokenError';
++    this.code = code;
++  }
++}
++

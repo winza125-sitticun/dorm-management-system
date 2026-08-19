@@ -1,0 +1,26 @@
++      assert.ok(baselineFiles.includes(file), `missing V16 Task 3 shared file: ${file}`);
++      const digests = [];
++      for (const id of ids) digests.push(createHash('sha256').update(await readFile(join(roots[id], file))).digest('hex'));
++      assert.equal(new Set(digests).size, 1, `V16 Task 3 package drift: ${file}`);
++    }
++    for (const forbidden of [
++      'tests/license-token-canonicalization.test.ts',
++      'tests/license-token-verification.test.ts',
++    ]) {
++      assert.equal(baselineFiles.includes(forbidden), false, `V16 Task 3 master-only test leaked: ${forbidden}`);
++    }
++    assert.equal(migrationFiles.some((file) => /0008/u.test(file)), false, 'Task 3 must not add migration 0008');
++
++    const textExtensions = /\.(?:md|txt|json|jsonc|js|mjs|cjs|ts|tsx|sql|cmd|sh|html|css|yml|yaml|toml)$/iu;
++    for (const id of ids) {
++      for (const file of baselineFiles.filter((candidate) => textExtensions.test(candidate))) {
++        const content = await read(roots[id], file);
++        assert.equal(content.includes('LICENSE_SIGNING_PRIVATE_KEY'), false, `${id} leaked signing private key identifier in ${file}`);
++        assert.equal(content.includes('-----BEGIN PRIVATE KEY-----'), false, `${id} leaked PKCS8 private key marker in ${file}`);
++        assert.equal(content.includes('-----BEGIN ED25519 PRIVATE KEY-----'), false, `${id} leaked Ed25519 private key marker in ${file}`);
++      }
++    }
++
+     for (const id of ids) {
+       const pagesApi = await read(roots[id], 'functions/api/[[path]].ts');
+       assert.ok(pagesApi.includes('/api/public/branding'), `${id} public branding route missing`);
