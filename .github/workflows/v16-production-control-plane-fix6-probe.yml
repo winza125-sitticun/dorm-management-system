@@ -1,0 +1,65 @@
+name: V16 Production Control Plane Fix6 Probe
+on:
+  push:
+    branches: [agent/v16-production-gate]
+    paths: ['.github/workflows/v16-production-control-plane-fix6-probe.yml']
+permissions: { contents: write }
+env:
+  INPUT_ARCHIVE_SHA256: '43b2d44d508a02a431f2a405b5e95f8fbf850cca17b522446d1d6e0630d4d0f7'
+  FIX6_SHA256: '6edddab0f35a67930349e14717a559bc0d9d0a3ecd2f32b1b58e8a82c5b61420'
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: agent/v16-production-gate }
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+      - name: Reconstruct frozen Control Plane and apply Fix6
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "$FIX6_SHA256  v16-production-input/V16_PRODUCTION_FIX_6_CONTROL_PLANE_TYPES.patch" | sha256sum -c -
+          cat v16-production-inputs/input-00a.b64 v16-production-inputs/input-00b.b64 v16-production-inputs/input-01.b64 v16-production-inputs/input-02.b64 v16-production-inputs/input-03.b64 v16-production-inputs/input-04.b64 v16-production-inputs/input-05.b64 | base64 -d > /tmp/inputs.tar.xz
+          echo "$INPUT_ARCHIVE_SHA256  /tmp/inputs.tar.xz" | sha256sum -c -
+          rm -rf /tmp/v16-inputs /tmp/cp-review /tmp/control-plane
+          tar -xJf /tmp/inputs.tar.xz -C /tmp
+          mkdir -p /tmp/cp-review
+          unzip -q /tmp/v16-inputs/V16_TASK5_CONTROL_PLANE_REVIEW.zip -d /tmp/cp-review
+          cp -a /tmp/cp-review/V16_TASK5_CONTROL_PLANE /tmp/control-plane
+          cd /tmp/control-plane
+          patch --dry-run -p1 < "$GITHUB_WORKSPACE/v16-production-input/V16_PRODUCTION_FIX_6_CONTROL_PLANE_TYPES.patch"
+          patch -p1 < "$GITHUB_WORKSPACE/v16-production-input/V16_PRODUCTION_FIX_6_CONTROL_PLANE_TYPES.patch"
+      - name: Control Plane RED to GREEN verification
+        working-directory: /tmp/control-plane
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install --no-audit --no-fund
+          npm test
+          npm run typecheck
+          touch /tmp/cp-fix6.ok
+      - name: Persist evidence
+        if: always()
+        env: { JOB_STATUS: '${{ job.status }}' }
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p v16-production-evidence
+          result=failure; [ -f /tmp/cp-fix6.ok ] && result=success
+          cat > v16-production-evidence/control-plane-fix6-probe-latest.txt <<EOF
+          run_id=${GITHUB_RUN_ID}
+          source_sha=${GITHUB_SHA}
+          job_status=${JOB_STATUS}
+          fix6_sha256=${FIX6_SHA256}
+          control_plane_tests_typecheck=${result}
+          runtime_source_changed=false
+          customer_source_changed=false
+          customer_ready=false
+          deployed=false
+          EOF
+          git config user.name 'github-actions[bot]'; git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add v16-production-evidence/control-plane-fix6-probe-latest.txt
+          git commit -m 'ci(v16): record Control Plane fix6 probe' || exit 0
+          git push origin HEAD:agent/v16-production-gate
