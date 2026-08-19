@@ -1,0 +1,240 @@
+diff --git a/control-plane/migrations/0001_initial_license_control_plane.sql b/control-plane/migrations/0001_initial_license_control_plane.sql
+new file mode 100644
+index 0000000..bd74c86
+--- /dev/null
++++ b/control-plane/migrations/0001_initial_license_control_plane.sql
+@@ -0,0 +1,36 @@
++PRAGMA foreign_keys = ON;
++
++CREATE TABLE licenses (
++  id TEXT PRIMARY KEY,
++  key_hash TEXT NOT NULL UNIQUE,
++  customer_label TEXT,
++  plan TEXT NOT NULL CHECK (plan IN ('basic','standard','pro')),
++  status TEXT NOT NULL CHECK (status IN ('active','suspended','revoked','expired')),
++  max_activations INTEGER NOT NULL DEFAULT 1 CHECK (max_activations >= 1),
++  expires_at INTEGER,
++  created_at TEXT NOT NULL,
++  updated_at TEXT NOT NULL
++);
++
++CREATE TABLE activations (
++  id TEXT PRIMARY KEY,
++  license_id TEXT NOT NULL,
++  installation_id TEXT NOT NULL,
++  project_name TEXT,
++  primary_hostname TEXT,
++  activated_at TEXT NOT NULL,
++  last_seen_at TEXT NOT NULL,
++  revoked_at TEXT,
++  FOREIGN KEY (license_id) REFERENCES licenses(id),
++  UNIQUE (license_id, installation_id)
++);
++
++CREATE TABLE license_events (
++  id TEXT PRIMARY KEY,
++  license_id TEXT,
++  installation_id TEXT,
++  kind TEXT NOT NULL,
++  ip_hash TEXT,
++  user_agent_hash TEXT,
++  created_at TEXT NOT NULL
++);
++diff --git a/control-plane/package-lock.json b/control-plane/package-lock.json
++new file mode 100644
++index 0000000..9318aa7
++--- /dev/null
+++++ b/control-plane/package-lock.json
++@@ -0,0 +1,10 @@
+++{
+++  "name": "dorm-control-plane",
+++  "lockfileVersion": 3,
+++  "requires": true,
+++  "packages": {
+++    "": {
+++      "name": "dorm-control-plane"
+++    }
+++  }
+++}
++diff --git a/control-plane/package.json b/control-plane/package.json
++new file mode 100644
++index 0000000..2e17d84
++--- /dev/null
+++++ b/control-plane/package.json
++@@ -0,0 +1,8 @@
+++{
+++  "name": "dorm-control-plane",
+++  "private": true,
+++  "type": "module",
+++  "scripts": {
+++    "test": "node --experimental-strip-types --test tests/*.test.ts tests/*.test.mjs"
+++  }
+++}
++diff --git a/control-plane/src/db.ts b/control-plane/src/db.ts
++new file mode 100644
++index 0000000..2d1af56
++--- /dev/null
+++++ b/control-plane/src/db.ts
++@@ -0,0 +1,4 @@
+++export interface ControlPlaneEnv {
+++  LICENSE_DB: unknown;
+++  LICENSE_SIGNING_PRIVATE_KEY: string;
+++}
++diff --git a/control-plane/src/licenseRepository.ts b/control-plane/src/licenseRepository.ts
++new file mode 100644
++index 0000000..ab64337
++--- /dev/null
+++++ b/control-plane/src/licenseRepository.ts
++@@ -0,0 +1,47 @@
+++export class LicenseRepositoryError extends Error {
+++  constructor(message = 'LICENSE_KEY_INVALID') {
+++    super(message);
+++    this.name = 'LicenseRepositoryError';
+++  }
+++}
+++
+++export async function hashLicenseKey(rawLicenseKey: string): Promise<string> {
+++  const normalized = rawLicenseKey.trim();
+++  if (!normalized) throw new LicenseRepositoryError();
+++  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(normalized)));
+++  return Array.from(digest, (byte) => byte.toString(16).padStart(2, '0')).join('');
+++}
+++
+++export interface ControlPlaneD1Like {
+++  prepare(query: string): {
+++    bind(...values: unknown[]): {
+++      first<T>(): Promise<T | null>;
+++      all<T>(): Promise<{ results?: T[] }>;
+++    };
+++  };
+++}
+++
+++export interface LicenseRecord {
+++  id: string;
+++  key_hash: string;
+++  customer_label: string | null;
+++  plan: 'basic' | 'standard' | 'pro';
+++  status: 'active' | 'suspended' | 'revoked' | 'expired';
+++  max_activations: number;
+++  expires_at: number | null;
+++  created_at: string;
+++  updated_at: string;
+++}
+++
+++export async function findLicenseById(db: ControlPlaneD1Like, id: string): Promise<LicenseRecord | null> {
+++  return db.prepare('SELECT * FROM licenses WHERE id = ? LIMIT 1').bind(id).first<LicenseRecord>();
+++}
+++
+++export async function findLicenseByKeyHash(db: ControlPlaneD1Like, keyHash: string): Promise<LicenseRecord | null> {
+++  return db.prepare('SELECT * FROM licenses WHERE key_hash = ? LIMIT 1').bind(keyHash).first<LicenseRecord>();
+++}
+++
+++export async function countActiveActivations(db: ControlPlaneD1Like, licenseId: string): Promise<number> {
+++  const row = await db.prepare('SELECT COUNT(*) AS count FROM activations WHERE license_id = ? AND revoked_at IS NULL').bind(licenseId).first<{ count: number }>();
+++  return Number(row?.count ?? 0);
+++}
++diff --git a/control-plane/src/signing.ts b/control-plane/src/signing.ts
++new file mode 100644
++index 0000000..2429701
++--- /dev/null
+++++ b/control-plane/src/signing.ts
++@@ -0,0 +1,36 @@
+++import { canonicalizeSigningPayload, type SignLicensePayloadInput } from './token.ts';
+++export type { SignLicensePayloadInput } from './token.ts';
+++
+++const BASE64URL = /^[A-Za-z0-9_-]+$/;
+++
+++function decodeBase64UrlStrict(value: string): Uint8Array {
+++  if (!value || value.includes('=') || !BASE64URL.test(value)) throw new Error('LICENSE_SIGNING_KEY_INVALID');
+++  try {
+++    const bytes = Buffer.from(value, 'base64url');
+++    if (bytes.length === 0 || bytes.toString('base64url') !== value) throw new Error('invalid');
+++    return new Uint8Array(bytes);
+++  } catch {
+++    throw new Error('LICENSE_SIGNING_KEY_INVALID');
+++  }
+++}
+++
+++export async function importLicenseSigningPrivateKey(pkcs8Base64Url: string): Promise<CryptoKey> {
+++  try {
+++    const bytes = decodeBase64UrlStrict(pkcs8Base64Url);
+++    return await crypto.subtle.importKey('pkcs8', bytes, { name: 'Ed25519' }, false, ['sign']);
+++  } catch {
+++    throw new Error('LICENSE_SIGNING_KEY_INVALID');
+++  }
+++}
+++
+++export async function signLicenseToken(payload: SignLicensePayloadInput, privateKey: CryptoKey): Promise<string> {
+++  const canonical = canonicalizeSigningPayload(payload);
+++  const payloadBytes = new TextEncoder().encode(canonical);
+++  let signature: ArrayBuffer;
+++  try {
+++    signature = await crypto.subtle.sign({ name: 'Ed25519' }, privateKey, payloadBytes);
+++  } catch {
+++    throw new Error('LICENSE_SIGNING_FAILED');
+++  }
+++  return `dormlic1.${Buffer.from(payloadBytes).toString('base64url')}.${Buffer.from(signature).toString('base64url')}`;
+++}
++diff --git a/control-plane/src/token.ts b/control-plane/src/token.ts
++new file mode 100644
++index 0000000..1bd0787
++--- /dev/null
+++++ b/control-plane/src/token.ts
++@@ -0,0 +1,38 @@
+++export type ControlPlaneLicensePlan = 'basic' | 'standard' | 'pro';
+++export type ControlPlaneLicenseStatus = 'active' | 'suspended' | 'revoked' | 'expired';
+++
+++export interface SignLicensePayloadInput {
+++  licenseId: string;
+++  installationId: string;
+++  plan: ControlPlaneLicensePlan;
+++  status: ControlPlaneLicenseStatus;
+++  issuedAt: number;
+++  expiresAt: number;
+++  refreshAfter: number;
+++}
+++
+++export function validateSignLicensePayload(payload: SignLicensePayloadInput): void {
+++  if (!payload.licenseId.trim() || !payload.installationId.trim()) throw new Error('LICENSE_TOKEN_INVALID');
+++  if (!['basic', 'standard', 'pro'].includes(payload.plan)) throw new Error('LICENSE_TOKEN_INVALID');
+++  if (!['active', 'suspended', 'revoked', 'expired'].includes(payload.status)) throw new Error('LICENSE_TOKEN_INVALID');
+++  for (const value of [payload.issuedAt, payload.expiresAt, payload.refreshAfter]) {
+++    if (!Number.isFinite(value) || !Number.isInteger(value)) throw new Error('LICENSE_TOKEN_INVALID');
+++  }
+++  if (!(payload.issuedAt <= payload.refreshAfter && payload.refreshAfter <= payload.expiresAt)) {
+++    throw new Error('LICENSE_TOKEN_INVALID');
+++  }
+++}
+++
+++export function canonicalizeSigningPayload(payload: SignLicensePayloadInput): string {
+++  validateSignLicensePayload(payload);
+++  return JSON.stringify({
+++    v: 1,
+++    licenseId: payload.licenseId,
+++    installationId: payload.installationId,
+++    plan: payload.plan,
+++    status: payload.status,
+++    issuedAt: payload.issuedAt,
+++    expiresAt: payload.expiresAt,
+++    refreshAfter: payload.refreshAfter,
+++  });
+++}
++diff --git a/control-plane/wrangler.template.jsonc b/control-plane/wrangler.template.jsonc
++new file mode 100644
++index 0000000..4cbeb7e
++--- /dev/null
+++++ b/control-plane/wrangler.template.jsonc
++@@ -0,0 +1,13 @@
+++{
+++  "$schema": "../node_modules/wrangler/config-schema.json",
+++  "name": "dorm-license-control-plane",
+++  "compatibility_date": "2026-08-05",
+++  "d1_databases": [
+++    {
+++      "binding": "LICENSE_DB",
+++      "database_name": "REPLACE_WITH_LICENSE_DB_NAME",
+++      "database_id": "REPLACE_WITH_LICENSE_DB_ID",
+++      "migrations_dir": "./migrations"
+++    }
+++  ]
+++}
