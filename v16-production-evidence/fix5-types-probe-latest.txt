@@ -1,0 +1,6 @@
+run_id=32252399598
+source_sha=700557a9f3e88b61447fec66e0257ae77f63fa3c
+fix5_sha256=e05b99aa4ee92766e223b7de4065fe5cb0a4e2f86c421a64448eb26e28734a8a
+fix5_patch_bytes=116341
+scope=worker-configuration.d.ts-only
+customer_ready=false
