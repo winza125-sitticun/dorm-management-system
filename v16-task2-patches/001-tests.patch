@@ -1,0 +1,369 @@
+diff --git a/tests/backup-export.test.ts b/tests/backup-export.test.ts
+index 9a172c0..827a9e2 100644
+--- a/tests/backup-export.test.ts
++++ b/tests/backup-export.test.ts
+@@ -85,8 +85,10 @@ test('exportBusinessBackup exports safe owner-scoped business data and manifest'
+   assert.equal('lineUserId' in result.data.rooms[0], false);
+   assert.deepEqual(result.manifest.excluded, [
+     'users', 'audit_logs', 'rate_limits', 'google_oauth_states', 'google_oauth_tokens',
+-    'line_event_logs', 'integration_secrets', 'room_line_linkage', 'subscription_metadata',
++    'line_event_logs', 'integration_secrets', 'room_line_linkage', 'subscription_metadata', 'license_state',
+   ]);
++  assert.equal(db.queries.some((sql) => /from\s+license_state/i.test(sql)), false, 'backup must never query license_state');
++  assert.equal('license_state' in (result.data as any), false);
+ });
+ 
+ test('exportBusinessBackup fails when owner UID is missing', async () => {
+diff --git a/tests/backup-restore.test.ts b/tests/backup-restore.test.ts
+index acfcbf7..b20886e 100644
+--- a/tests/backup-restore.test.ts
++++ b/tests/backup-restore.test.ts
+@@ -43,6 +43,11 @@ test('restore orders are child-first for delete, parent-first for insert, and ba
+   assert.equal(RESTORE_BATCH_SIZE, 50);
+ });
+ 
++test('license_state is installation metadata and is absent from restore allowlists', () => {
++  assert.equal((RESTORE_DELETE_ORDER as readonly string[]).includes('license_state'), false);
++  assert.equal((RESTORE_INSERT_ORDER as readonly string[]).includes('license_state'), false);
++});
++
+ test('Admin UI downloads pre-restore backup before POST restore and legacy JSON backup is gone', () => {
+   const ui = readFileSync(new URL('../src/components/BackupRestoreSettings.tsx', import.meta.url), 'utf8');
+   const settings = readFileSync(new URL('../src/components/SettingsView.tsx', import.meta.url), 'utf8');
+@@ -74,6 +79,7 @@ class RestoreFakeStatement {
+ }
+ 
+ class RestoreFakeD1 {
++  public statements: string[] = [];
+   public settings: RestoreRow = {
+     dorm_name: 'Current Dorm', default_elec_rate: 7, default_water_rate: 13,
+     default_due_date_day: 5, default_penalty_rate: 100, promptpay_id: null, promptpay_name: null,
+@@ -82,7 +88,7 @@ class RestoreFakeD1 {
+     line_channel_access_token: 'keep-token', line_channel_secret: 'keep-secret', line_bot_enabled: 1,
+     google_spreadsheet_id: 'keep-sheet', subscription_plan: 'pro', subscription_status: 'active', subscription_expires_at: null,
+   };
+-  prepare(sql: string) { return new RestoreFakeStatement(this, sql); }
++  prepare(sql: string) { this.statements.push(sql); return new RestoreFakeStatement(this, sql); }
+   async batch(statements: RestoreFakeStatement[]): Promise<Array<{ success: boolean }>> {
+     return statements.map((stmt) => { this.apply(stmt.sql, stmt.args); return { success: true }; });
+   }
+@@ -169,4 +175,5 @@ test('v7 restore applies portable brand fields while preserving logo and integra
+   assert.equal(db.settings.line_channel_secret, 'keep-secret');
+   assert.equal(db.settings.google_spreadsheet_id, 'keep-sheet');
+   assert.equal(db.settings.subscription_plan, 'pro');
++  assert.equal(db.statements.some((sql) => /\b(?:delete\s+from|insert\s+(?:or\s+\w+\s+)?into|update)\s+license_state\b/i.test(sql)), false, 'restore must never mutate license_state');
+ });
+diff --git a/tests/license-state-backup-boundary.test.mjs b/tests/license-state-backup-boundary.test.mjs
+new file mode 100644
+index 0000000..5ba6f2d
+--- /dev/null
++++ b/tests/license-state-backup-boundary.test.mjs
+@@ -0,0 +1,23 @@
++import assert from 'node:assert/strict';
++import { readFileSync } from 'node:fs';
++import test from 'node:test';
++
++const read = (relative) => readFileSync(new URL(`../${relative}`, import.meta.url), 'utf8');
++
++test('license_state is explicitly excluded from application backup and absent from backup payload tables', () => {
++  const service = read('src/server/services/backup.service.ts');
++  const format = read('src/utils/backupFormat.ts');
++  const excludedBlock = service.slice(service.indexOf('export const BACKUP_EXCLUDED'), service.indexOf('] as const;', service.indexOf('export const BACKUP_EXCLUDED')));
++  const tablesBlock = format.slice(format.indexOf('export const BACKUP_TABLES'), format.indexOf('] as const;', format.indexOf('export const BACKUP_TABLES')));
++  assert.match(excludedBlock, /'license_state'/);
++  assert.doesNotMatch(tablesBlock, /license_state/);
++});
++
++test('restore allowlists never delete insert or update license_state', () => {
++  const restore = read('src/server/services/restore.service.ts');
++  const deleteBlock = restore.slice(restore.indexOf('export const RESTORE_DELETE_ORDER'), restore.indexOf('] as const;', restore.indexOf('export const RESTORE_DELETE_ORDER')));
++  const insertBlock = restore.slice(restore.indexOf('export const RESTORE_INSERT_ORDER'), restore.indexOf('] as const;', restore.indexOf('export const RESTORE_INSERT_ORDER')));
++  assert.doesNotMatch(deleteBlock, /license_state/);
++  assert.doesNotMatch(insertBlock, /license_state/);
++  assert.doesNotMatch(restore, /(?:DELETE\s+FROM|INSERT\s+(?:OR\s+\w+\s+)?INTO|UPDATE)\s+license_state/i);
++});
+diff --git a/tests/license-state-migration.test.mjs b/tests/license-state-migration.test.mjs
+new file mode 100644
+index 0000000..1d35169
+--- /dev/null
++++ b/tests/license-state-migration.test.mjs
+@@ -0,0 +1,45 @@
++import assert from 'node:assert/strict';
++import { readFileSync, readdirSync } from 'node:fs';
++import test from 'node:test';
++
++const root = new URL('../', import.meta.url);
++const read = (relative) => readFileSync(new URL(relative, root), 'utf8');
++
++function migrations() {
++  return readdirSync(new URL('d1-migrations/', root)).filter((name) => name.endsWith('.sql')).sort();
++}
++
++test('V16 Task 2 adds exactly migration 0007 for singleton license_state', () => {
++  const names = migrations();
++  assert.equal(names.at(-1), '0007_add_license_state.sql');
++  assert.equal(names.some((name) => /^0008|^0009|^00[1-9][0-9]/.test(name)), false);
++  const migration = read('d1-migrations/0007_add_license_state.sql');
++  assert.match(migration, /CREATE TABLE IF NOT EXISTS license_state/i);
++  assert.match(migration, /id INTEGER PRIMARY KEY CHECK\s*\(id = 1\)/i);
++  assert.match(migration, /installation_id TEXT NOT NULL/i);
++  assert.match(migration, /signed_token TEXT/i);
++  assert.match(migration, /status TEXT NOT NULL DEFAULT 'unlicensed'/i);
++  assert.match(migration, /effective_plan TEXT/i);
++  assert.match(migration, /last_checked_at TEXT/i);
++  assert.match(migration, /grace_until TEXT/i);
++  assert.match(migration, /expires_at TEXT/i);
++  assert.match(migration, /control_plane_url TEXT NOT NULL/i);
++  assert.match(migration, /updated_at TEXT NOT NULL/i);
++  assert.doesNotMatch(migration, /updated_at TEXT NOT NULL DEFAULT/i);
++});
++
++test('schema_d1 and Drizzle expose the same license_state persistence contract', () => {
++  const schemaD1 = read('schema_d1.sql');
++  const drizzle = read('src/db/schema.ts');
++  assert.match(schemaD1, /CREATE TABLE IF NOT EXISTS license_state/i);
++  assert.match(schemaD1, /id INTEGER PRIMARY KEY CHECK\s*\(id = 1\)/i);
++  assert.match(schemaD1, /status TEXT NOT NULL DEFAULT 'unlicensed'/i);
++  assert.match(schemaD1, /control_plane_url TEXT NOT NULL/i);
++  assert.match(schemaD1, /updated_at TEXT NOT NULL/i);
++  assert.doesNotMatch(schemaD1, /updated_at TEXT NOT NULL DEFAULT/i);
++  assert.match(drizzle, /export const licenseState = sqliteTable\('license_state'/);
++  assert.match(drizzle, /installationId: text\('installation_id'\)\.notNull\(\)/);
++  assert.match(drizzle, /status: text\('status'\)\.default\('unlicensed'\)\.notNull\(\)/);
++  assert.match(drizzle, /controlPlaneUrl: text\('control_plane_url'\)\.notNull\(\)/);
++  assert.match(drizzle, /updatedAt: text\('updated_at'\)\.notNull\(\)/);
++});
+diff --git a/tests/license-state-service.test.ts b/tests/license-state-service.test.ts
+new file mode 100644
+index 0000000..608812e
+--- /dev/null
++++ b/tests/license-state-service.test.ts
+@@ -0,0 +1,150 @@
++import test from 'node:test';
++import assert from 'node:assert/strict';
++import { ensureLicenseState, readLicenseState } from '../src/server/services/license.service.ts';
++
++type RawLicenseState = {
++  id: number;
++  installation_id: string;
++  signed_token: string | null;
++  status: string;
++  effective_plan: string | null;
++  last_checked_at: string | null;
++  grace_until: string | null;
++  expires_at: string | null;
++  control_plane_url: string;
++  updated_at: string;
++};
++
++class FakeStatement {
++  private args: unknown[] = [];
++  private db: FakeLicenseD1;
++  private sql: string;
++  constructor(db: FakeLicenseD1, sql: string) { this.db = db; this.sql = sql; }
++  bind(...values: unknown[]) { this.args = values; return this; }
++  async first<T = Record<string, unknown>>(): Promise<T | null> {
++    return this.db.first(this.sql, this.args) as T | null;
++  }
++  async run(): Promise<{ success?: boolean }> {
++    await this.db.run(this.sql, this.args);
++    return { success: true };
++  }
++}
++
++class FakeLicenseD1 {
++  row: RawLicenseState | null = null;
++  statements: string[] = [];
++  insertAttempts = 0;
++  constructor(row: RawLicenseState | null = null) { this.row = row; }
++  prepare(sql: string) { this.statements.push(sql); return new FakeStatement(this, sql); }
++  private normalized(sql: string) { return sql.replace(/\s+/g, ' ').trim().toLowerCase(); }
++  first(sql: string, args: unknown[]): RawLicenseState | null {
++    const q = this.normalized(sql);
++    assert.match(q, /^select .* from license_state where id = 1 limit 1$/i);
++    assert.deepEqual(args, []);
++    return this.row ? { ...this.row } : null;
++  }
++  async run(sql: string, args: unknown[]) {
++    const q = this.normalized(sql);
++    assert.match(q, /^insert or ignore into license_state /i);
++    assert.deepEqual(args.length, 5);
++    this.insertAttempts += 1;
++    await new Promise((resolve) => setTimeout(resolve, 0));
++    if (this.row) return;
++    this.row = {
++      id: Number(args[0]),
++      installation_id: String(args[1]),
++      signed_token: null,
++      status: String(args[2]),
++      effective_plan: null,
++      last_checked_at: null,
++      grace_until: null,
++      expires_at: null,
++      control_plane_url: String(args[3]),
++      updated_at: String(args[4]),
++    };
++  }
++}
++
++function validRaw(overrides: Partial<RawLicenseState> = {}): RawLicenseState {
++  return {
++    id: 1,
++    installation_id: '8cd13a85-a578-44d6-9efb-68730d57dcc3',
++    signed_token: null,
++    status: 'unlicensed',
++    effective_plan: null,
++    last_checked_at: null,
++    grace_until: null,
++    expires_at: null,
++    control_plane_url: 'https://license.example.test',
++    updated_at: '2026-08-19T00:00:00.000Z',
++    ...overrides,
++  };
++}
++
++test('readLicenseState maps a valid singleton from D1 snake_case columns', async () => {
++  const db = new FakeLicenseD1(validRaw({ signed_token: 'signed', effective_plan: 'pro' }));
++  const state = await readLicenseState(db as any);
++  assert.deepEqual(state, {
++    id: 1,
++    installationId: '8cd13a85-a578-44d6-9efb-68730d57dcc3',
++    signedToken: 'signed',
++    status: 'unlicensed',
++    effectivePlan: 'pro',
++    lastCheckedAt: null,
++    graceUntil: null,
++    expiresAt: null,
++    controlPlaneUrl: 'https://license.example.test',
++    updatedAt: '2026-08-19T00:00:00.000Z',
++  });
++});
++
++test('ensureLicenseState creates one persisted UUID and trims the control plane URL', async () => {
++  const db = new FakeLicenseD1();
++  const first = await ensureLicenseState(db as any, '  https://license.example.test  ');
++  assert.equal(first.id, 1);
++  assert.match(first.installationId, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
++  assert.equal(first.status, 'unlicensed');
++  assert.equal(first.signedToken, null);
++  assert.equal(first.effectivePlan, null);
++  assert.equal(first.lastCheckedAt, null);
++  assert.equal(first.graceUntil, null);
++  assert.equal(first.expiresAt, null);
++  assert.equal(first.controlPlaneUrl, 'https://license.example.test');
++  assert.ok(!Number.isNaN(Date.parse(first.updatedAt)));
++  assert.equal(db.insertAttempts, 1);
++});
++
++test('ensureLicenseState preserves existing installation identity and URL', async () => {
++  const db = new FakeLicenseD1();
++  const first = await ensureLicenseState(db as any, 'https://license.example.test');
++  const second = await ensureLicenseState(db as any, 'https://different.example.test');
++  assert.equal(second.installationId, first.installationId);
++  assert.equal(second.controlPlaneUrl, first.controlPlaneUrl);
++  assert.equal(db.insertAttempts, 1);
++});
++
++test('ensureLicenseState rejects whitespace-only control plane URL before any D1 access', async () => {
++  const db = new FakeLicenseD1();
++  await assert.rejects(() => ensureLicenseState(db as any, '   '), /LICENSE_CONTROL_PLANE_URL_REQUIRED/);
++  assert.deepEqual(db.statements, []);
++  assert.equal(db.insertAttempts, 0);
++});
++
++test('readLicenseState rejects malformed persisted singleton instead of replacing identity', async () => {
++  const db = new FakeLicenseD1(validRaw({ installation_id: ' ' }));
++  await assert.rejects(() => readLicenseState(db as any), /LICENSE_STATE_INVALID/);
++  await assert.rejects(() => ensureLicenseState(db as any, 'https://license.example.test'), /LICENSE_STATE_INVALID/);
++  assert.equal(db.insertAttempts, 0);
++});
++
++test('concurrent first bootstraps converge on the one singleton persisted by INSERT OR IGNORE', async () => {
++  const db = new FakeLicenseD1();
++  const [a, b] = await Promise.all([
++    ensureLicenseState(db as any, 'https://license.example.test'),
++    ensureLicenseState(db as any, 'https://license.example.test'),
++  ]);
++  assert.equal(db.insertAttempts, 2, 'both callers may race to INSERT OR IGNORE');
++  assert.equal(a.installationId, b.installationId);
++  assert.equal(a.installationId, db.row?.installation_id);
++  assert.equal(a.controlPlaneUrl, db.row?.control_plane_url);
++});
+diff --git a/tests/package-parity.test.mjs b/tests/package-parity.test.mjs
+index 51c86af..b5f996b 100644
+--- a/tests/package-parity.test.mjs
++++ b/tests/package-parity.test.mjs
+@@ -81,14 +81,22 @@ test('all four V14 package trees share identical implementation outside the appr
+     const implementationFiles = [
+       'src/utils/backupFormat.ts','src/utils/backupArchive.ts','src/utils/backupRestoreUi.ts',
+       'src/server/validators/backup.ts','src/server/services/backup.service.ts','src/server/services/restore.service.ts',
++      'src/server/services/license.service.ts',
+       'src/server/validators/logo.ts','src/server/services/branding.service.ts',
+       'src/components/BackupRestoreSettings.tsx','tests/backup-archive.test.ts','tests/backup-validation.test.ts','tests/backup-restore.test.ts','tests/backup-restore-api.test.ts',
+     ];
+     for (const file of implementationFiles) assert.ok(baselineFiles.includes(file), `missing shared implementation file: ${file}`);
+ 
+     const migrationFiles = baselineFiles.filter((file) => file.startsWith('d1-migrations/')).sort();
+-    assert.equal(migrationFiles.at(-1), 'd1-migrations/0006_add_white_label_settings.sql', 'Task 2 must not add a migration after 0006');
++    assert.equal(migrationFiles.at(-1), 'd1-migrations/0007_add_license_state.sql', 'V16 Task 2 migration ceiling must be 0007');
+     assert.equal(migrationFiles.some((file) => file.includes('brand_logo_data_uri')), false, 'Task 2 must not add a second logo migration');
++    const task2SharedFiles = ['d1-migrations/0007_add_license_state.sql', 'src/server/services/license.service.ts'];
++    for (const file of task2SharedFiles) {
++      assert.ok(baselineFiles.includes(file), `missing V16 Task 2 shared file: ${file}`);
++      const digests = [];
++      for (const id of ids) digests.push(createHash('sha256').update(await readFile(join(roots[id], file))).digest('hex'));
++      assert.equal(new Set(digests).size, 1, `V16 Task 2 package drift: ${file}`);
++    }
+ 
+     for (const id of ids) {
+       const pagesApi = await read(roots[id], 'functions/api/[[path]].ts');
+diff --git a/tests/package-release.test.mjs b/tests/package-release.test.mjs
+index 162454b..1ce802c 100644
+--- a/tests/package-release.test.mjs
++++ b/tests/package-release.test.mjs
+@@ -37,7 +37,11 @@ test('V14 release generator creates four verified customer ZIPs, QA report, and
+       assert.equal(pkg.name, `dorm-management-system-${plan}`);
+       assert.ok(verified.names.includes('src/server/validators/logo.ts'), `${plan} release logo validator missing`);
+       assert.ok(verified.names.includes('src/server/services/branding.service.ts'), `${plan} release branding service missing`);
+-      assert.equal(verified.names.some((name) => /^d1-migrations\/000[7-9]/.test(name) || /^d1-migrations\/00[1-9][0-9]/.test(name)), false, `${plan} release contains unexpected Task 2 migration`);
++      assert.ok(verified.names.includes('src/server/services/license.service.ts'), `${plan} release license state service missing`);
++      assert.ok(verified.names.includes('d1-migrations/0007_add_license_state.sql'), `${plan} release missing V16 Task 2 migration`);
++      assert.equal(verified.names.some((name) => name.startsWith('control-plane/')), false, `${plan} release leaked vendor control-plane`);
++      assert.equal([...verified.entries.values()].some((bytes) => bytes.toString('utf8').includes('LICENSE_SIGNING_PRIVATE_KEY')), false, `${plan} release leaked private signing identifier`);
++      assert.equal(verified.names.some((name) => /^d1-migrations\/000[8-9]/.test(name) || /^d1-migrations\/00[1-9][0-9]/.test(name)), false, `${plan} release contains migration after 0007`);
+       const pagesApi = verified.entries.get('functions/api/[[path]].ts').toString('utf8');
+       assert.ok(pagesApi.includes('/api/public/branding'), `${plan} release public branding route missing`);
+       assert.ok(pagesApi.includes('/api/settings/logo'), `${plan} release logo route missing`);
+diff --git a/tests/task5-login-app-shell-branding.test.mjs b/tests/task5-login-app-shell-branding.test.mjs
+index f8d4eec..e7426f6 100644
+--- a/tests/task5-login-app-shell-branding.test.mjs
++++ b/tests/task5-login-app-shell-branding.test.mjs
+@@ -53,5 +53,5 @@ test('semantic status palette is unchanged and Task 5 adds no migration', () =>
+   assert.match(app, /hover:text-red-400/);
+   assert.match(app, /text-amber-400/);
+   const migrations = readdirSync(join(root, 'd1-migrations')).filter((name) => name.endsWith('.sql')).sort();
+-  assert.equal(migrations.at(-1), '0006_add_white_label_settings.sql');
++  assert.equal(migrations.at(-1), '0007_add_license_state.sql');
+ });
+diff --git a/tests/task6-bill-branding.test.mjs b/tests/task6-bill-branding.test.mjs
+index 32df43d..b67248b 100644
+--- a/tests/task6-bill-branding.test.mjs
++++ b/tests/task6-bill-branding.test.mjs
+@@ -42,5 +42,5 @@ test('Task 6 keeps semantic utility colors and adds no migration', () => {
+   assert.match(bill, /bg-purple-/);
+   assert.match(bill, /bg-cyan-/);
+   const migrations = readdirSync(join(root, 'd1-migrations')).filter((name) => name.endsWith('.sql')).sort();
+-  assert.equal(migrations.at(-1), '0006_add_white_label_settings.sql');
++  assert.equal(migrations.at(-1), '0007_add_license_state.sql');
+ });
+diff --git a/tests/task7-tenant-portal-branding.test.mjs b/tests/task7-tenant-portal-branding.test.mjs
+index 8ef125f..273f736 100644
+--- a/tests/task7-tenant-portal-branding.test.mjs
++++ b/tests/task7-tenant-portal-branding.test.mjs
+@@ -57,5 +57,5 @@ test('Task 7 preserves semantic status colors and adds no migration', () => {
+   assert.match(portal, /bg-emerald-500/);
+   assert.match(portal, /#6366F1/i);
+   const migrations = readdirSync(join(root, 'd1-migrations')).filter((name) => name.endsWith('.sql')).sort();
+-  assert.equal(migrations.at(-1), '0006_add_white_label_settings.sql');
++  assert.equal(migrations.at(-1), '0007_add_license_state.sql');
+ });
