@@ -135,21 +135,32 @@ index 0000000..ab64337
 +}
 diff --git a/control-plane/src/signing.ts b/control-plane/src/signing.ts
 new file mode 100644
-index 0000000..2429701
+index 0000000..80b6091
 --- /dev/null
 +++ b/control-plane/src/signing.ts
-@@ -0,0 +1,36 @@
+@@ -0,0 +1,47 @@
 +import { canonicalizeSigningPayload, type SignLicensePayloadInput } from './token.ts';
 +export type { SignLicensePayloadInput } from './token.ts';
 +
 +const BASE64URL = /^[A-Za-z0-9_-]+$/;
 +
++function encodeBase64Url(bytes: Uint8Array): string {
++  let binary = '';
++  for (const byte of bytes) binary += String.fromCharCode(byte);
++  return btoa(binary).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/u, '');
++}
++
 +function decodeBase64UrlStrict(value: string): Uint8Array {
-+  if (!value || value.includes('=') || !BASE64URL.test(value)) throw new Error('LICENSE_SIGNING_KEY_INVALID');
++  if (!value || value.includes('=') || !BASE64URL.test(value) || value.length % 4 === 1) {
++    throw new Error('LICENSE_SIGNING_KEY_INVALID');
++  }
 +  try {
-+    const bytes = Buffer.from(value, 'base64url');
-+    if (bytes.length === 0 || bytes.toString('base64url') !== value) throw new Error('invalid');
-+    return new Uint8Array(bytes);
++    const base64 = value.replaceAll('-', '+').replaceAll('_', '/');
++    const padded = base64 + '='.repeat((4 - (base64.length % 4)) % 4);
++    const binary = atob(padded);
++    const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
++    if (bytes.length === 0 || encodeBase64Url(bytes) !== value) throw new Error('invalid');
++    return bytes;
 +  } catch {
 +    throw new Error('LICENSE_SIGNING_KEY_INVALID');
 +  }
@@ -173,7 +184,7 @@ index 0000000..2429701
 +  } catch {
 +    throw new Error('LICENSE_SIGNING_FAILED');
 +  }
-+  return `dormlic1.${Buffer.from(payloadBytes).toString('base64url')}.${Buffer.from(signature).toString('base64url')}`;
++  return `dormlic1.${encodeBase64Url(payloadBytes)}.${encodeBase64Url(new Uint8Array(signature))}`;
 +}
 diff --git a/control-plane/src/token.ts b/control-plane/src/token.ts
 new file mode 100644
