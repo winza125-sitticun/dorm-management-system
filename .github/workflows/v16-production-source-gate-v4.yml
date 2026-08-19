@@ -1,0 +1,200 @@
+name: V16 Production Source Gate V4
+on:
+  workflow_dispatch:
+  push:
+    branches: [agent/v16-production-gate]
+    paths:
+      - '.github/workflows/v16-production-source-gate-v4.yml'
+      - 'v16-production-input/V16_PRODUCTION_FIX_3.patch'
+permissions: { contents: write, actions: read }
+concurrency: { group: v16-production-source-gate-v4, cancel-in-progress: true }
+env:
+  V15_ARTIFACT_ID: '9330679827'
+  V15_ARTIFACT_SHA256: '5f6e65ae856c1196fcd3a2e3dd7bcffb4da863ab212d3595839e921f0a96e1cf'
+  V15_MASTER_SHA256: 'd05ee110815a29b74498e17adac1b8355dec40d5a705dd016f5ad5f849caa9e9'
+  INPUT_ARCHIVE_SHA256: '43b2d44d508a02a431f2a405b5e95f8fbf850cca17b522446d1d6e0630d4d0f7'
+  TASK8_TREE_SHA256: '1b7c4e8179be6f397061d7999ade081f1bb0791f5ac10a2b5490dbec1d3d7b6c'
+  FIX1_SHA256: '0bd14b991e38e86b0b8a742a17d56a6dde837f32f248663335fc8e59e3e4eb30'
+  FIX2_SHA256: 'e86a42d82a8b9c5ce7c78015e91d94b63f7ef35848316a27e645f9a6fca8828d'
+  FIX3_SHA256: 'bb2c8fee9301fadb15427020ecbe838cc1111d4deecd16c8b8f9aeb368118753'
+  SIGNING_PUBLIC_KEY_B64: 'fgdHGCi74MiMXHbI5+KVY6S9wnh/L369ekdI8NmrwdY='
+  SIGNING_PUBLIC_KEY_FINGERPRINT: '6c8a2c8fda3dbf224148ff77464fda9bc252c082e05755f211c52a232ae3db82'
+  CONTROL_PLANE_URL: 'https://dorm-control-plane.winza125.workers.dev'
+  MIGRATION_CEILING: '0007_add_license_state.sql'
+jobs:
+  source-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: agent/v16-production-gate }
+
+      - name: Verify bounded fix identities
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "$FIX1_SHA256  v16-production-input/V16_PRODUCTION_FIX.patch" | sha256sum --check --strict
+          echo "$FIX2_SHA256  v16-production-input/V16_PRODUCTION_FIX_2.patch" | sha256sum --check --strict
+          echo "$FIX3_SHA256  v16-production-input/V16_PRODUCTION_FIX_3.patch" | sha256sum --check --strict
+
+      - name: Reconstruct frozen inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat v16-production-inputs/input-00a.b64 v16-production-inputs/input-00b.b64 v16-production-inputs/input-01.b64 v16-production-inputs/input-02.b64 v16-production-inputs/input-03.b64 v16-production-inputs/input-04.b64 v16-production-inputs/input-05.b64 | base64 -d > /tmp/inputs.tar.xz
+          echo "$INPUT_ARCHIVE_SHA256  /tmp/inputs.tar.xz" | sha256sum --check --strict
+          rm -rf /tmp/v16-inputs
+          tar -xJf /tmp/inputs.tar.xz -C /tmp
+          (cd /tmp/v16-inputs && sha256sum --check --strict SHA256SUMS.txt)
+
+      - name: Reconstruct exact Task 8
+        env: { GH_TOKEN: '${{ github.token }}' }
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 8 --retry-all-errors --retry-delay 3 -H "Authorization: Bearer ${GH_TOKEN}" -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${V15_ARTIFACT_ID}/zip" -o /tmp/v15.zip
+          echo "$V15_ARTIFACT_SHA256  /tmp/v15.zip" | sha256sum --check --strict
+          rm -rf /tmp/v15 /tmp/v16-work; mkdir -p /tmp/v15 /tmp/v16-work
+          unzip -q /tmp/v15.zip -d /tmp/v15
+          echo "$V15_MASTER_SHA256  /tmp/v15/dorm-management-system-master-v15-CUSTOMER-READY.zip" | sha256sum --check --strict
+          unzip -q /tmp/v15/dorm-management-system-master-v15-CUSTOMER-READY.zip -d /tmp/v16-work
+          cd /tmp/v16-work
+          for p in /tmp/v16-inputs/V16_TASK6_EXACT_V15.patch /tmp/v16-inputs/V16_TASK7.patch /tmp/v16-inputs/V16_TASK8_PRODUCTION.patch; do patch --dry-run -p1 < "$p"; patch -p1 < "$p"; done
+          test "$(find d1-migrations -maxdepth 1 -type f -printf '%f\n' | sort | tail -n1)" = "$MIGRATION_CEILING"
+          test ! -e control-plane
+          find . -type f ! -path './node_modules/*' ! -path './dist/*' ! -path './dist-server/*' ! -path './preview-v14/*' ! -path './release-v14/*' -print0 | sort -z | xargs -0 sha256sum > /tmp/task8-tree.sha256
+          test "$(wc -l < /tmp/task8-tree.sha256 | tr -d ' ')" = '231'
+          echo "$TASK8_TREE_SHA256  /tmp/task8-tree.sha256" | sha256sum --check --strict
+
+      - name: Apply bounded production fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /tmp/v16-work
+          for p in "$GITHUB_WORKSPACE/v16-production-input/V16_PRODUCTION_FIX.patch" "$GITHUB_WORKSPACE/v16-production-input/V16_PRODUCTION_FIX_2.patch" "$GITHUB_WORKSPACE/v16-production-input/V16_PRODUCTION_FIX_3.patch"; do patch --dry-run -p1 < "$p"; patch -p1 < "$p"; done
+          grep -q 'resolveEffectivePlan' tests/plan-persistence.test.ts
+          grep -q 'type LicenseD1Database' src/server/services/license.service.ts
+          grep -q "'LICENSE_REQUIRED'" 'functions/api/[[path]].ts'
+          grep -Fq "publicKeyBase64: ''," src/generated/licenseConfig.ts
+          grep -Fq "controlPlaneUrl: ''," src/generated/licenseConfig.ts
+          find . -type f ! -path './node_modules/*' ! -path './dist/*' ! -path './dist-server/*' ! -path './preview-v14/*' ! -path './release-v14/*' -print0 | sort -z | xargs -0 sha256sum > /tmp/production-tree.sha256
+          sha256sum /tmp/production-tree.sha256 > /tmp/production-tree-manifest.sha256
+
+      - name: Extract isolated Control Plane
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/cp-review /tmp/control-plane; mkdir -p /tmp/cp-review
+          unzip -q /tmp/v16-inputs/V16_TASK5_CONTROL_PLANE_REVIEW.zip -d /tmp/cp-review
+          cp -a /tmp/cp-review/V16_TASK5_CONTROL_PLANE /tmp/control-plane
+          test -f /tmp/control-plane/migrations/0001_license_schema.sql
+          test ! -e /tmp/v16-work/control-plane
+
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+
+      - name: Fresh customer npm ci
+        working-directory: /tmp/v16-work
+        run: npm ci
+
+      - name: Full customer regression
+        working-directory: /tmp/v16-work
+        run: npm test
+
+      - name: TypeScript and Cloudflare type gates
+        working-directory: /tmp/v16-work
+        run: |
+          npm run lint
+          npm run check:cloudflare-types:master
+
+      - name: Production builds
+        working-directory: /tmp/v16-work
+        run: |
+          npm run build:pages
+          npm run build:vps
+
+      - name: Generate and verify four customer packages
+        working-directory: /tmp/v16-work
+        env:
+          V16_LICENSE_SIGNING_PUBLIC_KEY: '${{ env.SIGNING_PUBLIC_KEY_B64 }}'
+          V16_LICENSE_CONTROL_PLANE_URL: '${{ env.CONTROL_PLANE_URL }}'
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run packages:generate
+          for plan in demo basic standard pro; do
+            z="preview-v14/dorm-management-system-${plan}-v14-PREVIEW.zip"
+            test -f "$z"; unzip -t "$z" >/dev/null
+            tmp="$(mktemp -d)"; unzip -q "$z" -d "$tmp"
+            test "$(find "$tmp/d1-migrations" -maxdepth 1 -type f -printf '%f\n' | sort | tail -n1)" = "$MIGRATION_CEILING"
+            test ! -e "$tmp/control-plane"
+            ! grep -RIl --exclude='*.zip' 'LICENSE_SIGNING_PRIVATE_KEY' "$tmp" | grep -q .
+            grep -Fq "publicKeyBase64: '$SIGNING_PUBLIC_KEY_B64'" "$tmp/src/generated/licenseConfig.ts"
+            grep -Fq "controlPlaneUrl: '$CONTROL_PLANE_URL'" "$tmp/src/generated/licenseConfig.ts"
+            grep -Fq "packagePlan: '$plan'" "$tmp/src/generated/licenseConfig.ts"
+            if [ "$plan" = demo ]; then grep -Fq 'requiresLicense: false' "$tmp/src/generated/licenseConfig.ts"; else grep -Fq 'requiresLicense: true' "$tmp/src/generated/licenseConfig.ts"; fi
+            rm -rf "$tmp"
+          done
+
+      - name: Control Plane tests and typecheck
+        working-directory: /tmp/control-plane
+        run: |
+          npm install --no-audit --no-fund
+          npm test
+          npm run typecheck
+
+      - name: Private material scan
+        working-directory: /tmp/v16-work
+        shell: bash
+        run: |
+          set -euo pipefail
+          ! grep -RIl --exclude='*.zip' --exclude-dir=node_modules --exclude-dir=dist --exclude-dir=dist-server 'LICENSE_SIGNING_PRIVATE_KEY' . | grep -q .
+          ! grep -RIl --exclude='*.zip' --exclude-dir=node_modules --exclude-dir=dist --exclude-dir=dist-server 'BEGIN PRIVATE KEY' . | grep -q .
+
+      - name: Freeze source-gated artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf v16-production-source-gate-v4; mkdir -p v16-production-source-gate-v4/customer-previews
+          (cd /tmp/v16-work && zip -qr "$GITHUB_WORKSPACE/v16-production-source-gate-v4/dorm-management-system-master-v16-PRODUCTION-SOURCE-GATED.zip" . -x 'node_modules/*' 'dist/*' 'dist-server/*' 'preview-v14/*' 'release-v14/*')
+          (cd /tmp/control-plane && zip -qr "$GITHUB_WORKSPACE/v16-production-source-gate-v4/dorm-control-plane-v16-PRODUCTION-SOURCE-GATED.zip" . -x 'node_modules/*')
+          for p in demo basic standard pro; do cp "/tmp/v16-work/preview-v14/dorm-management-system-${p}-v14-PREVIEW.zip" "v16-production-source-gate-v4/customer-previews/dorm-management-system-${p}-v16-SOURCE-GATE-PREVIEW.zip"; done
+          sha256sum v16-production-source-gate-v4/*.zip v16-production-source-gate-v4/customer-previews/*.zip > v16-production-source-gate-v4/SHA256SUMS.txt
+          cp /tmp/task8-tree.sha256 v16-production-source-gate-v4/V16_TASK8_TREE_SHA256.txt
+          cp /tmp/production-tree.sha256 v16-production-source-gate-v4/V16_PRODUCTION_TREE_SHA256.txt
+          cp /tmp/production-tree-manifest.sha256 v16-production-source-gate-v4/V16_PRODUCTION_TREE_MANIFEST_SHA256.txt
+          cp v16-production-input/V16_PRODUCTION_FIX*.patch v16-production-source-gate-v4/
+
+      - uses: actions/upload-artifact@v4
+        with: { name: v16-production-source-gated-v4, path: 'v16-production-source-gate-v4/**', if-no-files-found: error, retention-days: 14 }
+
+      - name: Persist evidence
+        if: always()
+        env: { JOB_STATUS: '${{ job.status }}' }
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p v16-production-evidence
+          tree='unavailable'; [ -f /tmp/production-tree-manifest.sha256 ] && tree="$(cut -d' ' -f1 /tmp/production-tree-manifest.sha256)"
+          cat > v16-production-evidence/source-gate-v4-latest.txt <<EOF
+          run_id=${GITHUB_RUN_ID}
+          run_attempt=${GITHUB_RUN_ATTEMPT}
+          source_sha=${GITHUB_SHA}
+          job_status=${JOB_STATUS}
+          v15_artifact_id=${V15_ARTIFACT_ID}
+          v15_artifact_sha256=${V15_ARTIFACT_SHA256}
+          exact_task8_tree_manifest_sha256=${TASK8_TREE_SHA256}
+          fix1_sha256=${FIX1_SHA256}
+          fix2_sha256=${FIX2_SHA256}
+          fix3_sha256=${FIX3_SHA256}
+          production_tree_manifest_sha256=${tree}
+          signing_public_key_fingerprint=${SIGNING_PUBLIC_KEY_FINGERPRINT}
+          control_plane_url=${CONTROL_PLANE_URL}
+          migration_ceiling=${MIGRATION_CEILING}
+          customer_ready=false
+          deployed=false
+          EOF
+          git config user.name 'github-actions[bot]'; git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add v16-production-evidence/source-gate-v4-latest.txt
+          git commit -m 'ci(v16): record production source gate v4' || exit 0
+          git push origin HEAD:agent/v16-production-gate
