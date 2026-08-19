@@ -1,0 +1,22 @@
+--- a/src/server/services/license.service.ts
++++ b/src/server/services/license.service.ts
+@@ -28,8 +28,18 @@
+   token: LicenseTokenPayload | null;
+ };
+ 
++type LicenseD1Statement = {
++  bind(...values: unknown[]): LicenseD1Statement;
++  first<T = Record<string, unknown>>(): Promise<T | null>;
++  run(): Promise<unknown>;
++};
++
++type LicenseD1Database = {
++  prepare(query: string): LicenseD1Statement;
++};
++
+ type LicenseEnv = {
+-  DB?: D1Database;
++  DB?: LicenseD1Database;
+   LICENSE_SIGNING_PUBLIC_KEY?: string;
+   LICENSE_CONTROL_PLANE_URL?: string;
+ };
