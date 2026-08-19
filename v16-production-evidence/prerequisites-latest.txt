@@ -1,6 +1,6 @@
 run_id=32240662854
-run_attempt=1
+run_attempt=2
 source_sha=7a326c4acd2b5c5e9c5d1085d50a9ab0e782fa7d
-job_status=failure
+job_status=success
 missing=
-public_key_sha256=unavailable
+public_key_sha256=6c8a2c8fda3dbf224148ff77464fda9bc252c082e05755f211c52a232ae3db82
