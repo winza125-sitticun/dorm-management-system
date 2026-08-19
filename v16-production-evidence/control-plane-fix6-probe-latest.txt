@@ -1,0 +1,9 @@
+run_id=32252862382
+source_sha=926cb443ee4b0a4c1a4d26bf80e19ea0d1e2ee95
+job_status=success
+fix6_sha256=6edddab0f35a67930349e14717a559bc0d9d0a3ecd2f32b1b58e8a82c5b61420
+control_plane_tests_typecheck=success
+runtime_source_changed=false
+customer_source_changed=false
+customer_ready=false
+deployed=false
