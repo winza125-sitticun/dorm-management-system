@@ -37,6 +37,30 @@ index 3e4b77a..d7b66bc 100644
 +  control_plane_url TEXT NOT NULL,
 +  updated_at TEXT NOT NULL
 +);
+diff --git a/scripts/build-packages.mjs b/scripts/build-packages.mjs
+index cdbb825..b285dc2 100644
+--- a/scripts/build-packages.mjs
++++ b/scripts/build-packages.mjs
+@@ -20,6 +20,7 @@ const APPROVED = Object.freeze({
+ const MASTER_ONLY = new Set([
+   'scripts/build-packages.mjs', 'scripts/release-packages.mjs', 'scripts/package-audit.mjs', 'scripts/zip-utils.mjs',
+   'tests/package-builder.test.mjs', 'tests/package-parity.test.mjs', 'tests/package-audit.test.mjs', 'tests/package-release.test.mjs', 'tests/master-launchers.test.mjs', 'tests/zip-utils.test.mjs',
++  'tests/license-state-migration.test.mjs', 'tests/license-state-service.test.ts', 'tests/license-state-backup-boundary.test.mjs',
+   'BUILD-PACKAGES-WINDOWS.cmd', 'BUILD-PACKAGES-ANDROID.sh', 'MASTER_PROJECT_TH.md', 'wrangler.master.jsonc', 'RELEASE_NOTES_V13_TH.md', 'TASK12_STATUS_TH.md',
+ ]);
+ const MASTER_PREFIXES = ['.git/', 'node_modules/', 'docs/superpowers/', 'package-plans/', 'control-plane/', 'release-v13/', 'preview-v13/', '.staging-v13/', 'release-v14/', 'preview-v14/', '.staging-v14/', 'dist/', 'dist-server/', 'backups/'];
+diff --git a/scripts/package-audit.mjs b/scripts/package-audit.mjs
+index cbcc23a..d87bef3 100644
+--- a/scripts/package-audit.mjs
++++ b/scripts/package-audit.mjs
+@@ -9,6 +9,7 @@ const FORBIDDEN_EXACT = new Set([
+   '.git', 'node_modules', 'wrangler.jsonc', '.env', '.dev.vars',
+   'scripts/build-packages.mjs', 'scripts/release-packages.mjs', 'scripts/package-audit.mjs', 'scripts/zip-utils.mjs',
+   'tests/package-builder.test.mjs', 'tests/package-parity.test.mjs', 'tests/package-audit.test.mjs', 'tests/package-release.test.mjs', 'tests/master-launchers.test.mjs', 'tests/zip-utils.test.mjs',
++  'tests/license-state-migration.test.mjs', 'tests/license-state-service.test.ts', 'tests/license-state-backup-boundary.test.mjs',
+   'BUILD-PACKAGES-WINDOWS.cmd', 'BUILD-PACKAGES-ANDROID.sh', 'MASTER_PROJECT_TH.md', 'wrangler.master.jsonc', 'TASK12_STATUS_TH.md',
+ ]);
+ const TEXT_EXTENSIONS = /\.(?:md|txt|json|jsonc|js|mjs|cjs|ts|tsx|sql|cmd|sh|html|css|yml|yaml|toml)$/i;
 diff --git a/src/db/schema.ts b/src/db/schema.ts
 index e6c7d80..4062f68 100644
 --- a/src/db/schema.ts
