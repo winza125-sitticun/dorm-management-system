@@ -1,0 +1,176 @@
+source_artifact_id=9365183203
+source_artifact_sha256=102f94d86cdde64819420afbe747ca1d8ef6764977562df846f2d823be71e47f
+pro_zip_sha256=c350d9ab87b1e379ec5fc37edb52ea4009d346d4f74ff62a62e164b7526c442b
+cloudflare_touched=false
+existing_d1_touched=false
+--- src/server/services/jwt.service.ts ---
+1:/**
+2: * Lightweight JWT Service using Web Crypto API
+3: * Compatible with Cloudflare Edge Workers and Node.js
+4: */
+5:
+6:const base64UrlEncode = (buffer: ArrayBuffer | Uint8Array | string) => {
+7:  let str = '';
+8:  if (typeof buffer === 'string') {
+9:    str = buffer;
+10:  } else {
+11:    const bytes = new Uint8Array(buffer);
+12:    for (let i = 0; i < bytes.byteLength; i++) {
+13:      str += String.fromCharCode(bytes[i]);
+14:    }
+15:  }
+16:  return btoa(str)
+17:    .replace(/\+/g, '-')
+18:    .replace(/\//g, '_')
+19:    .replace(/=+$/, '');
+20:};
+21:
+22:const base64UrlDecode = (str: string) => {
+23:  let base64 = str.replace(/-/g, '+').replace(/_/g, '/');
+24:  while (base64.length % 4) {
+25:    base64 += '=';
+26:  }
+27:  const binary = atob(base64);
+28:  const bytes = new Uint8Array(binary.length);
+29:  for (let i = 0; i < binary.length; i++) {
+30:    bytes[i] = binary.charCodeAt(i);
+31:  }
+32:  return bytes;
+33:};
+34:
+35:const utf8Encoder = new TextEncoder();
+36:const utf8Decoder = new TextDecoder();
+37:
+38:export async function generateToken(payload: any, secret: string, expiresInHours = 24 * 7): Promise<string> {
+39:  const header = { alg: 'HS256', typ: 'JWT' };
+40:  const iat = Math.floor(Date.now() / 1000);
+41:  const exp = iat + expiresInHours * 3600;
+42:  const tokenPayload = { ...payload, iat, exp };
+43:
+44:  const encodedHeader = base64UrlEncode(utf8Encoder.encode(JSON.stringify(header)));
+45:  const encodedPayload = base64UrlEncode(utf8Encoder.encode(JSON.stringify(tokenPayload)));
+46:  const dataToSign = `${encodedHeader}.${encodedPayload}`;
+47:
+48:  const key = await crypto.subtle.importKey(
+49:    'raw',
+50:    utf8Encoder.encode(secret),
+51:    { name: 'HMAC', hash: 'SHA-256' },
+52:    false,
+53:    ['sign']
+54:  );
+55:
+56:  const signatureBuffer = await crypto.subtle.sign(
+57:    'HMAC',
+58:    key,
+59:    utf8Encoder.encode(dataToSign)
+60:  );
+61:
+62:  const signature = base64UrlEncode(signatureBuffer);
+63:  return `${dataToSign}.${signature}`;
+64:}
+65:
+66:export async function verifyToken(token: string, secret: string): Promise<any> {
+67:  if (!token || typeof token !== 'string') {
+68:    return null;
+69:  }
+70:
+71:  const parts = token.split('.');
+72:  if (parts.length !== 3) {
+73:    return null;
+74:  }
+75:
+76:  const [encodedHeader, encodedPayload, signature] = parts;
+77:  const dataToSign = `${encodedHeader}.${encodedPayload}`;
+78:
+79:  try {
+80:    const key = await crypto.subtle.importKey(
+81:      'raw',
+82:      utf8Encoder.encode(secret),
+83:      { name: 'HMAC', hash: 'SHA-256' },
+84:      false,
+85:      ['verify']
+86:    );
+87:
+88:    const signatureBytes = base64UrlDecode(signature);
+89:    const isValid = await crypto.subtle.verify(
+90:      'HMAC',
+91:      key,
+92:      signatureBytes,
+93:      utf8Encoder.encode(dataToSign)
+94:    );
+95:
+96:    if (!isValid) {
+97:      return null;
+98:    }
+99:
+100:    const payloadString = utf8Decoder.decode(base64UrlDecode(encodedPayload));
+101:    const payload = JSON.parse(payloadString);
+102:
+103:    const now = Math.floor(Date.now() / 1000);
+104:    if (payload.exp && payload.exp < now) {
+105:      return null;
+106:    }
+107:
+108:    return payload;
+109:  } catch (e) {
+110:    console.error("JWT Verify Error:", e);
+111:    return null;
+112:  }
+113:}
+--- functions/api/[[path]].ts ---
+1388:    const isStaffRole = (role?: string | null) => staffRoles.includes(String(role || ''));
+1389:
+1390:    async function getAuthUser(options?: { skipPlanAccess?: boolean }): Promise<any> {
+1391:      const secret = getJwtSecret(env);
+1392:      const authHeader = request.headers.get("Authorization");
+1393:      if (authHeader && authHeader.startsWith("Bearer ")) {
+1394:        const token = authHeader.split(" ")[1];
+1395:        const payload = await verifyToken(token, secret);
+1396:        
+1397:        if (payload && payload.id) {
+1398:          if (env.DB) {
+1399:            try {
+1400:              const dbUser = await env.DB.prepare("SELECT * FROM users WHERE id = ? AND deleted_at IS NULL").bind(payload.id).first();
+1401:              if (dbUser) {
+1402:                const effectiveUserId = isStaffRole(String(dbUser.role)) && dbUser.parent_id ? Number(dbUser.parent_id) : Number(dbUser.id);
+1403:                if (!options?.skipPlanAccess) {
+1404:                  await assertPlanAccessForRequest(effectiveUserId);
+1405:                }
+1406:                return {
+1407:                  ...dbUser,
+1408:                  effectiveUserId
+1409:                };
+1410:              }
+1411:            } catch (e) {
+1412:              if (e instanceof PlanAccessError) throw e;
+1413:              console.warn("Auth user lookup error:", e);
+1414:            }
+1415:          } else {
+1416:            return { id: payload.id, effectiveUserId: payload.id, uid: payload.uid, email: payload.email, role: payload.role, parent_id: null, permissions: 'manage_rooms,manage_bills,edit_payments,manage_settings' };
+1417:          }
+1418:        }
+1419:      }
+1420:      return null;
+1421:    }
+1422:
+1935:      const secret = getJwtSecret(env);
+1936:
+1937:      const tokenPayload = {
+1938:        id: userObj.id,
+1939:        uid: userObj.uid,
+1940:        email: userObj.email,
+1941:        role: userObj.role
+1942:      };
+1943:      const token = await generateToken(tokenPayload, secret);
+1944:
+1945:      return successResponse({
+1946:        user: {
+1947:          id: userObj.id,
+1948:          uid: userObj.uid,
+1949:          email: userObj.email,
+1950:          role: userObj.role,
+1951:          displayName: userObj.role === 'super_admin' ? "Super Admin" : userObj.role === 'owner' ? "เจ้าของหอพัก" : "ผู้ดูแลหอพัก",
+1952:        },
+1953:        token
+1954:      }, "เข้าสู่ระบบสำเร็จ");
+1955:    }
