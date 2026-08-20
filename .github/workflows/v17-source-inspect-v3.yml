@@ -1,0 +1,40 @@
+name: V17 Source Inspect V3
+on:
+  push:
+    branches: [agent/v16-production-gate]
+    paths: ['.github/workflows/v17-source-inspect-v3.yml']
+permissions: { actions: read, contents: read }
+env:
+  V16_SOURCE_ARTIFACT_ID: '9392071166'
+  V16_SOURCE_ARTIFACT_SHA256: 'cb498eed4580589794480e4aa0a9d42fc2814fde0e64ad6620c16e6d220d2cf8'
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Extract exact V16 source
+        env: { GH_TOKEN: '${{ github.token }}' }
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/v16 /tmp/master /tmp/cp; mkdir -p /tmp/v16 /tmp/master /tmp/cp
+          curl --fail --location -H "Authorization: Bearer ${GH_TOKEN}" "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${V16_SOURCE_ARTIFACT_ID}/zip" -o /tmp/v16.zip
+          echo "$V16_SOURCE_ARTIFACT_SHA256  /tmp/v16.zip"|sha256sum -c -
+          unzip -q /tmp/v16.zip -d /tmp/v16
+          unzip -q /tmp/v16/dorm-management-system-master-v16-PRODUCTION-SOURCE-GATED-V29.zip -d /tmp/master
+          unzip -q /tmp/v16/dorm-control-plane-v16-PRODUCTION-SOURCE-GATED.zip -d /tmp/cp
+      - name: Print updater integration sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          for f in UPGRADE-PACKAGE.mjs scripts/plan-upgrade.mjs src/components/SettingsView.tsx src/components/BackupRestoreSettings.tsx src/server/services/license.service.ts scripts/build-packages.mjs scripts/package-audit.mjs; do
+            echo "===== MASTER:$f ====="; sed -n '1,260p' "/tmp/master/$f"; echo "===== END:$f ====="
+          done
+          echo '===== PAGES LICENSE ROUTES ====='
+          grep -n "api/license\|license/status\|license/activate\|license/refresh\|license/deactivate" /tmp/master/functions/api/\[\[path\]\].ts | head -n 120
+          echo '===== PAGES BACKUP ROUTES ====='
+          grep -n "backup/export\|backup/validate\|backup/restore" /tmp/master/functions/api/\[\[path\]\].ts | head -n 120
+          echo '===== CONTROL:index.ts ====='; cat /tmp/cp/src/index.ts
+          echo '===== CONTROL:license.service.ts ====='; sed -n '1,260p' /tmp/cp/src/license.service.ts
+          echo '===== CONTROL:schema ====='; cat /tmp/cp/migrations/0001_license_schema.sql
