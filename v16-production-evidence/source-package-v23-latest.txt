@@ -1,0 +1,21 @@
+run_id=32327088775
+source_sha=54bf83b8d0ff4b5bcbe1f38e41b6ad1c15fd5ed6
+job_status=success
+reconstruct=success
+dependency_audit=success
+audit_counts=low=0 moderate=4 high=0 critical=0 total=4
+customer_tests_types_builds=success
+four_packages=success
+control_plane_tests_typecheck=success
+private_material_scan=success
+artifact_freeze=success
+source_v13_artifact_id=9391068149
+source_v13_artifact_sha256=14e094a00c75bf0b538df4b0d396264c3af28f53b96a95d379e01390005e72ff
+fix8_sha256=3af6fd8af60efebf9423cc672d5910cae660d6f2ad195e6e3fe2619c9e01359b
+signing_public_key_fingerprint=6c8a2c8fda3dbf224148ff77464fda9bc252c082e05755f211c52a232ae3db82
+control_plane_url=https://dorm-control-plane.winza125.workers.dev
+migration_ceiling=0007_add_license_state.sql
+cloudflare_touched=false
+existing_d1_touched=false
+customer_ready=false
+deployed=false
