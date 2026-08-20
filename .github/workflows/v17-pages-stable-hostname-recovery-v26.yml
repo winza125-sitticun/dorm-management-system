@@ -16,19 +16,26 @@ jobs:
           set -euo pipefail
           python3 - <<'PY'
           from pathlib import Path
-          import re
           paths=[
             Path('.github/workflows/v17-live-upgrade-v20.yml'),
             Path('.github/workflows/v17-failed-migration-rollback-v24.yml'),
             Path('.github/workflows/v17-network-retry-idempotency-v25.yml'),
           ]
-          pat=re.compile(r'URL="\$\(grep -Eo .*? /tmp/pages\|tail -n1\)";test -n "\$URL";')
           for p in paths:
-            s=p.read_text()
-            s2,n=pat.subn('URL="https://${PAGES}.pages.dev";',s,count=1)
-            if n != 1:
-              raise SystemExit(f'hostname anchor count {n}: {p}')
-            p.write_text(s2)
+            lines=p.read_text().splitlines()
+            out=[]; changed=0
+            for line in lines:
+              if 'URL="$(grep -Eo' in line and '/tmp/pages|tail -n1)' in line:
+                indent=line[:len(line)-len(line.lstrip())]
+                suffix=''
+                if 'printf ' in line:
+                  suffix='printf '+line.split('printf ',1)[1]
+                line=indent+'URL="https://${PAGES}.pages.dev";'+suffix
+                changed+=1
+              out.append(line)
+            if changed != 1:
+              raise SystemExit(f'hostname anchor count {changed}: {p}')
+            p.write_text('\n'.join(out)+'\n')
           PY
           grep -Fq 'URL="https://${PAGES}.pages.dev";' .github/workflows/v17-live-upgrade-v20.yml
           grep -Fq 'URL="https://${PAGES}.pages.dev";' .github/workflows/v17-failed-migration-rollback-v24.yml
