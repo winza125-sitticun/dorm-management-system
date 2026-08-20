@@ -1,0 +1,3 @@
+5fe46b707b63a21bb84b1ccd62f401f5176db76d155cf15ea12ca965b330b338  v17-production-reference/v16/tests/task5-login-app-shell-branding.test.mjs
+d9b8312b7e6984dec70d745b937761fbfa985492079d0f9274f104c9065ac15d  v17-production-reference/v16/tests/task6-bill-branding.test.mjs
+e61e232cce03da939230f3397340ea31502856fb3dccd509e7af49f8ced122c4  v17-production-reference/v16/tests/task7-tenant-portal-branding.test.mjs
