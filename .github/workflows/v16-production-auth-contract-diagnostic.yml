@@ -15,7 +15,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with: { ref: agent/v16-production-gate }
-      - name: Download exact V10 Pro package and inspect rooms route handling
+      - name: Download exact V10 Pro package and inspect rooms route only
         env: { GH_TOKEN: '${{ github.token }}' }
         shell: bash
         run: |
@@ -30,36 +30,26 @@ jobs:
           from pathlib import Path
           p=Path('/tmp/pro/functions/api/[[path]].ts')
           lines=p.read_text(errors='ignore').splitlines()
-          needles=[
-            'path === "/api/rooms"', "path === '/api/rooms'",
-            'path.startsWith("/api/rooms', "path.startsWith('/api/rooms",
-            'getAuthUser()', 'PlanAccessError', 'UNAUTHORIZED',
-            'export const onRequest', 'export async function onRequest',
-            'catch (error', 'catch (e',
-          ]
+          out=[]
+          # Exact rooms route blocks and nearby auth handling.
           hits=[]
           for i,line in enumerate(lines,1):
-            if any(n in line for n in needles): hits.append(i)
-          out=[]
-          emitted=[]
+            if '/api/rooms' in line or 'getAuthUser(' in line and i > 1500:
+              hits.append(i)
+          ranges=[]
           for i in hits:
-            start=max(1,i-22); end=min(len(lines),i+35)
-            if any(start <= x <= end for x in emitted):
-              continue
-            emitted.append(i)
-            out.append(f'--- functions/api/[[path]].ts:{start}-{end} ---')
-            for n in range(start,end+1):
+            a=max(1,i-16); b=min(len(lines),i+40)
+            if not ranges or a > ranges[-1][1]+1: ranges.append([a,b])
+            else: ranges[-1][1]=max(ranges[-1][1],b)
+          # Include outermost final 90 lines only.
+          ranges.append([max(1,len(lines)-90),len(lines)])
+          for a,b in ranges:
+            out.append(f'--- functions/api/[[path]].ts:{a}-{b} ---')
+            for n in range(a,b+1):
               s=lines[n-1]
-              if len(s)>460: s=s[:460]
+              if len(s)>420: s=s[:420]
               out.append(f'{n}:{s}')
-          # Always include file tail where top-level exception handling usually lives.
-          start=max(1,len(lines)-140)
-          out.append(f'--- functions/api/[[path]].ts:{start}-{len(lines)} (tail) ---')
-          for n in range(start,len(lines)+1):
-            s=lines[n-1]
-            if len(s)>460: s=s[:460]
-            out.append(f'{n}:{s}')
-          Path('/tmp/auth-contract-v6.txt').write_text('\n'.join(out)+'\n')
+          Path('/tmp/auth-contract-v7.txt').write_text('\n'.join(out)+'\n')
           PY
           mkdir -p v16-production-evidence
           {
@@ -68,10 +58,10 @@ jobs:
             echo "pro_zip_sha256=${PRO_ZIP_SHA256}"
             echo "cloudflare_touched=false"
             echo "existing_d1_touched=false"
-            cat /tmp/auth-contract-v6.txt
-          } > v16-production-evidence/auth-contract-diagnostic-v6-latest.txt
+            cat /tmp/auth-contract-v7.txt
+          } > v16-production-evidence/auth-contract-diagnostic-v7-latest.txt
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add v16-production-evidence/auth-contract-diagnostic-v6-latest.txt
-          git commit -m 'ci(v16): record rooms route and outer handler' || exit 0
+          git add v16-production-evidence/auth-contract-diagnostic-v7-latest.txt
+          git commit -m 'ci(v16): record focused rooms auth route' || exit 0
           git push origin HEAD:agent/v16-production-gate
