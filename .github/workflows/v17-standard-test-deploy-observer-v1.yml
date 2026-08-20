@@ -1,0 +1,48 @@
+name: V17 Standard Test Deploy Observer V1
+on:
+  workflow_run:
+    workflows: ['V17 Deploy Frozen Standard Test V1']
+    types: [completed]
+permissions: { contents: write, actions: read }
+concurrency: { group: v17-standard-test-deploy-observer-v1, cancel-in-progress: true }
+jobs:
+  observe:
+    if: github.event.workflow_run.head_branch == 'agent/v16-production-gate'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: agent/v16-production-gate }
+      - name: Persist Standard test deployment run result
+        shell: bash
+        env:
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          RUN_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p v17-production-evidence
+          cat > v17-production-evidence/standard-test-deploy-v1-latest.txt <<EOF
+          run_id=${RUN_ID}
+          run_attempt=${RUN_ATTEMPT}
+          source_sha=${RUN_HEAD_SHA}
+          job_status=${RUN_CONCLUSION}
+          app_url=https://dorm-standard-v17-test-${RUN_ID}-${RUN_ATTEMPT}.pages.dev
+          pages_project=dorm-standard-v17-test-${RUN_ID}-${RUN_ATTEMPT}
+          customer_d1=dorm-standard-v17-test-${RUN_ID}-${RUN_ATTEMPT}-db
+          license_id=stdtest-${RUN_ID}-${RUN_ATTEMPT}
+          license_plan=standard
+          max_activations=1
+          expires_at=NULL
+          source_artifact_id=9398295831
+          source_artifact_sha256=db97970252514639a4387a42aaf26d3a5513330c3cdcfba8fb339d86dda3151c
+          standard_zip_sha256=3b1b95a294b7b2f46eb029cd83e22e0281e39d27542bce97ed965aceea929072
+          access_artifact=v17-standard-test-access-${RUN_ID}
+          EOF
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add v17-production-evidence/standard-test-deploy-v1-latest.txt
+          git commit -m 'ci(v17): observe Standard test deploy v1' || exit 0
+          git fetch origin agent/v16-production-gate
+          git rebase origin/agent/v16-production-gate
+          git push origin HEAD:agent/v16-production-gate
