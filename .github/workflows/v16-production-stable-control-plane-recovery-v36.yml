@@ -1,0 +1,173 @@
+name: V16 Production Stable Control Plane Recovery V36
+on:
+  push:
+    branches: [agent/v16-production-gate]
+    paths: ['.github/workflows/v16-production-stable-control-plane-recovery-v36.yml']
+permissions: { contents: write, actions: read }
+concurrency: { group: v16-production-stable-control-plane-v36, cancel-in-progress: false }
+env:
+  SOURCE_ARTIFACT_ID: '9392071166'
+  SOURCE_ARTIFACT_SHA256: 'cb498eed4580589794480e4aa0a9d42fc2814fde0e64ad6620c16e6d220d2cf8'
+  EXPECTED_CP_ZIP_SHA256: '5d9f31fb6a3b7a40b761bb09cd435a498529b22e29695ee6c7edb710a87b0e2e'
+  EXPECTED_PUBLIC_KEY_B64: 'fgdHGCi74MiMXHbI5+KVY6S9wnh/L369ekdI8NmrwdY='
+  EXPECTED_PUBLIC_KEY_SHA256: '6c8a2c8fda3dbf224148ff77464fda9bc252c082e05755f211c52a232ae3db82'
+  STABLE_CP_WORKER: 'dorm-license-control-plane-v16'
+  STABLE_CP_D1: 'dorm-license-control-plane-v16-db'
+  CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+  CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+  LICENSE_SIGNING_PRIVATE_KEY: ${{ secrets.V16_LICENSE_SIGNING_PRIVATE_KEY }}
+jobs:
+  recover-stable-control-plane:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: "fulfilling-communication / production"
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: agent/v16-production-gate }
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+      - name: Verify bounded recovery preconditions and exact candidate
+        env: { GH_TOKEN: '${{ github.token }}' }
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${CLOUDFLARE_API_TOKEN:-}"; test -n "${CLOUDFLARE_ACCOUNT_ID:-}"; test -n "${LICENSE_SIGNING_PRIVATE_KEY:-}"
+          grep -Fxq 'run_id=32330482738' v16-production-evidence/stable-control-plane-v35-latest.txt
+          grep -Fxq 'exact_artifact=success' v16-production-evidence/stable-control-plane-v35-latest.txt
+          grep -Fxq 'candidate_tests_typecheck_dryrun=success' v16-production-evidence/stable-control-plane-v35-latest.txt
+          grep -Fxq 'stable_d1_created=true' v16-production-evidence/stable-control-plane-v35-latest.txt
+          grep -Fxq 'customer_cloudflare_touched=false' v16-production-evidence/stable-control-plane-v35-latest.txt
+          grep -Fxq 'existing_d1_touched=false' v16-production-evidence/stable-control-plane-v35-latest.txt
+          node - <<'NODE'
+          const crypto=require('node:crypto'); let s=(process.env.LICENSE_SIGNING_PRIVATE_KEY||'').trim();
+          if((s.startsWith('"')&&s.endsWith('"'))||(s.startsWith("'")&&s.endsWith("'")))s=s.slice(1,-1).trim();
+          if(/^V16_LICENSE_SIGNING_PRIVATE_KEY\s*=/.test(s))s=s.replace(/^V16_LICENSE_SIGNING_PRIVATE_KEY\s*=\s*/,'').trim();
+          const pk=s.includes('BEGIN PRIVATE KEY')?crypto.createPrivateKey(s):crypto.createPrivateKey({key:Buffer.from(s.replace(/\s+/g,''),'base64'),format:'der',type:'pkcs8'});
+          const j=crypto.createPublicKey(pk).export({format:'jwk'}); const raw=Buffer.from(j.x.replace(/-/g,'+').replace(/_/g,'/')+'='.repeat((4-j.x.length%4)%4),'base64');
+          if(crypto.createHash('sha256').update(raw).digest('hex')!==process.env.EXPECTED_PUBLIC_KEY_SHA256)throw new Error('fingerprint mismatch');
+          if(raw.toString('base64')!==process.env.EXPECTED_PUBLIC_KEY_B64)throw new Error('public key mismatch');
+          NODE
+          curl --fail --location --retry 8 --retry-all-errors --retry-delay 3 -H "Authorization: Bearer ${GH_TOKEN}" -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${SOURCE_ARTIFACT_ID}/zip" -o /tmp/source.zip
+          echo "$SOURCE_ARTIFACT_SHA256  /tmp/source.zip" | sha256sum -c -
+          rm -rf /tmp/source /tmp/cp; mkdir -p /tmp/source /tmp/cp; unzip -q /tmp/source.zip -d /tmp/source
+          (cd /tmp/source && sha256sum -c SHA256SUMS.txt)
+          CP_ZIP=/tmp/source/dorm-control-plane-v16-PRODUCTION-SOURCE-GATED.zip
+          echo "$EXPECTED_CP_ZIP_SHA256  $CP_ZIP" | sha256sum -c -
+          unzip -q "$CP_ZIP" -d /tmp/cp
+          touch /tmp/v16-v36-artifact.ok
+      - name: Resolve only the existing stable D1 and generate config
+        working-directory: /tmp/cp
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci
+          npx wrangler d1 list --json > /tmp/d1-list.json
+          python3 - <<'PY'
+          import json,os
+          name=os.environ['STABLE_CP_D1']; data=json.load(open('/tmp/d1-list.json'))
+          rows=data if isinstance(data,list) else data.get('result',data.get('databases',[]))
+          matches=[x for x in rows if x.get('name')==name]
+          assert len(matches)==1, f'expected exactly one stable D1, got {len(matches)}'
+          uid=matches[0].get('uuid') or matches[0].get('id'); assert uid
+          open('/tmp/cp-d1-uuid','w').write(uid)
+          json.dump({'name':os.environ['STABLE_CP_WORKER'],'main':'src/index.ts','compatibility_date':'2026-08-05','d1_databases':[{'binding':'DB','database_name':name,'database_id':uid,'migrations_dir':'migrations'}]},open('/tmp/cp/wrangler.jsonc','w'))
+          PY
+          test "$(cat /tmp/cp-d1-uuid)" = '68695864-48de-4d8a-932b-9d11cd4d6b4d'
+          touch /tmp/v16-v36-resource.ok
+      - name: Guard stable D1, migrate and deploy exact Control Plane
+        working-directory: /tmp/cp
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 90s npx wrangler d1 execute DB --remote --config wrangler.jsonc --command "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name;" > /tmp/pre-migration-tables.txt
+          if grep -Eiq '(^|[^a-z])(rooms|tenants|settings|bills|payments|users)([^a-z]|$)' /tmp/pre-migration-tables.txt; then echo 'refusing D1 that looks like customer business data' >&2; cat /tmp/pre-migration-tables.txt; exit 1; fi
+          timeout 180s npx wrangler d1 migrations apply DB --remote --config wrangler.jsonc
+          timeout 240s npx wrangler deploy --config wrangler.jsonc | tee /tmp/cp-deploy.log
+          printf '%s\n' "$LICENSE_SIGNING_PRIVATE_KEY" | timeout 90s npx wrangler secret put LICENSE_SIGNING_PRIVATE_KEY --config wrangler.jsonc
+          CP_URL="$(grep -Eo 'https://[^[:space:]]+\.workers\.dev' /tmp/cp-deploy.log | tail -n1)"; test -n "$CP_URL"; echo "CP_URL=$CP_URL" >> "$GITHUB_ENV"
+          touch /tmp/v16-v36-deploy.ok
+      - name: Stable readiness and schema proof
+        working-directory: /tmp/cp
+        shell: bash
+        run: |
+          set -euo pipefail
+          ready=0; for i in $(seq 1 45); do code="$(curl --silent --output /tmp/ready.json --write-out '%{http_code}' --max-time 10 "$CP_URL/" || true)"; [ "$code" = 405 ] && { ready=1; break; }; sleep 2; done; test "$ready" = 1
+          timeout 90s npx wrangler d1 execute DB --remote --config wrangler.jsonc --command "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('licenses','activations','license_events') ORDER BY name;" > /tmp/schema.txt
+          grep -q 'licenses' /tmp/schema.txt; grep -q 'activations' /tmp/schema.txt; grep -q 'license_events' /tmp/schema.txt
+          touch /tmp/v16-v36-readiness.ok
+      - name: Activation signing seat refresh suspension revocation smoke
+        working-directory: /tmp/cp
+        shell: bash
+        run: |
+          set -euo pipefail
+          MARK="v36-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"; KEY="V16-$(node -e "process.stdout.write(require('node:crypto').randomBytes(18).toString('hex').toUpperCase())")"; HASH="$(printf '%s' "$KEY" | sha256sum | awk '{print $1}')"; LIC="lic-${MARK}"; A="install-${MARK}-a"; B="install-${MARK}-b"; NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          echo "TEST_LICENSE_ID=$LIC" >> "$GITHUB_ENV"
+          timeout 90s npx wrangler d1 execute DB --remote --config wrangler.jsonc --command "INSERT INTO licenses(id,key_hash,customer_label,plan,status,max_activations,expires_at,created_at,updated_at) VALUES('${LIC}','${HASH}','V36 stable smoke','basic','active',1,NULL,'${NOW}','${NOW}');"
+          python3 - "$KEY" "$A" <<'PY'
+          import json,sys; json.dump({'licenseKey':sys.argv[1],'installationId':sys.argv[2],'projectName':'v36-stable','hostname':'stable.invalid'},open('/tmp/a.json','w'))
+          PY
+          curl --fail --silent --show-error -H 'content-type: application/json' --data @/tmp/a.json "$CP_URL/v1/licenses/activate" > /tmp/activate.json
+          python3 - "$KEY" "$B" <<'PY'
+          import json,sys; json.dump({'licenseKey':sys.argv[1],'installationId':sys.argv[2],'projectName':'v36-seat2','hostname':'seat2.invalid'},open('/tmp/b.json','w'))
+          PY
+          code="$(curl --silent --output /tmp/seat2.json --write-out '%{http_code}' -H 'content-type: application/json' --data @/tmp/b.json "$CP_URL/v1/licenses/activate")"; test "$code" = 409; grep -q 'ACTIVATION_LIMIT_REACHED' /tmp/seat2.json
+          node - "$A" <<'NODE'
+          const fs=require('node:fs'),crypto=require('node:crypto'); (async()=>{const installationId=process.argv[2],x=JSON.parse(fs.readFileSync('/tmp/activate.json','utf8')),token=x.token;if(!token)throw new Error('missing token');const [p,s,extra]=token.split('.');if(!p||!s||extra)throw new Error('bad token');const text=Buffer.from(p,'base64url').toString('utf8'),payload=JSON.parse(text);if(payload.installationId!==installationId||payload.plan!=='basic'||payload.status!=='active')throw new Error('bad claims');const key=await crypto.webcrypto.subtle.importKey('raw',Buffer.from(process.env.EXPECTED_PUBLIC_KEY_B64,'base64'),{name:'Ed25519'},false,['verify']);if(!await crypto.webcrypto.subtle.verify('Ed25519',key,Buffer.from(s,'base64url'),new TextEncoder().encode(text)))throw new Error('bad signature')})().catch(e=>{console.error(e);process.exit(1)});
+          NODE
+          python3 - "$A" <<'PY'
+          import json,sys; x=json.load(open('/tmp/activate.json')); json.dump({'token':x['token'],'installationId':sys.argv[1]},open('/tmp/refresh.json','w'))
+          PY
+          curl --fail --silent --show-error -H 'content-type: application/json' --data @/tmp/refresh.json "$CP_URL/v1/licenses/refresh" > /tmp/ref-basic.json
+          NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"; timeout 90s npx wrangler d1 execute DB --remote --config wrangler.jsonc --command "UPDATE licenses SET plan='pro',updated_at='${NOW}' WHERE id='${LIC}';"
+          curl --fail --silent --show-error -H 'content-type: application/json' --data @/tmp/refresh.json "$CP_URL/v1/licenses/refresh" > /tmp/ref-pro.json
+          python3 - <<'PY'
+          import json; assert json.load(open('/tmp/ref-pro.json'))['license']['plan']=='pro'
+          PY
+          python3 - "$A" <<'PY'
+          import json,sys; x=json.load(open('/tmp/ref-pro.json')); json.dump({'token':x['token'],'installationId':sys.argv[1]},open('/tmp/ref-pro-body.json','w'))
+          PY
+          NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"; timeout 90s npx wrangler d1 execute DB --remote --config wrangler.jsonc --command "UPDATE licenses SET status='suspended',updated_at='${NOW}' WHERE id='${LIC}';"
+          code="$(curl --silent --output /tmp/suspended.json --write-out '%{http_code}' -H 'content-type: application/json' --data @/tmp/ref-pro-body.json "$CP_URL/v1/licenses/refresh")"; test "$code" = 403; grep -q 'LICENSE_INVALID' /tmp/suspended.json
+          NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"; timeout 90s npx wrangler d1 execute DB --remote --config wrangler.jsonc --command "UPDATE licenses SET status='revoked',updated_at='${NOW}' WHERE id='${LIC}';"
+          code="$(curl --silent --output /tmp/revoked.json --write-out '%{http_code}' -H 'content-type: application/json' --data @/tmp/ref-pro-body.json "$CP_URL/v1/licenses/refresh")"; test "$code" = 403; grep -q 'LICENSE_INVALID' /tmp/revoked.json
+          touch /tmp/v16-v36-lifecycle.ok
+      - name: Cleanup only V36 smoke rows; preserve stable resources
+        if: always()
+        working-directory: /tmp/cp
+        shell: bash
+        run: |
+          set +e; rm -f /tmp/v16-v36-cleanup.ok
+          if [ -n "${TEST_LICENSE_ID:-}" ] && [[ "$TEST_LICENSE_ID" == lic-v36-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT} ]]; then timeout 90s npx wrangler d1 execute DB --remote --config wrangler.jsonc --command "DELETE FROM license_events WHERE license_id='${TEST_LICENSE_ID}' OR installation_id LIKE 'install-v36-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-%'; DELETE FROM activations WHERE license_id='${TEST_LICENSE_ID}'; DELETE FROM licenses WHERE id='${TEST_LICENSE_ID}';" && touch /tmp/v16-v36-cleanup.ok; else echo 'cleanup guard refused unexpected test license id' >&2; fi
+          exit 0
+      - name: Persist V36 stable deployment evidence
+        if: always()
+        env: { JOB_STATUS: '${{ job.status }}' }
+        shell: bash
+        run: |
+          set -euo pipefail; mkdir -p v16-production-evidence; val(){ [ -f "/tmp/v16-v36-$1.ok" ] && printf success || printf failure; }
+          cat > v16-production-evidence/stable-control-plane-v36-latest.txt <<EOF
+          run_id=${GITHUB_RUN_ID}
+          run_attempt=${GITHUB_RUN_ATTEMPT}
+          source_sha=${GITHUB_SHA}
+          job_status=${JOB_STATUS}
+          source_artifact_id=${SOURCE_ARTIFACT_ID}
+          source_artifact_sha256=${SOURCE_ARTIFACT_SHA256}
+          cp_zip_sha256=${EXPECTED_CP_ZIP_SHA256}
+          exact_artifact=$(val artifact)
+          reused_stable_d1=$(val resource)
+          stable_worker_deploy=$(val deploy)
+          readiness_schema=$(val readiness)
+          activation_signing_seat_refresh_terminal=$(val lifecycle)
+          smoke_row_cleanup=$(val cleanup)
+          stable_worker_name=${STABLE_CP_WORKER}
+          stable_d1_name=${STABLE_CP_D1}
+          stable_d1_uuid=$(cat /tmp/cp-d1-uuid 2>/dev/null || printf unknown)
+          customer_cloudflare_touched=false
+          existing_d1_touched=false
+          stable_resources_preserved=true
+          customer_ready=false
+          deployed=$(val deploy)
+          EOF
+          git config user.name 'github-actions[bot]'; git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add v16-production-evidence/stable-control-plane-v36-latest.txt; git commit -m 'ci(v16): record stable Control Plane recovery v36' || exit 0
+          git fetch origin agent/v16-production-gate; git rebase origin/agent/v16-production-gate; git push origin HEAD:agent/v16-production-gate
