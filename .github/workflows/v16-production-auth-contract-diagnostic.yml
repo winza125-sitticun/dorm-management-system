@@ -15,7 +15,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with: { ref: agent/v16-production-gate }
-      - name: Download exact V10 Pro package and produce compact rooms auth diagnostic
+      - name: Inspect exact V10 mutation license error contract
         env: { GH_TOKEN: '${{ github.token }}' }
         shell: bash
         run: |
@@ -28,33 +28,25 @@ jobs:
           unzip -q /tmp/source/customer-previews/dorm-management-system-pro-v16-SOURCE-GATE-PREVIEW.zip -d /tmp/pro
           python3 - <<'PY'
           from pathlib import Path
-          p=Path('/tmp/pro/functions/api/[[path]].ts')
-          lines=p.read_text(errors='ignore').splitlines()
           out=[]
-          def emit(i, before=3, after=8):
-            a=max(1,i-before); b=min(len(lines),i+after)
-            out.append(f'-- {a}-{b} --')
-            for n in range(a,b+1):
-              s=lines[n-1]
-              if len(s)>300: s=s[:300]
-              out.append(f'{n}:{s}')
-          exact=[]
-          for i,line in enumerate(lines,1):
-            if "path === '/api/rooms'" in line or 'path === "/api/rooms"' in line:
-              exact.append(i)
-          out.append('rooms_route_hits='+','.join(map(str,exact)))
-          for i in exact: emit(i,5,18)
-          # Include calls to getAuthUser near rooms routes only.
-          for i in exact:
-            for n in range(max(1,i-30), min(len(lines),i+80)+1):
-              if 'getAuthUser(' in lines[n-1]: emit(n,3,6)
-          # Include final outer catch markers only.
-          tail_start=max(1,len(lines)-180)
-          for i in range(tail_start,len(lines)+1):
-            s=lines[i-1]
-            if 'instanceof PlanAccessError' in s or 'catch (error' in s or 'catch (e' in s or 'INTERNAL_SERVER_ERROR' in s:
-              emit(i,3,7)
-          Path('/tmp/auth-contract-v8.txt').write_text('\n'.join(out)+'\n')
+          for rel in ['src/server/services/license.service.ts','functions/api/[[path]].ts']:
+            p=Path('/tmp/pro')/rel
+            lines=p.read_text(errors='ignore').splitlines()
+            needles=['class LicenseOperationError','assertMutationAllowedByLicense','LICENSE_REQUIRED','LICENSE_READ_ONLY','instanceof LicenseOperationError','instanceof PlanAccessError']
+            hits=[i for i,s in enumerate(lines,1) if any(n in s for n in needles)]
+            out.append(f'FILE={rel}')
+            seen=set()
+            for i in hits:
+              a=max(1,i-5); b=min(len(lines),i+12)
+              key=(a,b)
+              if key in seen: continue
+              seen.add(key)
+              out.append(f'-- {a}-{b} --')
+              for n in range(a,b+1):
+                s=lines[n-1]
+                if len(s)>320: s=s[:320]
+                out.append(f'{n}:{s}')
+          Path('/tmp/v9.txt').write_text('\n'.join(out)+'\n')
           PY
           mkdir -p v16-production-evidence
           {
@@ -63,10 +55,10 @@ jobs:
             echo "pro_zip_sha256=${PRO_ZIP_SHA256}"
             echo "cloudflare_touched=false"
             echo "existing_d1_touched=false"
-            cat /tmp/auth-contract-v8.txt
-          } > v16-production-evidence/auth-contract-diagnostic-v8-latest.txt
+            cat /tmp/v9.txt
+          } > v16-production-evidence/auth-contract-diagnostic-v9-latest.txt
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add v16-production-evidence/auth-contract-diagnostic-v8-latest.txt
-          git commit -m 'ci(v16): record compact rooms auth diagnostic v8' || exit 0
+          git add v16-production-evidence/auth-contract-diagnostic-v9-latest.txt
+          git commit -m 'ci(v16): record mutation license error contract v9' || exit 0
           git push origin HEAD:agent/v16-production-gate
