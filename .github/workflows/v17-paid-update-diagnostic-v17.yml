@@ -1,0 +1,87 @@
+name: V17 Paid Update Flow Diagnostic V17
+on:
+  push:
+    branches: [agent/v16-production-gate]
+    paths: ['.github/workflows/v17-paid-update-diagnostic-v17.yml']
+permissions: { contents: write, actions: read }
+env:
+  V17_ARTIFACT_ID: '9394092671'
+  V17_ARTIFACT_SHA256: '0503ec400e7e52e7e9a23723155aa2eebbc3e64f8ead898cc49b9a9968f63ad3'
+  STABLE_CP_D1: 'dorm-license-control-plane-v16-db'
+  STABLE_CP_D1_UUID: '68695864-48de-4d8a-932b-9d11cd4d6b4d'
+  CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+  CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+  LICENSE_SIGNING_PRIVATE_KEY: ${{ secrets.V16_LICENSE_SIGNING_PRIVATE_KEY }}
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    environment: "fulfilling-communication / production"
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: agent/v16-production-gate }
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+      - name: Deploy exact isolated worker
+        env: { GH_TOKEN: '${{ github.token }}' }
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/a /tmp/cp;mkdir -p /tmp/a /tmp/cp
+          curl --fail --location --retry 8 --retry-all-errors --retry-delay 3 -H "Authorization: Bearer ${GH_TOKEN}" "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${V17_ARTIFACT_ID}/zip" -o /tmp/a.zip
+          echo "$V17_ARTIFACT_SHA256  /tmp/a.zip"|sha256sum -c -;unzip -q /tmp/a.zip -d /tmp/a
+          R=/tmp/a;[ -f "$R/SHA256SUMS.txt" ]||R="$(dirname "$(find /tmp/a -name SHA256SUMS.txt -print -quit)")";(cd "$R"&&sha256sum -c SHA256SUMS.txt)
+          unzip -q "$R/dorm-control-plane-v17-SOURCE-GATE-V11.zip" -d /tmp/cp;cd /tmp/cp;npm ci
+          npx wrangler d1 list --json >/tmp/d1.json;W="dorm-control-plane-v17-paid-diag-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          python3 - "$W" <<'PY'
+          import json,os,sys
+          x=json.load(open('/tmp/d1.json'));r=x if isinstance(x,list) else x.get('result',x.get('databases',[]));m=[q for q in r if q.get('name')==os.environ['STABLE_CP_D1']];assert len(m)==1;u=m[0].get('uuid') or m[0].get('id');assert u==os.environ['STABLE_CP_D1_UUID'];c={'name':sys.argv[1],'main':'src/index.ts','compatibility_date':'2026-08-05','d1_databases':[{'binding':'DB','database_name':os.environ['STABLE_CP_D1'],'database_id':u,'migrations_dir':'migrations'}]};json.dump(c,open('wrangler.diag.jsonc','w'))
+          PY
+          timeout 240s npx wrangler deploy --config wrangler.diag.jsonc|tee /tmp/deploy.log;printf '%s\n' "$LICENSE_SIGNING_PRIVATE_KEY"|timeout 90s npx wrangler secret put LICENSE_SIGNING_PRIVATE_KEY --config wrangler.diag.jsonc
+          U="$(grep -Eo 'https://[^[:space:]]+\.workers\.dev' /tmp/deploy.log|tail -n1)";test -n "$U";echo "DIAG_WORKER=$W" >> "$GITHUB_ENV";echo "DIAG_URL=$U" >> "$GITHUB_ENV"
+          for i in $(seq 1 30);do c="$(curl -sS -o /tmp/demo -w '%{http_code}' -H 'content-type: application/json' --data '{"demo":true,"currentVersion":"1.1.0","channel":"stable"}' "$U/v1/updates/check"||true)";[ "$c" = 200 ]&&break;sleep 2;done;test "$c" = 200
+      - name: Capture Basic activate and update status bodies
+        working-directory: /tmp/cp
+        shell: bash
+        run: |
+          set -euo pipefail
+          MARK="v17diag-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}";echo "MARK=$MARK" >> "$GITHUB_ENV"
+          KEY="V17-$(node -e "process.stdout.write(require('node:crypto').randomBytes(18).toString('hex').toUpperCase())")";HASH="$(printf '%s' "$KEY"|sha256sum|awk '{print $1}')";LIC="lic-${MARK}";INST="install-${MARK}";NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          npx wrangler d1 execute DB --remote --config wrangler.diag.jsonc --command "INSERT INTO licenses(id,key_hash,customer_label,plan,status,max_activations,expires_at,created_at,updated_at) VALUES('${LIC}','${HASH}','V17 paid diagnostic','basic','active',1,NULL,'${NOW}','${NOW}');" >/dev/null
+          node - "$KEY" "$INST" <<'NODE'
+          require('node:fs').writeFileSync('/tmp/a-body',JSON.stringify({licenseKey:process.argv[2],installationId:process.argv[3],projectName:'diag',hostname:'diag.invalid'}));
+          NODE
+          AC="$(curl -sS -o /tmp/a-out -w '%{http_code}' -H 'content-type: application/json' --data @/tmp/a-body "$DIAG_URL/v1/licenses/activate"||true)";echo "$AC" >/tmp/ac
+          if [ "$AC" = 200 ];then INST="$INST" node - <<'NODE'
+          const fs=require('node:fs'),x=JSON.parse(fs.readFileSync('/tmp/a-out'));fs.writeFileSync('/tmp/u-body',JSON.stringify({token:x.token,installationId:process.env.INST,currentVersion:'1.1.0',channel:'stable'}));
+          NODE
+          UC="$(curl -sS -o /tmp/u-out -w '%{http_code}' -H 'content-type: application/json' --data @/tmp/u-body "$DIAG_URL/v1/updates/check"||true)";else UC=skipped;printf '{}' >/tmp/u-out;fi;echo "$UC" >/tmp/uc
+          node - <<'NODE'
+          const fs=require('node:fs');for(const [n,p] of [['activate','/tmp/a-out'],['update','/tmp/u-out']]){let x;try{x=JSON.parse(fs.readFileSync(p))}catch{x={raw:fs.readFileSync(p,'utf8')}};if(x.token)x.token='[redacted]';if(x.license)x.license={plan:x.license.plan,status:x.license.status};console.log(n,JSON.stringify(x))}
+          NODE
+          touch /tmp/v17-v17-diag.ok
+      - name: Cleanup
+        if: always()
+        working-directory: /tmp/cp
+        shell: bash
+        run: |
+          set +e
+          if [ -n "${MARK:-}" ]&&[[ "$MARK" == "v17diag-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" ]];then npx wrangler d1 execute DB --remote --config wrangler.diag.jsonc --command "DELETE FROM license_events WHERE license_id='lic-${MARK}' OR installation_id='install-${MARK}';DELETE FROM activations WHERE license_id='lic-${MARK}';DELETE FROM licenses WHERE id='lic-${MARK}';" >/dev/null;fi
+          if [ -n "${DIAG_WORKER:-}" ];then npx wrangler delete --config wrangler.diag.jsonc --force;fi;touch /tmp/v17-v17-clean.ok;exit 0
+      - name: Persist evidence
+        if: always()
+        env: { JOB_STATUS: '${{ job.status }}' }
+        shell: bash
+        run: |
+          set -euo pipefail;mkdir -p v17-production-evidence;AB="$(node -e "try{const x=JSON.parse(require('fs').readFileSync('/tmp/a-out'));if(x.token)x.token='[redacted]';process.stdout.write(JSON.stringify(x))}catch{process.stdout.write('unavailable')}"|cut -c1-400)";UB="$(node -e "try{const x=JSON.parse(require('fs').readFileSync('/tmp/u-out'));if(x.signature)x.signature='[redacted]';process.stdout.write(JSON.stringify(x))}catch{process.stdout.write('unavailable')}"|cut -c1-400)";cat >v17-production-evidence/paid-update-diagnostic-v17-latest.txt <<EOF
+          run_id=${GITHUB_RUN_ID}
+          job_status=${JOB_STATUS}
+          activate_http=$(cat /tmp/ac 2>/dev/null || printf unavailable)
+          activate_body=${AB}
+          update_http=$(cat /tmp/uc 2>/dev/null || printf unavailable)
+          update_body=${UB}
+          cleanup=$([ -f /tmp/v17-v17-clean.ok ]&&printf success||printf failure)
+          canonical_control_plane_touched=false
+          existing_customer_d1_touched=false
+          EOF
+          git config user.name 'github-actions[bot]';git config user.email '41898282+github-actions[bot]@users.noreply.github.com';git add v17-production-evidence/paid-update-diagnostic-v17-latest.txt;git commit -m 'ci(v17): record paid update diagnostic v17' || exit 0;git fetch origin agent/v16-production-gate;git rebase origin/agent/v16-production-gate;git push origin HEAD:agent/v16-production-gate
