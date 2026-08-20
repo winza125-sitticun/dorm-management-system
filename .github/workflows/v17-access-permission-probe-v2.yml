@@ -1,0 +1,73 @@
+name: V17 Access Permission Probe V2
+on:
+  push:
+    branches: [agent/v17-vendor-admin-mvp-customer-ready]
+    paths: ['.github/workflows/v17-access-permission-probe-v2.yml']
+permissions:
+  contents: write
+concurrency:
+  group: v17-access-permission-probe-v2
+  cancel-in-progress: false
+env:
+  CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+  CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: "fulfilling-communication / production"
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: agent/v17-vendor-admin-mvp-customer-ready }
+      - name: Probe Access read and bounded write/delete
+        shell: bash
+        run: |
+          set -u
+          API='https://api.cloudflare.com/client/v4'
+          AUTH=(-H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" -H 'Content-Type: application/json')
+          org_code="$(curl -sS -o /tmp/org.json -w '%{http_code}' "${API}/accounts/${CLOUDFLARE_ACCOUNT_ID}/access/organizations" "${AUTH[@]}" || true)"
+          apps_code="$(curl -sS -o /tmp/apps.json -w '%{http_code}' "${API}/accounts/${CLOUDFLARE_ACCOUNT_ID}/access/apps?per_page=1" "${AUTH[@]}" || true)"
+          create_code=skipped; delete_code=skipped; app_id=''
+          if [ "$apps_code" = 200 ]; then
+            NAME="Dorm V17 Access Probe ${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+            DOMAIN="dorm-control-plane.winza125.workers.dev/__v17-access-probe-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+            BODY="$(python3 - "$NAME" "$DOMAIN" <<'PY'
+          import json,sys
+          print(json.dumps({'type':'self_hosted','name':sys.argv[1],'domain':sys.argv[2],'session_duration':'15m','policies':[{'name':'Probe bypass','decision':'bypass','include':[{'everyone':{}}]}]}))
+          PY
+          )"
+            create_code="$(curl -sS -o /tmp/create.json -w '%{http_code}' -X POST "${API}/accounts/${CLOUDFLARE_ACCOUNT_ID}/access/apps" "${AUTH[@]}" --data "$BODY" || true)"
+            app_id="$(python3 - <<'PY'
+          import json
+          try:
+            x=json.load(open('/tmp/create.json')); print((x.get('result') or {}).get('id') or '')
+          except Exception: print('')
+          PY
+          )"
+            if [ -n "$app_id" ]; then
+              delete_code="$(curl -sS -o /tmp/delete.json -w '%{http_code}' -X DELETE "${API}/accounts/${CLOUDFLARE_ACCOUNT_ID}/access/apps/${app_id}" "${AUTH[@]}" || true)"
+            fi
+          fi
+          mkdir -p v17-vendor-admin-mvp/evidence
+          cat > v17-vendor-admin-mvp/evidence/access-permission-probe-v2-latest.txt <<EOF
+          run_id=${GITHUB_RUN_ID}
+          run_attempt=${GITHUB_RUN_ATTEMPT}
+          organization_read_http=${org_code}
+          apps_read_http=${apps_code}
+          disposable_app_create_http=${create_code}
+          disposable_app_delete_http=${delete_code}
+          disposable_app_cleaned=$([ -n "$app_id" ] && { [ "$delete_code" = 200 ] || [ "$delete_code" = 204 ]; } && printf true || printf false)
+          EOF
+          test -z "$app_id" || { [ "$delete_code" = 200 ] || [ "$delete_code" = 204 ]; }
+      - name: Persist probe evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add v17-vendor-admin-mvp/evidence/access-permission-probe-v2-latest.txt
+          git commit -m 'ci(v17): record Access permission probe v2' || exit 0
+          git fetch origin agent/v17-vendor-admin-mvp-customer-ready
+          git rebase origin/agent/v17-vendor-admin-mvp-customer-ready
+          git push origin HEAD:agent/v17-vendor-admin-mvp-customer-ready
