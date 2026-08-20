@@ -1,0 +1,15 @@
+{
+  "generator": {
+    "conclusion": "failure",
+    "created_at": "2026-08-20T03:26:17Z",
+    "head_sha": "8782c7d65c2ecef777665e08e70cce77a1035afb",
+    "id": 32328222040,
+    "run_attempt": 1,
+    "status": "completed",
+    "updated_at": "2026-08-20T03:26:24Z"
+  },
+  "live": {
+    "error": "HTTP Error 404: Not Found",
+    "status": "inspect_error"
+  }
+}
