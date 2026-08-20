@@ -1,0 +1,199 @@
+name: V17 Auto Update Production Publish Recovery V13
+on:
+  push:
+    branches: [agent/v16-production-gate]
+    paths: ['.github/workflows/v17-production-publish-recovery-v13.yml']
+permissions: { contents: write, actions: read }
+concurrency: { group: v17-production-publish-v13, cancel-in-progress: false }
+env:
+  V17_ARTIFACT_ID: '9394092671'
+  V17_ARTIFACT_SHA256: '0503ec400e7e52e7e9a23723155aa2eebbc3e64f8ead898cc49b9a9968f63ad3'
+  V17_VERSION: '1.2.0'
+  V16_MIN_VERSION: '1.1.0'
+  V17_MIGRATION_CEILING: '0008_add_update_state.sql'
+  PUBLIC_KEY_B64: 'fgdHGCi74MiMXHbI5+KVY6S9wnh/L369ekdI8NmrwdY='
+  CANONICAL_CP_URL: 'https://dorm-control-plane.winza125.workers.dev'
+  STABLE_CP_D1: 'dorm-license-control-plane-v16-db'
+  STABLE_CP_D1_UUID: '68695864-48de-4d8a-932b-9d11cd4d6b4d'
+  UPDATE_BASE_URL: 'https://dorm-management-updates.pages.dev'
+  CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+  CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+  LICENSE_SIGNING_PRIVATE_KEY: ${{ secrets.V16_LICENSE_SIGNING_PRIVATE_KEY }}
+jobs:
+  recover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    environment: "fulfilling-communication / production"
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: agent/v16-production-gate }
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+
+      - name: Reverify exact artifact and durable distribution
+        env: { GH_TOKEN: '${{ github.token }}' }
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -Fxq 'exact_artifact=success' v17-production-evidence/production-publish-v12-latest.txt
+          grep -Fxq 'durable_distribution=success' v17-production-evidence/production-publish-v12-latest.txt
+          grep -Fxq 'control_plane_schema_migration=success' v17-production-evidence/production-publish-v12-latest.txt
+          test -n "${CLOUDFLARE_API_TOKEN:-}"; test -n "${CLOUDFLARE_ACCOUNT_ID:-}"; test -n "${LICENSE_SIGNING_PRIVATE_KEY:-}"
+          rm -rf /tmp/v17-a /tmp/v17-cp; mkdir -p /tmp/v17-a /tmp/v17-cp
+          curl --fail --location --retry 8 --retry-all-errors --retry-delay 3 -H "Authorization: Bearer ${GH_TOKEN}" "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${V17_ARTIFACT_ID}/zip" -o /tmp/v17-a.zip
+          echo "$V17_ARTIFACT_SHA256  /tmp/v17-a.zip" | sha256sum -c -
+          unzip -q /tmp/v17-a.zip -d /tmp/v17-a
+          ROOT=/tmp/v17-a; [ -f "$ROOT/SHA256SUMS.txt" ] || ROOT="$(dirname "$(find /tmp/v17-a -name SHA256SUMS.txt -print -quit)")"; test -f "$ROOT/SHA256SUMS.txt"
+          (cd "$ROOT" && sha256sum -c SHA256SUMS.txt)
+          for p in demo basic standard pro; do
+            f="$ROOT/customer-packages/dorm-management-system-${p}-v17-CUSTOMER-READY-CANDIDATE.zip"
+            sha256sum "$f" | awk '{print $1}' > "/tmp/${p}.sha"; stat -c '%s' "$f" > "/tmp/${p}.size"
+            curl --fail --silent --show-error --max-time 60 "$UPDATE_BASE_URL/v17/1.2.0/dorm-management-system-${p}-v17.zip" -o "/tmp/remote-${p}.zip"
+            test "$(sha256sum "/tmp/remote-${p}.zip" | awk '{print $1}')" = "$(cat "/tmp/${p}.sha")"
+          done
+          unzip -q "$ROOT/dorm-control-plane-v17-SOURCE-GATE-V11.zip" -d /tmp/v17-cp
+          printf '%s' "$ROOT" >/tmp/v17-root
+          touch /tmp/v17-v13-exact.ok
+
+      - name: Prepare exact Control Plane and verify additive schema
+        working-directory: /tmp/v17-cp
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci; npm test; npm run typecheck
+          npx wrangler d1 list --json >/tmp/d1-list.json
+          GATE_WORKER="dorm-control-plane-v17-gate-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          python3 - "$GATE_WORKER" <<'PY'
+          import json,os,sys
+          x=json.load(open('/tmp/d1-list.json')); rows=x if isinstance(x,list) else x.get('result',x.get('databases',[]))
+          m=[r for r in rows if r.get('name')==os.environ['STABLE_CP_D1']]; assert len(m)==1,m
+          uid=m[0].get('uuid') or m[0].get('id'); assert uid==os.environ['STABLE_CP_D1_UUID'],uid
+          c={'main':'src/index.ts','compatibility_date':'2026-08-05','d1_databases':[{'binding':'DB','database_name':os.environ['STABLE_CP_D1'],'database_id':uid,'migrations_dir':'migrations'}]}
+          json.dump(dict(c,name=sys.argv[1]),open('wrangler.gate.jsonc','w')); json.dump(dict(c,name='dorm-control-plane'),open('wrangler.production.jsonc','w'))
+          PY
+          timeout 90s npx wrangler d1 execute DB --remote --config wrangler.production.jsonc --command "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name;" >/tmp/tables.txt
+          ! grep -Eiq '(^|[^a-z])(rooms|tenants|settings|bills|payments|users)([^a-z]|$)' /tmp/tables.txt
+          grep -q update_releases /tmp/tables.txt
+          echo "GATE_WORKER=$GATE_WORKER" >> "$GITHUB_ENV"
+          touch /tmp/v17-v13-schema.ok
+
+      - name: Idempotent release seed without SQL transaction
+        working-directory: /tmp/v17-cp
+        shell: bash
+        run: |
+          set -euo pipefail
+          NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          for p in demo basic standard pro; do
+            SHA="$(cat "/tmp/${p}.sha")"; SIZE="$(cat "/tmp/${p}.size")"; URL="${UPDATE_BASE_URL}/v17/1.2.0/dorm-management-system-${p}-v17.zip"; ID="v17-stable-${p}-1.2.0"
+            timeout 90s npx wrangler d1 execute DB --remote --config wrangler.production.jsonc --command "INSERT INTO update_releases(id,channel,plan,version,package_url,package_sha256,package_size,migration_ceiling,minimum_supported_version,release_notes,published_at,active) VALUES('${ID}','stable','${p}','${V17_VERSION}','${URL}','${SHA}',${SIZE},'${V17_MIGRATION_CEILING}','${V16_MIN_VERSION}','V17 Auto Update signed plan-aware staged update with backup and rollback','${NOW}',1) ON CONFLICT(id) DO UPDATE SET package_url=excluded.package_url,package_sha256=excluded.package_sha256,package_size=excluded.package_size,migration_ceiling=excluded.migration_ceiling,minimum_supported_version=excluded.minimum_supported_version,release_notes=excluded.release_notes,published_at=excluded.published_at,active=1; UPDATE update_releases SET active=0 WHERE channel='stable' AND plan='${p}' AND id<>'${ID}';"
+          done
+          timeout 90s npx wrangler d1 execute DB --remote --config wrangler.production.jsonc --command "SELECT plan,version,package_sha256,package_size,migration_ceiling,minimum_supported_version,active FROM update_releases WHERE channel='stable' AND active=1 ORDER BY plan;" >/tmp/releases.txt
+          for p in demo basic standard pro; do grep -q "$(cat "/tmp/${p}.sha")" /tmp/releases.txt; done
+          touch /tmp/v17-v13-seed.ok
+
+      - name: Deploy isolated exact Control Plane gate
+        working-directory: /tmp/v17-cp
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 240s npx wrangler deploy --config wrangler.gate.jsonc | tee /tmp/gate-deploy.log
+          printf '%s\n' "$LICENSE_SIGNING_PRIVATE_KEY" | timeout 90s npx wrangler secret put LICENSE_SIGNING_PRIVATE_KEY --config wrangler.gate.jsonc
+          GATE_URL="$(grep -Eo 'https://[^[:space:]]+\.workers\.dev' /tmp/gate-deploy.log | tail -n1)"; test -n "$GATE_URL"
+          echo "GATE_URL=$GATE_URL" >> "$GITHUB_ENV"
+          ok=0; for i in $(seq 1 45); do c="$(curl -s -o /tmp/root -w '%{http_code}' --max-time 10 "$GATE_URL/" || true)"; [ "$c" = 405 ] && { ok=1; break; }; sleep 2; done; test "$ok" = 1
+          touch /tmp/v17-v13-gate.ok
+
+      - name: Live plan isolation signing tamper and terminal-state proof
+        working-directory: /tmp/v17-cp
+        shell: bash
+        run: |
+          set -euo pipefail
+          MARK="v13-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"; echo "TEST_MARK=$MARK" >> "$GITHUB_ENV"
+          curl --fail --silent --show-error -H 'content-type: application/json' --data '{"demo":true,"currentVersion":"1.1.0","channel":"stable"}' "$GATE_URL/v1/updates/check" >/tmp/demo-update.json
+          for p in basic standard pro; do
+            KEY="V17-$(node -e "process.stdout.write(require('node:crypto').randomBytes(18).toString('hex').toUpperCase())")"; HASH="$(printf '%s' "$KEY"|sha256sum|awk '{print $1}')"; LIC="lic-${MARK}-${p}"; INST="install-${MARK}-${p}"; NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            timeout 90s npx wrangler d1 execute DB --remote --config wrangler.production.jsonc --command "INSERT INTO licenses(id,key_hash,customer_label,plan,status,max_activations,expires_at,created_at,updated_at) VALUES('${LIC}','${HASH}','V13 ${p}','${p}','active',1,NULL,'${NOW}','${NOW}');"
+            node - "$KEY" "$INST" <<'NODE'
+          const fs=require('node:fs');fs.writeFileSync('/tmp/activate.json',JSON.stringify({licenseKey:process.argv[2],installationId:process.argv[3],projectName:'v17-v13',hostname:'v13.invalid'}));
+          NODE
+            curl --fail --silent --show-error -H 'content-type: application/json' --data @/tmp/activate.json "$GATE_URL/v1/licenses/activate" >"/tmp/${p}-activate.json"
+            PLAN="$p" INST="$INST" node - <<'NODE'
+          const fs=require('node:fs');const p=process.env.PLAN,x=JSON.parse(fs.readFileSync(`/tmp/${p}-activate.json`,'utf8'));fs.writeFileSync('/tmp/check.json',JSON.stringify({token:x.token,installationId:process.env.INST,currentVersion:'1.1.0',channel:'stable'}));
+          NODE
+            curl --fail --silent --show-error -H 'content-type: application/json' --data @/tmp/check.json "$GATE_URL/v1/updates/check" >"/tmp/${p}-update.json"
+          done
+          node - <<'NODE'
+          const fs=require('node:fs'),crypto=require('node:crypto');
+          (async()=>{const fields=['schemaVersion','product','version','channel','plan','packageSha256','packageSize','migrationCeiling','minimumSupportedVersion','releaseNotes','downloadUrl','publishedAt'];const key=await crypto.webcrypto.subtle.importKey('raw',Buffer.from(process.env.PUBLIC_KEY_B64,'base64'),{name:'Ed25519'},false,['verify']);for(const p of ['demo','basic','standard','pro']){const x=JSON.parse(fs.readFileSync(`/tmp/${p}-update.json`,'utf8')),m=x.manifest;if(x.licensePlan!==p||m.plan!==p||m.version!=='1.2.0'||!x.updateAvailable)throw new Error(`${p} plan/version`);if(m.packageSha256!==fs.readFileSync(`/tmp/${p}.sha`,'utf8').trim()||m.packageSize!==Number(fs.readFileSync(`/tmp/${p}.size`,'utf8').trim()))throw new Error(`${p} package`);const canonical=JSON.stringify(Object.fromEntries(fields.map(k=>[k,m[k]])));const sig=Buffer.from(x.signature,'base64url');if(!await crypto.webcrypto.subtle.verify('Ed25519',key,sig,new TextEncoder().encode('dorm-update-manifest-v1\n'+canonical)))throw new Error(`${p} signature`);const bad={...m,packageSha256:'0'.repeat(64)},bc=JSON.stringify(Object.fromEntries(fields.map(k=>[k,bad[k]])));if(await crypto.webcrypto.subtle.verify('Ed25519',key,sig,new TextEncoder().encode('dorm-update-manifest-v1\n'+bc)))throw new Error(`${p} tamper accepted`);}}
+          )().catch(e=>{console.error(e);process.exit(1)});
+          NODE
+          NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"; timeout 90s npx wrangler d1 execute DB --remote --config wrangler.production.jsonc --command "UPDATE licenses SET status='revoked',updated_at='${NOW}' WHERE id='lic-${MARK}-basic';"
+          node - <<'NODE'
+          const fs=require('node:fs'),x=JSON.parse(fs.readFileSync('/tmp/basic-activate.json','utf8'));fs.writeFileSync('/tmp/revoked.json',JSON.stringify({token:x.token,installationId:`install-${process.env.TEST_MARK}-basic`,currentVersion:'1.1.0',channel:'stable'}));
+          NODE
+          code="$(curl --silent --output /tmp/revoked-out --write-out '%{http_code}' -H 'content-type: application/json' --data @/tmp/revoked.json "$GATE_URL/v1/updates/check")"; test "$code" = 403
+          touch /tmp/v17-v13-live.ok
+
+      - name: Canonical exact Control Plane deploy and verification
+        working-directory: /tmp/v17-cp
+        shell: bash
+        run: |
+          set -euo pipefail
+          for x in exact schema seed gate live; do test -f "/tmp/v17-v13-${x}.ok"; done
+          timeout 240s npx wrangler deploy --config wrangler.production.jsonc | tee /tmp/canonical.log
+          printf '%s\n' "$LICENSE_SIGNING_PRIVATE_KEY" | timeout 90s npx wrangler secret put LICENSE_SIGNING_PRIVATE_KEY --config wrangler.production.jsonc
+          grep -Fq "$CANONICAL_CP_URL" /tmp/canonical.log
+          ok=0; for i in $(seq 1 45); do c="$(curl -s -o /tmp/croot -w '%{http_code}' --max-time 10 "$CANONICAL_CP_URL/" || true)"; [ "$c" = 405 ] && { ok=1; break; }; sleep 2; done; test "$ok" = 1
+          curl --fail --silent --show-error -H 'content-type: application/json' --data '{"demo":true,"currentVersion":"1.1.0","channel":"stable"}' "$CANONICAL_CP_URL/v1/updates/check" >/tmp/cdemo.json
+          node - <<'NODE'
+          const fs=require('node:fs'),crypto=require('node:crypto');(async()=>{const x=JSON.parse(fs.readFileSync('/tmp/cdemo.json','utf8')),m=x.manifest;if(m.plan!=='demo'||m.packageSha256!==fs.readFileSync('/tmp/demo.sha','utf8').trim())throw new Error('canonical payload');const f=['schemaVersion','product','version','channel','plan','packageSha256','packageSize','migrationCeiling','minimumSupportedVersion','releaseNotes','downloadUrl','publishedAt'];const c=JSON.stringify(Object.fromEntries(f.map(k=>[k,m[k]])));const key=await crypto.webcrypto.subtle.importKey('raw',Buffer.from(process.env.PUBLIC_KEY_B64,'base64'),{name:'Ed25519'},false,['verify']);if(!await crypto.webcrypto.subtle.verify('Ed25519',key,Buffer.from(x.signature,'base64url'),new TextEncoder().encode('dorm-update-manifest-v1\n'+c)))throw new Error('canonical signature')})().catch(e=>{console.error(e);process.exit(1)});
+          NODE
+          touch /tmp/v17-v13-canonical.ok
+
+      - name: Guarded cleanup
+        if: always()
+        working-directory: /tmp/v17-cp
+        shell: bash
+        run: |
+          set +e; rm -f /tmp/v17-v13-cleanup.ok
+          MARK="${TEST_MARK:-v13-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}}"
+          if [[ "$MARK" == "v13-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" ]] && [ -f wrangler.production.jsonc ]; then timeout 90s npx wrangler d1 execute DB --remote --config wrangler.production.jsonc --command "DELETE FROM license_events WHERE license_id LIKE 'lic-${MARK}-%' OR installation_id LIKE 'install-${MARK}-%'; DELETE FROM activations WHERE license_id LIKE 'lic-${MARK}-%'; DELETE FROM licenses WHERE id LIKE 'lic-${MARK}-%';"; fi
+          if [ -n "${GATE_WORKER:-}" ] && [[ "$GATE_WORKER" == "dorm-control-plane-v17-gate-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" ]] && [ -f wrangler.gate.jsonc ]; then timeout 120s npx wrangler delete --config wrangler.gate.jsonc --force; fi
+          touch /tmp/v17-v13-cleanup.ok; exit 0
+
+      - name: Persist V13 evidence
+        if: always()
+        env: { JOB_STATUS: '${{ job.status }}' }
+        shell: bash
+        run: |
+          set -euo pipefail; mkdir -p v17-production-evidence; val(){ [ -f "/tmp/v17-v13-$1.ok" ] && printf success || printf failure; }
+          cat > v17-production-evidence/production-publish-v13-latest.txt <<EOF
+          run_id=${GITHUB_RUN_ID}
+          run_attempt=${GITHUB_RUN_ATTEMPT}
+          source_sha=${GITHUB_SHA}
+          job_status=${JOB_STATUS}
+          v17_artifact_id=${V17_ARTIFACT_ID}
+          v17_artifact_sha256=${V17_ARTIFACT_SHA256}
+          exact_artifact_and_distribution=$(val exact)
+          control_plane_schema=$(val schema)
+          idempotent_manifest_seed=$(val seed)
+          isolated_control_plane=$(val gate)
+          plan_isolation_signature_tamper_terminal=$(val live)
+          canonical_control_plane=$(val canonical)
+          cleanup=$(val cleanup)
+          update_distribution_url=${UPDATE_BASE_URL}
+          canonical_control_plane_url=${CANONICAL_CP_URL}
+          stable_d1_uuid=${STABLE_CP_D1_UUID}
+          migration_ceiling=${V17_MIGRATION_CEILING}
+          demo_zip_sha256=$(cat /tmp/demo.sha 2>/dev/null || printf unavailable)
+          basic_zip_sha256=$(cat /tmp/basic.sha 2>/dev/null || printf unavailable)
+          standard_zip_sha256=$(cat /tmp/standard.sha 2>/dev/null || printf unavailable)
+          pro_zip_sha256=$(cat /tmp/pro.sha 2>/dev/null || printf unavailable)
+          v16_rebuilt=false
+          v16_modified=false
+          existing_customer_d1_touched=false
+          stable_resources_preserved=true
+          v17_customer_ready=false
+          deployed=$(val canonical)
+          EOF
+          git config user.name 'github-actions[bot]'; git config user.email '41898282+github-actions[bot]@users.noreply.github.com'; git add -- v17-production-evidence/production-publish-v13-latest.txt; git commit -m 'ci(v17): record production publish recovery v13 evidence' || exit 0; git fetch origin agent/v16-production-gate; git rebase origin/agent/v16-production-gate; git push origin HEAD:agent/v16-production-gate
