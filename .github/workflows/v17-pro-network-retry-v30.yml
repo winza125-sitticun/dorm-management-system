@@ -105,9 +105,9 @@ jobs:
           npx wrangler pages deployment list --project-name "$PAGES" --json >/tmp/deploy-after
           python3 - <<'PY'
           import json
-          def ids(p):
-            x=json.load(open(p));r=x if isinstance(x,list) else x.get('result',x.get('deployments',[]));return [q.get('id') for q in r if q.get('id')]
-          a=ids('/tmp/deploy-before');b=ids('/tmp/deploy-after');assert a and b and a[0]==b[0],(a[:2],b[:2])
+          def canonical(p):
+            return json.dumps(json.load(open(p)),sort_keys=True,separators=(',',':'))
+          a=canonical('/tmp/deploy-before');b=canonical('/tmp/deploy-after');assert a==b,(a,b)
           PY
           timeout 90s npx wrangler d1 execute DB --remote --config wrangler.jsonc --command "SELECT name FROM sqlite_master WHERE type='table' AND name='update_state';" >/tmp/state2;! grep -q update_state /tmp/state2
           touch /tmp/v30-transient.ok
