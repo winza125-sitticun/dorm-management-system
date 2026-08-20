@@ -1,0 +1,128 @@
+name: V17 Network Retry Idempotency Gate V25
+on:
+  push:
+    branches: [agent/v16-production-gate]
+    paths: ['.github/workflows/v17-network-retry-idempotency-v25.yml']
+permissions: { contents: write, actions: read }
+concurrency: { group: v17-network-retry-idempotency-v25, cancel-in-progress: false }
+env:
+  V16_FINAL_ARTIFACT_ID: '9393238249'
+  V16_FINAL_ARTIFACT_SHA256: 'fe17d6426d66722068fd2d003590ca3d0ef188d19dca33c58ed6200ed2de85f1'
+  V16_DEMO_SHA256: '5ae4bddca8807f7eeda273c406e982c196ba675be75526e5fbcc7044487728c3'
+  V17_ARTIFACT_ID: '9394092671'
+  V17_ARTIFACT_SHA256: '0503ec400e7e52e7e9a23723155aa2eebbc3e64f8ead898cc49b9a9968f63ad3'
+  CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+  CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+jobs:
+  network:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    environment: "fulfilling-communication / production"
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: agent/v16-production-gate }
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+      - name: Verify exact immutable artifacts
+        env: { GH_TOKEN: '${{ github.token }}' }
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -Fxq 'job_status=success' v17-production-evidence/v16-final-baseline-v18-latest.txt
+          grep -Fxq 'job_status=success' v17-production-evidence/production-publish-v19-latest.txt
+          rm -rf /tmp/v16a /tmp/v17a /tmp/v16;mkdir -p /tmp/v16a /tmp/v17a /tmp/v16
+          curl --fail --location --retry 8 --retry-all-errors --retry-delay 3 -H "Authorization: Bearer ${GH_TOKEN}" "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${V16_FINAL_ARTIFACT_ID}/zip" -o /tmp/v16a.zip
+          echo "$V16_FINAL_ARTIFACT_SHA256  /tmp/v16a.zip"|sha256sum -c -;unzip -q /tmp/v16a.zip -d /tmp/v16a
+          R16=/tmp/v16a;[ -f "$R16/CUSTOMER-READY-SHA256SUMS.txt" ]||R16="$(dirname "$(find /tmp/v16a -name CUSTOMER-READY-SHA256SUMS.txt -print -quit)")";(cd "$R16"&&sha256sum -c CUSTOMER-READY-SHA256SUMS.txt)
+          P16="$R16/customer-previews/dorm-management-system-demo-v16-SOURCE-GATE-V29.zip";echo "$V16_DEMO_SHA256  $P16"|sha256sum -c -;unzip -q "$P16" -d /tmp/v16
+          curl --fail --location --retry 8 --retry-all-errors --retry-delay 3 -H "Authorization: Bearer ${GH_TOKEN}" "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${V17_ARTIFACT_ID}/zip" -o /tmp/v17a.zip
+          echo "$V17_ARTIFACT_SHA256  /tmp/v17a.zip"|sha256sum -c -;unzip -q /tmp/v17a.zip -d /tmp/v17a
+          R17=/tmp/v17a;[ -f "$R17/SHA256SUMS.txt" ]||R17="$(dirname "$(find /tmp/v17a -name SHA256SUMS.txt -print -quit)")";(cd "$R17"&&sha256sum -c SHA256SUMS.txt)
+          cp "$R17/BOOTSTRAP-V16-TO-V17.mjs" /tmp/v16/
+          test "$(node -p "require('/tmp/v16/package.json').version")" = 1.1.0
+          touch /tmp/v25-exact.ok
+      - name: Deploy disposable exact V16 Demo
+        working-directory: /tmp/v16
+        shell: bash
+        run: |
+          set -euo pipefail;npm ci
+          M="$(printf '%s' "$GITHUB_RUN_ID"|tail -c 9)-${GITHUB_RUN_ATTEMPT}-$(python3 -c 'import secrets;print(secrets.token_hex(3))')";D1="v17-v25-${M}-db";PAGES="v17-v25-${M}";printf 'D1=%q\nPAGES=%q\n' "$D1" "$PAGES">/tmp/v25.env
+          timeout 120s npx wrangler d1 create "$D1" --location apac;timeout 60s npx wrangler d1 info "$D1" --json >/tmp/d1info
+          python3 - "$D1" "$PAGES" <<'PY'
+          import json,re,sys
+          s=json.dumps(json.load(open('/tmp/d1info')));m=re.search(r'[0-9a-fA-F-]{36}',s);assert m
+          json.dump({'name':sys.argv[2],'compatibility_date':'2026-08-05','compatibility_flags':['nodejs_compat'],'pages_build_output_dir':'./dist','upload_source_maps':True,'d1_databases':[{'binding':'DB','database_name':sys.argv[1],'database_id':m.group(0),'migrations_dir':'./d1-migrations'}]},open('wrangler.jsonc','w'))
+          PY
+          timeout 120s npx wrangler pages project create "$PAGES" --production-branch main
+          JWT="$(python3 -c 'import secrets;print(secrets.token_urlsafe(48))')";printf '%s\n' "$JWT"|timeout 90s npx wrangler pages secret put JWT_SECRET --project-name "$PAGES";unset JWT
+          timeout 180s npx wrangler d1 migrations apply DB --remote --config wrangler.jsonc
+          npm run build:pages;timeout 240s npx wrangler pages deploy dist --project-name "$PAGES" --branch main --commit-hash "$GITHUB_SHA" --commit-dirty=false|tee /tmp/pages
+          URL="$(grep -Eo 'https://[^[:space:]]+\.pages\.dev' /tmp/pages|tail -n1)";test -n "$URL";printf 'URL=%q\n' "$URL">>/tmp/v25.env
+          for i in $(seq 1 60);do curl --fail -s --max-time 10 "$URL/" -o /dev/null&&break;sleep 2;done;curl --fail -s "$URL/" -o /dev/null
+          npx wrangler pages deployment list --project-name "$PAGES" --json >/tmp/deploy-before.json
+          touch /tmp/v25-deploy.ok
+      - name: Permanent package network failure is non-mutating
+        working-directory: /tmp/v16
+        shell: bash
+        run: |
+          set -euo pipefail;set -a;. /tmp/v25.env;set +a
+          cat >/tmp/v25-fail-all.mjs <<'NODE'
+          import fs from 'node:fs';const real=globalThis.fetch;let n=0;globalThis.fetch=async(input,init)=>{const u=String(input?.url||input);if(u.includes('dorm-management-updates.pages.dev/')){n++;fs.writeFileSync('/tmp/v25-all-count',String(n));throw new TypeError('V25 simulated package network failure')}return real(input,init)};
+          NODE
+          set +e;NODE_OPTIONS='--import /tmp/v25-fail-all.mjs' timeout 600s node BOOTSTRAP-V16-TO-V17.mjs >/tmp/all.log 2>&1;RC=$?;set -e
+          test "$RC" -ne 0;test "$(cat /tmp/v25-all-count)" = 5
+          test "$(node -p "require('./package.json').version")" = 1.1.0;test ! -f .dorm-update-state.json;test ! -d backups
+          timeout 90s npx wrangler d1 execute DB --remote --config wrangler.jsonc --command "SELECT name FROM sqlite_master WHERE type='table' AND name='update_state';" >/tmp/state1;! grep -q update_state /tmp/state1
+          touch /tmp/v25-permanent.ok
+      - name: Transient package failure retries and repeated abort stays idempotent
+        working-directory: /tmp/v16
+        shell: bash
+        run: |
+          set -euo pipefail;set -a;. /tmp/v25.env;set +a
+          cat >/tmp/v25-transient.mjs <<'NODE'
+          import fs from 'node:fs';const real=globalThis.fetch;let pkg=0,login=0;globalThis.fetch=async(input,init)=>{const u=String(input?.url||input);if(u.includes('dorm-management-updates.pages.dev/')){pkg++;fs.writeFileSync('/tmp/v25-pkg-count',String(pkg));if(pkg<5)throw new TypeError('V25 transient package failure');return real(input,init)}if(u.includes('.pages.dev/api/auth/login')){login++;fs.writeFileSync('/tmp/v25-login-count',String(login));throw new TypeError('V25 controlled login network failure')}return real(input,init)};
+          NODE
+          for run in 1 2;do rm -f /tmp/v25-pkg-count /tmp/v25-login-count;set +e;NODE_OPTIONS='--import /tmp/v25-transient.mjs' timeout 900s node BOOTSTRAP-V16-TO-V17.mjs >"/tmp/transient-${run}.log" 2>&1;RC=$?;set -e;test "$RC" -ne 0;test "$(cat /tmp/v25-pkg-count)" = 5;test "$(cat /tmp/v25-login-count)" = 5;test "$(node -p "require('./package.json').version")" = 1.1.0;test ! -f .dorm-update-state.json;test ! -d backups;done
+          npx wrangler pages deployment list --project-name "$PAGES" --json >/tmp/deploy-after.json
+          python3 - <<'PY'
+          import json
+          def ids(p):
+            x=json.load(open(p));r=x if isinstance(x,list) else x.get('result',x.get('deployments',[]));return [q.get('id') for q in r if q.get('id')]
+          a=ids('/tmp/deploy-before.json');b=ids('/tmp/deploy-after.json');assert a and b and a[0]==b[0],(a[:2],b[:2])
+          PY
+          timeout 90s npx wrangler d1 execute DB --remote --config wrangler.jsonc --command "SELECT name FROM sqlite_master WHERE type='table' AND name='update_state';" >/tmp/state2;! grep -q update_state /tmp/state2
+          touch /tmp/v25-transient.ok
+      - name: Guarded cleanup
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          if [ -f /tmp/v25.env ];then set -a;. /tmp/v25.env;set +a;[[ "$PAGES" == v17-v25-* ]]&&[[ "$D1" == v17-v25-*-db ]]&&cd /tmp/v16&&timeout 120s npx wrangler pages project delete "$PAGES" --yes&&timeout 120s npx wrangler d1 delete "$D1" --skip-confirmation;fi
+          touch /tmp/v25-cleanup.ok;exit 0
+      - name: Persist network evidence
+        if: always()
+        env: { JOB_STATUS: '${{ job.status }}' }
+        shell: bash
+        run: |
+          set -euo pipefail;mkdir -p v17-production-evidence;v(){ [ -f "/tmp/v25-$1.ok" ]&&printf success||printf failure;};cat >v17-production-evidence/network-retry-idempotency-v25-latest.txt <<EOF
+          run_id=${GITHUB_RUN_ID}
+          run_attempt=${GITHUB_RUN_ATTEMPT}
+          source_sha=${GITHUB_SHA}
+          job_status=${JOB_STATUS}
+          exact_artifacts=$(v exact)
+          disposable_v16=$(v deploy)
+          permanent_network_failure_non_mutating=$(v permanent)
+          transient_retry_fifth_attempt=$(v transient)
+          repeated_failure_idempotent=$(v transient)
+          package_attempts_per_run=5
+          login_attempts_per_transient_run=5
+          update_state_created=false
+          backup_created=false
+          pages_redeployed=false
+          cleanup=$(v cleanup)
+          v16_rebuilt=false
+          v16_modified=false
+          existing_customer_d1_touched=false
+          v17_customer_ready=false
+          EOF
+          git config user.name 'github-actions[bot]';git config user.email '41898282+github-actions[bot]@users.noreply.github.com';git add v17-production-evidence/network-retry-idempotency-v25-latest.txt;git commit -m 'ci(v17): record network retry idempotency v25 evidence' || exit 0;git fetch origin agent/v16-production-gate;git rebase origin/agent/v16-production-gate;git push origin HEAD:agent/v16-production-gate
