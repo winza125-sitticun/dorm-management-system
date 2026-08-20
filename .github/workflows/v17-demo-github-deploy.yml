@@ -1,0 +1,229 @@
+name: V17 Demo GitHub Deploy
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - 'ops/v17-demo-github-deploy'
+    paths:
+      - '.github/workflows/v17-demo-github-deploy.yml'
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: v17-demo-github-deploy
+  cancel-in-progress: false
+
+env:
+  CUSTOMER_READY_ARTIFACT_ID: '9398295831'
+  DEMO_ZIP_REL: customer-packages/dorm-management-system-demo-v17-CUSTOMER-READY.zip
+  DEMO_SHA256: b8eb6684760cdd8d68b5789b5ec323a36498161508355559ab95059fb1f5c8d9
+  CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+  CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+jobs:
+  deploy-demo:
+    name: Deploy frozen V17 Demo to disposable Pages + D1
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    environment: "fulfilling-communication / production"
+
+    steps:
+      - name: Checkout workflow branch
+        uses: actions/checkout@v4
+
+      - name: Require Cloudflare GitHub Secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${CLOUDFLARE_API_TOKEN:-}" || { echo "::error::Missing CLOUDFLARE_API_TOKEN"; exit 1; }
+          test -n "${CLOUDFLARE_ACCOUNT_ID:-}" || { echo "::error::Missing CLOUDFLARE_ACCOUNT_ID"; exit 1; }
+          echo "Cloudflare secret presence gate passed."
+
+      - name: Download frozen V17 CUSTOMER-READY artifact 9398295831
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          rm -rf frozen-artifact demo-work
+          mkdir -p frozen-artifact demo-work
+          curl --fail --location --silent --show-error \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${CUSTOMER_READY_ARTIFACT_ID}/zip" \
+            --output frozen-v17-customer-ready.zip
+          unzip -q frozen-v17-customer-ready.zip -d frozen-artifact
+          test -f frozen-artifact/CUSTOMER-READY-SHA256SUMS.txt
+          test -f "frozen-artifact/${DEMO_ZIP_REL}"
+
+      - name: Verify frozen artifact manifest and exact Demo SHA-256
+        shell: bash
+        run: |
+          set -euo pipefail
+          (
+            cd frozen-artifact
+            sha256sum --check --strict CUSTOMER-READY-SHA256SUMS.txt
+          )
+          ACTUAL_SHA="$(sha256sum "frozen-artifact/${DEMO_ZIP_REL}" | awk '{print $1}')"
+          test "$ACTUAL_SHA" = "$DEMO_SHA256" || {
+            echo "::error::Demo SHA mismatch: expected=$DEMO_SHA256 actual=$ACTUAL_SHA"
+            exit 1
+          }
+          unzip -t "frozen-artifact/${DEMO_ZIP_REL}" >/dev/null
+          unzip -q "frozen-artifact/${DEMO_ZIP_REL}" -d demo-work
+          test -f demo-work/package.json
+          test -f demo-work/package-lock.json
+          test -f demo-work/wrangler.template.jsonc
+          test -f demo-work/d1-migrations/0008_add_update_state.sql
+          echo "Frozen Demo package verified: $ACTUAL_SHA"
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: demo-work/package-lock.json
+
+      - name: Install frozen Demo dependencies
+        working-directory: demo-work
+        run: npm ci
+
+      - name: Allocate disposable Cloudflare resource names
+        shell: bash
+        run: |
+          set -euo pipefail
+          RUN_PART="$(printf '%s' "$GITHUB_RUN_ID" | tr -cd '0-9' | tail -c 14)"
+          PAGES_NAME="dorm-v17-demo-${RUN_PART}"
+          D1_NAME="${PAGES_NAME}-db"
+          echo "V17_DEMO_PAGES_NAME=$PAGES_NAME" >> "$GITHUB_ENV"
+          echo "V17_DEMO_D1_NAME=$D1_NAME" >> "$GITHUB_ENV"
+          echo "Pages project: $PAGES_NAME"
+          echo "D1 database: $D1_NAME"
+
+      - name: Create disposable D1 database
+        working-directory: demo-work
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx wrangler d1 create "$V17_DEMO_D1_NAME" --location apac
+          npx wrangler d1 info "$V17_DEMO_D1_NAME" --json > ../d1-info.json
+
+      - name: Resolve D1 UUID and render wrangler.jsonc
+        shell: bash
+        run: |
+          set -euo pipefail
+          D1_ID="$(python3 - <<'PY'
+          import json
+          from pathlib import Path
+          raw = Path('d1-info.json').read_text(encoding='utf-8')
+          data = json.loads(raw)
+          if isinstance(data, list):
+              data = data[0] if data else {}
+          if not isinstance(data, dict):
+              raise SystemExit('D1 info JSON is not an object')
+          value = data.get('uuid') or data.get('id') or data.get('database_id')
+          if not value:
+              raise SystemExit('D1 UUID missing from wrangler d1 info --json')
+          print(value)
+          PY
+          )"
+          echo "V17_DEMO_D1_ID=$D1_ID" >> "$GITHUB_ENV"
+          export V17_DEMO_D1_ID="$D1_ID"
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          src = Path('demo-work/wrangler.template.jsonc').read_text(encoding='utf-8')
+          src = src.replace('REPLACE_WITH_YOUR_PAGES_PROJECT', os.environ['V17_DEMO_PAGES_NAME'])
+          src = src.replace('REPLACE_WITH_YOUR_D1_DATABASE_NAME', os.environ['V17_DEMO_D1_NAME'])
+          src = src.replace('00000000-0000-0000-0000-000000000000', os.environ['V17_DEMO_D1_ID'])
+          Path('demo-work/wrangler.jsonc').write_text(src, encoding='utf-8')
+          PY
+          grep -q '"binding": "DB"' demo-work/wrangler.jsonc
+          ! grep -q 'REPLACE_WITH_YOUR' demo-work/wrangler.jsonc
+
+      - name: Create disposable Pages project
+        working-directory: demo-work
+        run: npx wrangler pages project create "$V17_DEMO_PAGES_NAME" --production-branch main
+
+      - name: Set disposable JWT secret
+        working-directory: demo-work
+        shell: bash
+        run: |
+          set -euo pipefail
+          JWT_SECRET="$(python3 -c 'import secrets; print(secrets.token_urlsafe(48))')"
+          printf '%s\n' "$JWT_SECRET" | npx wrangler pages secret put JWT_SECRET --project-name "$V17_DEMO_PAGES_NAME"
+          unset JWT_SECRET
+
+      - name: Run frozen Demo release checks
+        working-directory: demo-work
+        run: npm run release:check
+
+      - name: Apply D1 migrations through 0008
+        working-directory: demo-work
+        run: npx wrangler d1 migrations apply DB --remote --config wrangler.jsonc
+
+      - name: Build frozen Demo Pages bundle
+        working-directory: demo-work
+        run: npm run build:pages
+
+      - name: Deploy frozen Demo to Pages
+        id: deploy
+        working-directory: demo-work
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUTPUT="$(npx wrangler pages deploy dist --project-name "$V17_DEMO_PAGES_NAME" --branch main --commit-hash "$GITHUB_SHA" --commit-dirty=true)"
+          printf '%s\n' "$OUTPUT"
+          URL="$(printf '%s\n' "$OUTPUT" | grep -Eo 'https://[A-Za-z0-9.-]+\.pages\.dev' | tail -n 1)"
+          test -n "$URL" || { echo "::error::Unable to resolve Pages deployment URL"; exit 1; }
+          echo "V17_DEMO_URL=$URL" >> "$GITHUB_ENV"
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+
+      - name: Production health check
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --retry 8 --retry-delay 3 "$V17_DEMO_URL/" >/dev/null
+          curl --fail --silent --show-error --retry 8 --retry-delay 3 "$V17_DEMO_URL/api/health" | tee health.json
+
+      - name: Record deploy evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > v17-demo-github-deploy-evidence.txt <<EOF
+          status=success
+          source_artifact_id=${CUSTOMER_READY_ARTIFACT_ID}
+          plan=demo
+          package_sha256=${DEMO_SHA256}
+          pages_project=${V17_DEMO_PAGES_NAME}
+          d1_database=${V17_DEMO_D1_NAME}
+          d1_id=${V17_DEMO_D1_ID}
+          migration_ceiling=0008_add_update_state.sql
+          deployment_url=${V17_DEMO_URL}
+          github_run_id=${GITHUB_RUN_ID}
+          github_sha=${GITHUB_SHA}
+          retained_for_manual_test=true
+          EOF
+          cat v17-demo-github-deploy-evidence.txt
+
+      - name: Upload deployment evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: v17-demo-github-deploy-evidence
+          path: |
+            v17-demo-github-deploy-evidence.txt
+            health.json
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Retention notice
+        shell: bash
+        run: |
+          echo "Demo resources intentionally retained for manual testing."
+          echo "Pages: $V17_DEMO_PAGES_NAME"
+          echo "D1:    $V17_DEMO_D1_NAME"
+          echo "URL:   $V17_DEMO_URL"
