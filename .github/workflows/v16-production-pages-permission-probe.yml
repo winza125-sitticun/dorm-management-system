@@ -1,0 +1,74 @@
+name: V16 Production Pages Permission Probe
+on:
+  push:
+    branches: [agent/v16-production-gate]
+    paths: ['.github/workflows/v16-production-pages-permission-probe.yml']
+permissions: { contents: write }
+env:
+  CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+  CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    environment: "fulfilling-communication / production"
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: agent/v16-production-gate }
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+      - name: Probe Pages create and secret write with disposable project
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${CLOUDFLARE_API_TOKEN:-}"
+          test -n "${CLOUDFLARE_ACCOUNT_ID:-}"
+          npm install --no-save --no-package-lock wrangler@4.124.0 >/dev/null 2>&1
+          M="$(printf '%s' "$GITHUB_RUN_ID" | tr -cd '0-9' | tail -c 9)-${GITHUB_RUN_ATTEMPT}"
+          NAME="v16-pages-perm-${M}"
+          case "$NAME" in v16-pages-perm-${M}) ;; *) exit 91;; esac
+          echo "PROBE_PAGES=$NAME" >> "$GITHUB_ENV"
+          if timeout 75s npx wrangler pages project create "$NAME" --production-branch main >/tmp/pages-create.log 2>&1; then
+            touch /tmp/pages-create.ok
+          else
+            cat /tmp/pages-create.log
+            exit 21
+          fi
+          if printf 'probe-only\n' | timeout 75s npx wrangler pages secret put V16_PERMISSION_PROBE --project-name "$NAME" >/tmp/pages-secret.log 2>&1; then
+            touch /tmp/pages-secret.ok
+          else
+            cat /tmp/pages-secret.log
+            exit 22
+          fi
+      - name: Delete disposable Pages project
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          case "${PROBE_PAGES:-}" in v16-pages-perm-*) timeout 75s npx wrangler pages project delete "$PROBE_PAGES" --yes >/tmp/pages-delete.log 2>&1 || true;; esac
+      - name: Persist Pages permission evidence
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p v16-production-evidence
+          c=failure; s=failure
+          [ -f /tmp/pages-create.ok ] && c=success
+          [ -f /tmp/pages-secret.ok ] && s=success
+          cat > v16-production-evidence/cloudflare-pages-permission-latest.txt <<EOF
+          run_id=${GITHUB_RUN_ID}
+          run_attempt=${GITHUB_RUN_ATTEMPT}
+          source_sha=${GITHUB_SHA}
+          job_status=${JOB_STATUS}
+          pages_project_create=${c}
+          pages_secret_write=${s}
+          existing_d1_touched=false
+          customer_ready=false
+          EOF
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add v16-production-evidence/cloudflare-pages-permission-latest.txt
+          git commit -m 'ci(v16): record Pages permission probe' || exit 0
+          git push origin HEAD:agent/v16-production-gate
