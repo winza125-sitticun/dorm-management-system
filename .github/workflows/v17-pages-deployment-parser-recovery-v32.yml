@@ -1,0 +1,41 @@
+name: V17 Pages Deployment Parser Recovery V32
+on:
+  push:
+    branches: [agent/v16-production-gate]
+    paths: ['.github/workflows/v17-pages-deployment-parser-recovery-v32.yml']
+permissions: { contents: write }
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: agent/v16-production-gate }
+      - name: Patch V29 and V30 deployment comparison
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          for path in [Path('.github/workflows/v17-pro-failed-migration-rollback-v29.yml'), Path('.github/workflows/v17-pro-network-retry-v30.yml')]:
+            text=path.read_text()
+            if "a=canonical('/tmp/deploy-before')" in text:
+              continue
+            pat=re.compile(r"          def ids\(p\):\n            x=json\.load\(open\(p\)\);r=x if isinstance\(x,list\) else x\.get\('result',x\.get\('deployments',\[\]\)\);return \[q\.get\('id'\) for q in r if q\.get\('id'\)\]\n          a=ids\('/tmp/deploy-before'\);b=ids\('/tmp/deploy-after'\);assert a and b and a\[0\]==b\[0\],\(a\[:2\],b\[:2\]\)")
+            repl="          def canonical(p):\n            return json.dumps(json.load(open(p)),sort_keys=True,separators=(',',':'))\n          a=canonical('/tmp/deploy-before');b=canonical('/tmp/deploy-after');assert a==b,(a,b)"
+            new,n=pat.subn(repl,text,count=1)
+            if n != 1:
+              raise SystemExit(f'parser block not found exactly once: {path} ({n})')
+            path.write_text(new)
+          PY
+          git diff --check
+          grep -Fq "a=canonical('/tmp/deploy-before');b=canonical('/tmp/deploy-after');assert a==b" .github/workflows/v17-pro-failed-migration-rollback-v29.yml
+          grep -Fq "a=canonical('/tmp/deploy-before');b=canonical('/tmp/deploy-after');assert a==b" .github/workflows/v17-pro-network-retry-v30.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add .github/workflows/v17-pro-failed-migration-rollback-v29.yml .github/workflows/v17-pro-network-retry-v30.yml
+          git diff --cached --quiet && exit 0
+          git commit -m 'ci(v17): compare canonical Pages deployment snapshots'
+          git fetch origin agent/v16-production-gate
+          git rebase origin/agent/v16-production-gate
+          git push origin HEAD:agent/v16-production-gate
