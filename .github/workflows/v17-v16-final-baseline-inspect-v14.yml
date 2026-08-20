@@ -1,0 +1,65 @@
+name: V17 Inspect Exact V16 Final Baseline V14
+on:
+  push:
+    branches: [agent/v16-production-gate]
+    paths: ['.github/workflows/v17-v16-final-baseline-inspect-v14.yml']
+permissions: { contents: write, actions: read }
+env:
+  V16_FINAL_ARTIFACT_ID: '9393238249'
+  V16_FINAL_ARTIFACT_SHA256: 'fe17d6426d66722068fd2d003590ca3d0ef188d19dca33c58ed6200ed2de85f1'
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: agent/v16-production-gate }
+      - name: Verify and inventory exact V16 final artifact
+        env: { GH_TOKEN: '${{ github.token }}' }
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -Fxq 'customer_ready=true' v16-production-evidence/customer-ready-v39-latest.txt
+          rm -rf /tmp/v16-final; mkdir -p /tmp/v16-final
+          curl --fail --location --retry 8 --retry-all-errors --retry-delay 3 -H "Authorization: Bearer ${GH_TOKEN}" "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${V16_FINAL_ARTIFACT_ID}/zip" -o /tmp/v16-final.zip
+          echo "$V16_FINAL_ARTIFACT_SHA256  /tmp/v16-final.zip" | sha256sum -c -
+          unzip -q /tmp/v16-final.zip -d /tmp/v16-final
+          ROOT=/tmp/v16-final; [ -f "$ROOT/CUSTOMER-READY-SHA256SUMS.txt" ] || ROOT="$(dirname "$(find /tmp/v16-final -name CUSTOMER-READY-SHA256SUMS.txt -print -quit)")"; test -f "$ROOT/CUSTOMER-READY-SHA256SUMS.txt"
+          (cd "$ROOT" && sha256sum -c CUSTOMER-READY-SHA256SUMS.txt)
+          test -f "$ROOT/RELEASE_BASELINE.txt"
+          grep -Fxq 'migration_ceiling=0007_add_license_state.sql' "$ROOT/RELEASE_BASELINE.txt"
+          PRO="$(find "$ROOT/customer-previews" -maxdepth 1 -type f -name '*pro*.zip' -print -quit)"; test -n "$PRO"; unzip -t "$PRO" >/dev/null
+          D="$(mktemp -d)"; unzip -q "$PRO" -d "$D"
+          test "$(find "$D/d1-migrations" -maxdepth 1 -type f -printf '%f\n' | sort | tail -n1)" = '0007_add_license_state.sql'
+          test "$(node -p "require('$D/package.json').version")" = '1.1.0'
+          sha256sum "$PRO" | awk '{print $1}' >/tmp/v16-pro.sha
+          basename "$PRO" >/tmp/v16-pro.name
+          stat -c '%s' "$PRO" >/tmp/v16-pro.size
+          printf '%s' "$ROOT" >/tmp/v16-final-root
+          touch /tmp/v17-v14-inspect.ok
+      - name: Persist exact V16 baseline inventory
+        if: always()
+        env: { JOB_STATUS: '${{ job.status }}' }
+        shell: bash
+        run: |
+          set -euo pipefail; mkdir -p v17-production-evidence
+          ROOT="$(cat /tmp/v16-final-root 2>/dev/null || true)"
+          cat > v17-production-evidence/v16-final-baseline-v14-latest.txt <<EOF
+          run_id=${GITHUB_RUN_ID}
+          source_sha=${GITHUB_SHA}
+          job_status=${JOB_STATUS}
+          v16_final_artifact_id=${V16_FINAL_ARTIFACT_ID}
+          v16_final_artifact_sha256=${V16_FINAL_ARTIFACT_SHA256}
+          exact_final_artifact=$([ -f /tmp/v17-v14-inspect.ok ] && printf success || printf failure)
+          pro_zip_name=$(cat /tmp/v16-pro.name 2>/dev/null || printf unavailable)
+          pro_zip_sha256=$(cat /tmp/v16-pro.sha 2>/dev/null || printf unavailable)
+          pro_zip_size=$(cat /tmp/v16-pro.size 2>/dev/null || printf unavailable)
+          app_version=1.1.0
+          migration_ceiling=0007_add_license_state.sql
+          v16_rebuilt=false
+          v16_modified=false
+          cloudflare_touched=false
+          existing_d1_touched=false
+          EOF
+          if [ -n "$ROOT" ] && [ -f "$ROOT/CUSTOMER-READY-SHA256SUMS.txt" ]; then sed 's/^/inner_sha256=/' "$ROOT/CUSTOMER-READY-SHA256SUMS.txt" >> v17-production-evidence/v16-final-baseline-v14-latest.txt; fi
+          git config user.name 'github-actions[bot]'; git config user.email '41898282+github-actions[bot]@users.noreply.github.com'; git add v17-production-evidence/v16-final-baseline-v14-latest.txt; git commit -m 'ci(v17): record exact V16 final baseline inventory v14' || exit 0; git fetch origin agent/v16-production-gate; git rebase origin/agent/v16-production-gate; git push origin HEAD:agent/v16-production-gate
