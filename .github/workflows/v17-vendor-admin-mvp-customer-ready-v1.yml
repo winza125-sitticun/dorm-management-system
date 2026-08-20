@@ -1,0 +1,463 @@
+name: V17 Vendor Admin MVP Customer Ready Gate V1
+on:
+  push:
+    branches: [agent/v17-vendor-admin-mvp-customer-ready]
+    paths:
+      - '.github/workflows/v17-vendor-admin-mvp-customer-ready-v1.yml'
+      - 'v17-vendor-admin-mvp/V17_VENDOR_ADMIN_MVP_V17_BASELINE.patch.gz.b64'
+permissions:
+  contents: write
+  actions: read
+concurrency:
+  group: v17-vendor-admin-mvp-customer-ready-v1
+  cancel-in-progress: false
+env:
+  V17_ARTIFACT_ID: '9394092671'
+  V17_ARTIFACT_SHA256: '0503ec400e7e52e7e9a23723155aa2eebbc3e64f8ead898cc49b9a9968f63ad3'
+  BASE_CP_ZIP_SHA256: '75ee56f2925dbf3abdc59e0372ef7ca9cac2f635b0d71c2aeb3169c75b12ba56'
+  PATCH_GZ_SHA256: 'fbbc7656c23182cfeae5cd31d32bbdced6761ad7638f804a37edbd333bb2de9f'
+  PATCH_SHA256: '2f14bff9292e1292d3a974e48f46202e7421580ea82d5009305da74f5bfc6532'
+  CANONICAL_CP_URL: 'https://dorm-control-plane.winza125.workers.dev'
+  STABLE_WORKER: 'dorm-control-plane'
+  STABLE_CP_D1: 'dorm-license-control-plane-v16-db'
+  STABLE_CP_D1_UUID: '68695864-48de-4d8a-932b-9d11cd4d6b4d'
+  PUBLIC_KEY_B64: 'fgdHGCi74MiMXHbI5+KVY6S9wnh/L369ekdI8NmrwdY='
+  PUBLIC_KEY_SHA256: '6c8a2c8fda3dbf224148ff77464fda9bc252c082e05755f211c52a232ae3db82'
+  CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+  CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+  LICENSE_SIGNING_PRIVATE_KEY: ${{ secrets.V16_LICENSE_SIGNING_PRIVATE_KEY }}
+jobs:
+  customer-ready:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: "fulfilling-communication / production"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/v17-vendor-admin-mvp-customer-ready
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Verify exact V17 baseline and apply bounded Vendor Admin patch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${CLOUDFLARE_API_TOKEN:-}"
+          test -n "${CLOUDFLARE_ACCOUNT_ID:-}"
+          test -n "${LICENSE_SIGNING_PRIVATE_KEY:-}"
+          node - <<'NODE'
+          const crypto=require('node:crypto');
+          let s=(process.env.LICENSE_SIGNING_PRIVATE_KEY||'').trim();
+          if((s.startsWith('"')&&s.endsWith('"'))||(s.startsWith("'")&&s.endsWith("'")))s=s.slice(1,-1).trim();
+          if(/^V16_LICENSE_SIGNING_PRIVATE_KEY\s*=/.test(s))s=s.replace(/^V16_LICENSE_SIGNING_PRIVATE_KEY\s*=\s*/,'').trim();
+          const pk=s.includes('BEGIN PRIVATE KEY')?crypto.createPrivateKey(s):crypto.createPrivateKey({key:Buffer.from(s.replace(/\s+/g,''),'base64'),format:'der',type:'pkcs8'});
+          const j=crypto.createPublicKey(pk).export({format:'jwk'});
+          const raw=Buffer.from(j.x.replace(/-/g,'+').replace(/_/g,'/')+'='.repeat((4-j.x.length%4)%4),'base64');
+          if(raw.toString('base64')!==process.env.PUBLIC_KEY_B64)throw new Error('signer public key mismatch');
+          if(crypto.createHash('sha256').update(raw).digest('hex')!==process.env.PUBLIC_KEY_SHA256)throw new Error('signer fingerprint mismatch');
+          NODE
+          grep -Fxq 'job_status=success' v17-production-evidence/final-customer-ready-v34-latest.txt
+          grep -Fxq 'source_artifact_id=9394092671' v17-production-evidence/final-customer-ready-v34-latest.txt
+          grep -Fxq 'v17_customer_ready=true' v17-production-evidence/final-customer-ready-v34-latest.txt
+
+          rm -rf /tmp/v17-source /tmp/cp /tmp/base-cp /tmp/final /tmp/source.zip /tmp/vendor.patch*
+          mkdir -p /tmp/v17-source /tmp/cp /tmp/base-cp /tmp/final
+          curl --fail --location --retry 8 --retry-all-errors --retry-delay 3 \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${V17_ARTIFACT_ID}/zip" \
+            -o /tmp/source.zip
+          echo "${V17_ARTIFACT_SHA256}  /tmp/source.zip" | sha256sum -c -
+          unzip -q /tmp/source.zip -d /tmp/v17-source
+          ROOT=/tmp/v17-source
+          [ -f "$ROOT/SHA256SUMS.txt" ] || ROOT="$(dirname "$(find /tmp/v17-source -name SHA256SUMS.txt -print -quit)")"
+          test -f "$ROOT/SHA256SUMS.txt"
+          (cd "$ROOT" && sha256sum -c SHA256SUMS.txt)
+          echo "ROOT=$ROOT" >> "$GITHUB_ENV"
+
+          CP_ZIP="$ROOT/dorm-control-plane-v17-SOURCE-GATE-V11.zip"
+          echo "${BASE_CP_ZIP_SHA256}  $CP_ZIP" | sha256sum -c -
+          unzip -q "$CP_ZIP" -d /tmp/cp
+          cp -a /tmp/cp/. /tmp/base-cp/
+
+          base64 -d v17-vendor-admin-mvp/V17_VENDOR_ADMIN_MVP_V17_BASELINE.patch.gz.b64 > /tmp/vendor.patch.gz
+          echo "${PATCH_GZ_SHA256}  /tmp/vendor.patch.gz" | sha256sum -c -
+          gunzip -c /tmp/vendor.patch.gz > /tmp/vendor.patch
+          echo "${PATCH_SHA256}  /tmp/vendor.patch" | sha256sum -c -
+          (cd /tmp/cp && git apply --check /tmp/vendor.patch && git apply /tmp/vendor.patch)
+
+          test -f /tmp/cp/migrations/0001_license_schema.sql
+          test -f /tmp/cp/migrations/0002_update_releases.sql
+          test -f /tmp/cp/migrations/0003_vendor_admin_mvp.sql
+          test -f /tmp/cp/src/update.service.ts
+          test -f /tmp/cp/src/operator-auth.ts
+          test -f /tmp/cp/src/operator.service.ts
+          grep -Fq '/v1/updates/check' /tmp/cp/src/index.ts
+          grep -Fq '/v1/operator/licenses' /tmp/cp/src/index.ts
+          touch /tmp/v17-vendor-exact.ok
+
+      - name: Candidate tests typecheck and Wrangler dry run
+        working-directory: /tmp/cp
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci
+          npm test | tee /tmp/tests.log
+          grep -Eq '# pass 27|# tests 27' /tmp/tests.log
+          npm run typecheck
+          cp -a node_modules /tmp/base-cp/node_modules
+          cat > wrangler.dryrun.jsonc <<'JSON'
+          {
+            "name":"v17-vendor-admin-dry-run",
+            "main":"src/index.ts",
+            "compatibility_date":"2026-08-05",
+            "vars":{"CF_ACCESS_TEAM_DOMAIN":"team.cloudflareaccess.com","CF_ACCESS_AUD":"dry-run-aud"},
+            "d1_databases":[{"binding":"DB","database_name":"v17-vendor-admin-dry-run-db","database_id":"00000000-0000-0000-0000-000000000001","migrations_dir":"migrations"}]
+          }
+          JSON
+          npx wrangler deploy --dry-run --config wrangler.dryrun.jsonc
+          touch /tmp/v17-vendor-candidate.ok
+
+      - name: Verify stable D1 and capture pre-change state
+        working-directory: /tmp/cp
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx wrangler d1 list --json > /tmp/d1-list.json
+          python3 - <<'PY'
+          import json,os
+          x=json.load(open('/tmp/d1-list.json')); rows=x if isinstance(x,list) else x.get('result',x.get('databases',[]))
+          m=[r for r in rows if r.get('name')==os.environ['STABLE_CP_D1']]
+          assert len(m)==1, f'expected one stable D1, got {len(m)}'
+          uid=m[0].get('uuid') or m[0].get('id')
+          assert uid==os.environ['STABLE_CP_D1_UUID'], (uid,os.environ['STABLE_CP_D1_UUID'])
+          PY
+          cat > wrangler.pre.jsonc <<JSON
+          {"name":"${STABLE_WORKER}","main":"src/index.ts","compatibility_date":"2026-08-05","d1_databases":[{"binding":"DB","database_name":"${STABLE_CP_D1}","database_id":"${STABLE_CP_D1_UUID}","migrations_dir":"migrations"}]}
+          JSON
+          timeout 90s npx wrangler d1 execute DB --remote --config wrangler.pre.jsonc --command "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name;" > /tmp/pre-tables.txt
+          ! grep -Eiq '(^|[^a-z])(rooms|tenants|settings|bills|payments|users)([^a-z]|$)' /tmp/pre-tables.txt
+          for t in licenses activations license_events update_releases; do grep -q "$t" /tmp/pre-tables.txt; done
+          timeout 90s npx wrangler d1 execute DB --remote --config wrangler.pre.jsonc --command "SELECT printf('%d:%d:%d:%d',(SELECT COUNT(*) FROM licenses),(SELECT COUNT(*) FROM activations),(SELECT COUNT(*) FROM license_events),(SELECT COUNT(*) FROM update_releases)) AS snapshot;" > /tmp/pre-counts.txt
+          grep -Eo '[0-9]+:[0-9]+:[0-9]+:[0-9]+' /tmp/pre-counts.txt | tail -1 > /tmp/pre-snapshot.txt
+          test -s /tmp/pre-snapshot.txt
+          touch /tmp/v17-vendor-d1-pre.ok
+
+      - name: Configure Cloudflare Access safely for Vendor Admin
+        shell: bash
+        run: |
+          set -euo pipefail
+          API='https://api.cloudflare.com/client/v4'
+          AUTH=(-H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" -H 'Content-Type: application/json')
+
+          curl --fail --silent --show-error "${API}/accounts/${CLOUDFLARE_ACCOUNT_ID}/access/organizations" "${AUTH[@]}" > /tmp/zt-org.json
+          python3 - <<'PY'
+          import json
+          x=json.load(open('/tmp/zt-org.json')); assert x.get('success') is True, x
+          r=x.get('result') or {}; auth=r.get('auth_domain'); assert auth and auth.endswith('.cloudflareaccess.com'), r
+          open('/tmp/auth-domain','w').write(auth)
+          PY
+          AUTH_DOMAIN="$(cat /tmp/auth-domain)"; echo "CF_ACCESS_TEAM_DOMAIN=$AUTH_DOMAIN" >> "$GITHUB_ENV"
+
+          curl --fail --silent --show-error "${API}/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/scripts" "${AUTH[@]}" > /tmp/scripts.json
+          python3 - <<'PY'
+          import json,os
+          x=json.load(open('/tmp/scripts.json')); assert x.get('success') is True, x
+          rows=x.get('result') or []; m=[r for r in rows if r.get('id')==os.environ['STABLE_WORKER']]
+          assert len(m)==1, f'worker not unique: {len(m)}'
+          tag=m[0].get('tag'); assert tag, m[0]
+          open('/tmp/worker-tag','w').write(tag)
+          PY
+          WORKER_TAG="$(cat /tmp/worker-tag)"
+          HOST="${CANONICAL_CP_URL#https://}"
+
+          curl --fail --silent --show-error "${API}/accounts/${CLOUDFLARE_ACCOUNT_ID}/access/apps?per_page=100" "${AUTH[@]}" > /tmp/apps-before.json
+
+          create_or_verify_bypass() {
+            local NAME="$1" DOMAIN="$2" OUT="$3" CREATED_FLAG="$4"
+            python3 - "$NAME" "$DOMAIN" "$OUT" <<'PY'
+          import json,sys
+          name,domain,out=sys.argv[1:]
+          x=json.load(open('/tmp/apps-before.json')); rows=x.get('result') or []
+          m=[a for a in rows if a.get('name')==name]
+          if m:
+            assert len(m)==1; a=m[0]; assert a.get('domain')==domain,(a.get('domain'),domain); open(out,'w').write(a['id'])
+          PY
+            if [ ! -s "$OUT" ]; then
+              BODY="$(python3 - "$NAME" "$DOMAIN" <<'PY'
+          import json,sys
+          print(json.dumps({'type':'self_hosted','name':sys.argv[1],'domain':sys.argv[2],'session_duration':'24h','policies':[{'name':'Public customer API bypass','decision':'bypass','include':[{'everyone':{}}]}]}))
+          PY
+          )"
+              curl --fail --silent --show-error -X POST "${API}/accounts/${CLOUDFLARE_ACCOUNT_ID}/access/apps" "${AUTH[@]}" --data "$BODY" > "/tmp/create-${CREATED_FLAG}.json"
+              python3 - "/tmp/create-${CREATED_FLAG}.json" "$OUT" <<'PY'
+          import json,sys
+          x=json.load(open(sys.argv[1])); assert x.get('success') is True,x; r=x.get('result') or {}; assert r.get('id'); open(sys.argv[2],'w').write(r['id'])
+          PY
+              echo "${CREATED_FLAG}=true" >> "$GITHUB_ENV"
+            else
+              echo "${CREATED_FLAG}=false" >> "$GITHUB_ENV"
+            fi
+          }
+
+          create_or_verify_bypass 'Dorm V17 Public License API' "${HOST}/v1/licenses/*" /tmp/bypass-license-id ACCESS_BYPASS_LICENSE_CREATED
+          create_or_verify_bypass 'Dorm V17 Public Update API' "${HOST}/v1/updates/*" /tmp/bypass-update-id ACCESS_BYPASS_UPDATE_CREATED
+          echo "ACCESS_BYPASS_LICENSE_ID=$(cat /tmp/bypass-license-id)" >> "$GITHUB_ENV"
+          echo "ACCESS_BYPASS_UPDATE_ID=$(cat /tmp/bypass-update-id)" >> "$GITHUB_ENV"
+
+          python3 - "$WORKER_TAG" <<'PY'
+          import json,sys,os
+          tag=sys.argv[1]; x=json.load(open('/tmp/apps-before.json')); rows=x.get('result') or []
+          m=[a for a in rows if a.get('name')=='Dorm V17 Vendor Admin']
+          if m:
+            assert len(m)==1; a=m[0]
+            dest=a.get('destinations') or []
+            assert any(d.get('type')=='worker' and d.get('worker_id')==tag for d in dest),(dest,tag)
+            assert a.get('aud'),a
+            open('/tmp/vendor-app-id','w').write(a['id']);open('/tmp/vendor-app-aud','w').write(a['aud'])
+          PY
+          if [ ! -s /tmp/vendor-app-id ]; then
+            BODY="$(python3 - "$WORKER_TAG" <<'PY'
+          import json,sys,os
+          print(json.dumps({'type':'self_hosted','name':'Dorm V17 Vendor Admin','session_duration':'24h','destinations':[{'type':'worker','worker_id':sys.argv[1]}],'policies':[{'name':'Cloudflare account members','decision':'allow','include':[{'cloudflare_account_member':{'account_id':os.environ['CLOUDFLARE_ACCOUNT_ID']}}]}]}))
+          PY
+          )"
+            curl --fail --silent --show-error -X POST "${API}/accounts/${CLOUDFLARE_ACCOUNT_ID}/access/apps" "${AUTH[@]}" --data "$BODY" > /tmp/create-vendor-app.json
+            python3 - <<'PY'
+          import json
+          x=json.load(open('/tmp/create-vendor-app.json')); assert x.get('success') is True,x; r=x.get('result') or {}; assert r.get('id') and r.get('aud'),r
+          open('/tmp/vendor-app-id','w').write(r['id']);open('/tmp/vendor-app-aud','w').write(r['aud'])
+          PY
+            echo 'ACCESS_VENDOR_APP_CREATED=true' >> "$GITHUB_ENV"
+          else
+            echo 'ACCESS_VENDOR_APP_CREATED=false' >> "$GITHUB_ENV"
+          fi
+          echo "ACCESS_VENDOR_APP_ID=$(cat /tmp/vendor-app-id)" >> "$GITHUB_ENV"
+          echo "CF_ACCESS_AUD=$(cat /tmp/vendor-app-aud)" >> "$GITHUB_ENV"
+          touch /tmp/v17-vendor-access.ok
+
+      - name: Apply additive D1 migration and deploy integrated canonical Control Plane
+        working-directory: /tmp/cp
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > wrangler.production.jsonc <<JSON
+          {
+            "name":"${STABLE_WORKER}",
+            "main":"src/index.ts",
+            "compatibility_date":"2026-08-05",
+            "vars":{"CF_ACCESS_TEAM_DOMAIN":"${CF_ACCESS_TEAM_DOMAIN}","CF_ACCESS_AUD":"${CF_ACCESS_AUD}"},
+            "d1_databases":[{"binding":"DB","database_name":"${STABLE_CP_D1}","database_id":"${STABLE_CP_D1_UUID}","migrations_dir":"migrations"}]
+          }
+          JSON
+          cat > /tmp/base-cp/wrangler.rollback.jsonc <<JSON
+          {"name":"${STABLE_WORKER}","main":"src/index.ts","compatibility_date":"2026-08-05","d1_databases":[{"binding":"DB","database_name":"${STABLE_CP_D1}","database_id":"${STABLE_CP_D1_UUID}","migrations_dir":"migrations"}]}
+          JSON
+          timeout 180s npx wrangler d1 migrations apply DB --remote --config wrangler.production.jsonc | tee /tmp/migration.log
+          timeout 90s npx wrangler d1 execute DB --remote --config wrangler.production.jsonc --command "PRAGMA table_info(license_events);" > /tmp/license-events-schema.txt
+          grep -q 'actor_email' /tmp/license-events-schema.txt
+          grep -q 'detail_json' /tmp/license-events-schema.txt
+          touch /tmp/v17-vendor-deploy-started
+          timeout 240s npx wrangler deploy --config wrangler.production.jsonc | tee /tmp/deploy.log
+          printf '%s\n' "$LICENSE_SIGNING_PRIVATE_KEY" | timeout 90s npx wrangler secret put LICENSE_SIGNING_PRIVATE_KEY --config wrangler.production.jsonc
+          grep -Fq "$CANONICAL_CP_URL" /tmp/deploy.log
+          touch /tmp/v17-vendor-deploy.ok
+
+      - name: Live customer regression Access protection and Standard to Pro pilot
+        working-directory: /tmp/cp
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Customer update API remains publicly reachable through the path-specific Access bypass.
+          ok=0
+          for i in $(seq 1 30); do
+            code="$(curl -sS -o /tmp/demo-update.json -w '%{http_code}' --max-time 15 -H 'content-type: application/json' --data '{"demo":true,"currentVersion":"1.1.0","channel":"stable"}' "$CANONICAL_CP_URL/v1/updates/check" || true)"
+            [ "$code" = 200 ] && { ok=1; break; }
+            sleep 2
+          done
+          test "$ok" = 1
+          node -e "const x=require('/tmp/demo-update.json');if(!x.updateAvailable||x.licensePlan!=='demo'||x.manifest?.version!=='1.2.0')process.exit(1)"
+          node - <<'NODE'
+          const fs=require('node:fs'),crypto=require('node:crypto');
+          (async()=>{
+            const x=JSON.parse(fs.readFileSync('/tmp/demo-update.json','utf8')),m=x.manifest;
+            const fields=['schemaVersion','product','version','channel','plan','packageSha256','packageSize','migrationCeiling','minimumSupportedVersion','releaseNotes','downloadUrl','publishedAt'];
+            const canonical=JSON.stringify(Object.fromEntries(fields.map(k=>[k,m[k]])));
+            const key=await crypto.webcrypto.subtle.importKey('raw',Buffer.from(process.env.PUBLIC_KEY_B64,'base64'),{name:'Ed25519'},false,['verify']);
+            const ok=await crypto.webcrypto.subtle.verify('Ed25519',key,Buffer.from(x.signature,'base64url'),new TextEncoder().encode('dorm-update-manifest-v1\n'+canonical));
+            if(!ok)throw new Error('live demo update signature failed');
+          })().catch(e=>{console.error(e);process.exit(1)});
+          NODE
+
+          # Unauthenticated Vendor Admin must be intercepted by Access before reaching the Worker.
+          admin_code="$(curl -sS -D /tmp/admin-headers.txt -o /tmp/admin-body.txt -w '%{http_code}' --max-time 15 "$CANONICAL_CP_URL/admin/licenses" || true)"
+          test "$admin_code" != 200
+          test "$admin_code" != 500
+          op_code="$(curl -sS -D /tmp/op-headers.txt -o /tmp/op-body.txt -w '%{http_code}' --max-time 15 "$CANONICAL_CP_URL/v1/operator/licenses" || true)"
+          test "$op_code" != 200
+          test "$op_code" != 500
+          grep -Eiq 'cloudflareaccess\.com|cf-access|location:' /tmp/admin-headers.txt /tmp/admin-body.txt
+
+          # Live central-authority regression: Standard activation -> DB plan change -> refresh returns Pro.
+          MARK="vendor-mvp-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          KEY="V17-$(node -e "process.stdout.write(require('node:crypto').randomBytes(18).toString('hex').toUpperCase())")"
+          HASH="$(printf '%s' "$KEY" | sha256sum | awk '{print $1}')"
+          LIC="lic-${MARK}"; INST="install-${MARK}"; NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          echo "SMOKE_MARK=$MARK" >> "$GITHUB_ENV"
+          timeout 90s npx wrangler d1 execute DB --remote --config wrangler.production.jsonc --command "INSERT INTO licenses(id,key_hash,customer_label,plan,status,max_activations,expires_at,created_at,updated_at) VALUES('${LIC}','${HASH}','Vendor Admin MVP smoke','standard','active',1,NULL,'${NOW}','${NOW}');" >/dev/null
+          node - "$KEY" "$INST" <<'NODE'
+          const fs=require('node:fs');fs.writeFileSync('/tmp/activate-body.json',JSON.stringify({licenseKey:process.argv[2],installationId:process.argv[3],projectName:'Vendor MVP smoke',hostname:'vendor-smoke.invalid'}));
+          NODE
+          code="$(curl -sS -o /tmp/activate.json -w '%{http_code}' -H 'content-type: application/json' --data @/tmp/activate-body.json "$CANONICAL_CP_URL/v1/licenses/activate")"
+          test "$code" = 200
+          node - <<'NODE'
+          const fs=require('node:fs');const x=JSON.parse(fs.readFileSync('/tmp/activate.json'));if(x.license?.plan!=='standard'||!x.token)process.exit(1);fs.writeFileSync('/tmp/refresh-body.json',JSON.stringify({token:x.token,installationId:x.license.installationId}));
+          NODE
+          NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          timeout 90s npx wrangler d1 execute DB --remote --config wrangler.production.jsonc --command "UPDATE licenses SET plan='pro',updated_at='${NOW}' WHERE id='${LIC}';" >/dev/null
+          code="$(curl -sS -o /tmp/refresh-pro.json -w '%{http_code}' -H 'content-type: application/json' --data @/tmp/refresh-body.json "$CANONICAL_CP_URL/v1/licenses/refresh")"
+          test "$code" = 200
+          node -e "const x=require('/tmp/refresh-pro.json');if(x.license?.plan!=='pro')process.exit(1)"
+          touch /tmp/v17-vendor-live.ok
+
+      - name: Verify Access configuration and guarded cleanup
+        if: always()
+        working-directory: /tmp/cp
+        shell: bash
+        run: |
+          set +e
+          API='https://api.cloudflare.com/client/v4'
+          AUTH=(-H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" -H 'Content-Type: application/json')
+          access_ok=false
+          if [ -n "${ACCESS_VENDOR_APP_ID:-}" ] && [ -n "${CF_ACCESS_AUD:-}" ]; then
+            curl --fail --silent --show-error "${API}/accounts/${CLOUDFLARE_ACCOUNT_ID}/access/apps/${ACCESS_VENDOR_APP_ID}" "${AUTH[@]}" > /tmp/vendor-app-final.json
+            python3 - <<'PY'
+          import json,os
+          x=json.load(open('/tmp/vendor-app-final.json')); assert x.get('success') is True,x; r=x.get('result') or {}; assert r.get('aud')==os.environ['CF_ACCESS_AUD']; assert r.get('name')=='Dorm V17 Vendor Admin'
+          PY
+            [ $? -eq 0 ] && access_ok=true
+          fi
+          [ "$access_ok" = true ] && touch /tmp/v17-vendor-access-live.ok
+
+          if [ -n "${SMOKE_MARK:-}" ] && [ -f wrangler.production.jsonc ]; then
+            timeout 90s npx wrangler d1 execute DB --remote --config wrangler.production.jsonc --command "DELETE FROM license_events WHERE license_id='lic-${SMOKE_MARK}' OR installation_id='install-${SMOKE_MARK}';DELETE FROM activations WHERE license_id='lic-${SMOKE_MARK}';DELETE FROM licenses WHERE id='lic-${SMOKE_MARK}';" >/dev/null
+          fi
+          if [ -f wrangler.production.jsonc ]; then
+            timeout 90s npx wrangler d1 execute DB --remote --config wrangler.production.jsonc --command "SELECT printf('%d:%d:%d:%d',(SELECT COUNT(*) FROM licenses),(SELECT COUNT(*) FROM activations),(SELECT COUNT(*) FROM license_events),(SELECT COUNT(*) FROM update_releases)) AS snapshot;" > /tmp/post-counts.txt
+            grep -Eo '[0-9]+:[0-9]+:[0-9]+:[0-9]+' /tmp/post-counts.txt | tail -1 > /tmp/post-snapshot.txt
+            if [ -s /tmp/pre-snapshot.txt ] && [ -s /tmp/post-snapshot.txt ] && cmp -s /tmp/pre-snapshot.txt /tmp/post-snapshot.txt; then touch /tmp/v17-vendor-clean.ok; fi
+          fi
+          exit 0
+
+      - name: Assemble immutable CUSTOMER-READY delivery
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          for f in exact candidate d1-pre access deploy live access-live clean; do test -f "/tmp/v17-vendor-${f}.ok"; done
+          mkdir -p /tmp/final/customer-packages /tmp/final/vendor /tmp/final/updater
+          for plan in demo basic standard pro; do
+            SRC="$ROOT/customer-packages/dorm-management-system-${plan}-v17-CUSTOMER-READY-CANDIDATE.zip"
+            test -f "$SRC"
+            if unzip -Z1 "$SRC" | grep -Eiq '(^|/)control-plane/|LICENSE_SIGNING_PRIVATE_KEY|(^|/).*private[-_]?key'; then echo "vendor/private material leaked into ${plan}" >&2; exit 1; fi
+            rm -rf "/tmp/pkg-${plan}"; mkdir -p "/tmp/pkg-${plan}"; unzip -q "$SRC" -d "/tmp/pkg-${plan}"
+            test "$(node -p "require('/tmp/pkg-${plan}/package.json').version")" = 1.2.0
+            test "$(find "/tmp/pkg-${plan}/d1-migrations" -maxdepth 1 -type f -printf '%f\n' | sort | tail -1)" = '0008_add_update_state.sql'
+            cp "$SRC" "/tmp/final/customer-packages/dorm-management-system-${plan}-v17-CUSTOMER-READY.zip"
+          done
+          cp "$ROOT/BOOTSTRAP-V16-TO-V17.mjs" "$ROOT/BOOTSTRAP-V16-TO-V17-WINDOWS.cmd" /tmp/final/updater/
+          (cd /tmp/cp && find . -type f ! -path './node_modules/*' ! -name 'wrangler.production.jsonc' ! -name 'wrangler.dryrun.jsonc' -print | sort | zip -q -X /tmp/final/vendor/dorm-control-plane-v17-VENDOR-ADMIN-MVP-CUSTOMER-READY.zip -@)
+          cat > /tmp/final/V17-VENDOR-ADMIN-MVP-CUSTOMER-READY-EVIDENCE.txt <<EOF
+          source_v17_artifact_id=${V17_ARTIFACT_ID}
+          source_v17_artifact_sha256=${V17_ARTIFACT_SHA256}
+          source_control_plane_sha256=${BASE_CP_ZIP_SHA256}
+          vendor_patch_sha256=${PATCH_SHA256}
+          production_run_id=${GITHUB_RUN_ID}
+          production_source_sha=${GITHUB_SHA}
+          canonical_control_plane_url=${CANONICAL_CP_URL}
+          stable_d1_uuid=${STABLE_CP_D1_UUID}
+          migration_ceiling_control_plane=0003_vendor_admin_mvp.sql
+          customer_package_migration_ceiling=0008_add_update_state.sql
+          exact_v17_customer_packages_preserved=true
+          v17_auto_update_regression=success
+          operator_tests=success
+          cloudflare_access_gate=success
+          standard_to_pro_live_pilot=success
+          guarded_cleanup=success
+          customer_ready=true
+          EOF
+          (cd /tmp/final && find . -type f ! -name CUSTOMER-READY-SHA256SUMS.txt -print0 | sort -z | xargs -0 sha256sum > CUSTOMER-READY-SHA256SUMS.txt)
+          (cd /tmp/final && sha256sum -c CUSTOMER-READY-SHA256SUMS.txt)
+          touch /tmp/v17-vendor-bundle.ok
+
+      - name: Upload CUSTOMER-READY artifact
+        if: success()
+        id: upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: dorm-management-system-v17-VENDOR-ADMIN-MVP-CUSTOMER-READY
+          path: /tmp/final
+          if-no-files-found: error
+          compression-level: 0
+
+      - name: Roll back canonical Worker and Access additions on failure
+        if: failure()
+        shell: bash
+        run: |
+          set +e
+          if [ -f /tmp/v17-vendor-deploy-started ] && [ -d /tmp/base-cp/node_modules ]; then
+            cd /tmp/base-cp
+            timeout 240s npx wrangler deploy --config wrangler.rollback.jsonc
+            printf '%s\n' "$LICENSE_SIGNING_PRIVATE_KEY" | timeout 90s npx wrangler secret put LICENSE_SIGNING_PRIVATE_KEY --config wrangler.rollback.jsonc
+          fi
+          API='https://api.cloudflare.com/client/v4'
+          AUTH=(-H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" -H 'Content-Type: application/json')
+          if [ "${ACCESS_VENDOR_APP_CREATED:-false}" = true ] && [ -n "${ACCESS_VENDOR_APP_ID:-}" ]; then curl -sS -X DELETE "${API}/accounts/${CLOUDFLARE_ACCOUNT_ID}/access/apps/${ACCESS_VENDOR_APP_ID}" "${AUTH[@]}" >/dev/null; fi
+          if [ "${ACCESS_BYPASS_LICENSE_CREATED:-false}" = true ] && [ -n "${ACCESS_BYPASS_LICENSE_ID:-}" ]; then curl -sS -X DELETE "${API}/accounts/${CLOUDFLARE_ACCOUNT_ID}/access/apps/${ACCESS_BYPASS_LICENSE_ID}" "${AUTH[@]}" >/dev/null; fi
+          if [ "${ACCESS_BYPASS_UPDATE_CREATED:-false}" = true ] && [ -n "${ACCESS_BYPASS_UPDATE_ID:-}" ]; then curl -sS -X DELETE "${API}/accounts/${CLOUDFLARE_ACCOUNT_ID}/access/apps/${ACCESS_BYPASS_UPDATE_ID}" "${AUTH[@]}" >/dev/null; fi
+          touch /tmp/v17-vendor-rollback-attempted.ok
+          exit 0
+
+      - name: Persist CUSTOMER-READY evidence pointer
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+          ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p v17-vendor-admin-mvp/evidence
+          ready=false
+          if [ "$JOB_STATUS" = success ] && [ -f /tmp/v17-vendor-bundle.ok ] && [ -n "${ARTIFACT_ID:-}" ]; then ready=true; fi
+          val(){ [ -f "/tmp/v17-vendor-$1.ok" ] && printf success || printf failure; }
+          cat > v17-vendor-admin-mvp/evidence/customer-ready-latest.txt <<EOF
+          run_id=${GITHUB_RUN_ID}
+          run_attempt=${GITHUB_RUN_ATTEMPT}
+          source_sha=${GITHUB_SHA}
+          job_status=${JOB_STATUS}
+          source_v17_artifact_id=${V17_ARTIFACT_ID}
+          source_v17_artifact_sha256=${V17_ARTIFACT_SHA256}
+          source_control_plane_sha256=${BASE_CP_ZIP_SHA256}
+          patch_sha256=${PATCH_SHA256}
+          exact_baseline_patch=$(val exact)
+          candidate_tests_typecheck_dryrun=$(val candidate)
+          stable_d1_precheck=$(val d1-pre)
+          cloudflare_access_setup=$(val access)
+          canonical_deploy=$(val deploy)
+          live_customer_regression_and_standard_to_pro=$(val live)
+          cloudflare_access_live=$(val access-live)
+          guarded_cleanup=$(val clean)
+          immutable_bundle=$(val bundle)
+          rollback_attempted=$([ -f /tmp/v17-vendor-rollback-attempted.ok ] && printf true || printf false)
+          customer_ready_artifact_id=${ARTIFACT_ID:-unavailable}
+          customer_ready=${ready}
+          EOF
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add v17-vendor-admin-mvp/evidence/customer-ready-latest.txt
+          git commit -m 'ci(v17): record vendor admin MVP customer-ready evidence' || exit 0
+          git fetch origin agent/v17-vendor-admin-mvp-customer-ready
+          git rebase origin/agent/v17-vendor-admin-mvp-customer-ready
+          git push origin HEAD:agent/v17-vendor-admin-mvp-customer-ready
