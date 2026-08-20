@@ -1,0 +1,20 @@
+run_id=32334325012
+source_sha=ecb1db0f32544b3975b039cc5f5b36ed5d465beb
+job_status=success
+v16_final_artifact_id=9393238249
+v16_final_artifact_sha256=fe17d6426d66722068fd2d003590ca3d0ef188d19dca33c58ed6200ed2de85f1
+v16_source_artifact_id=9392071166
+v16_source_artifact_sha256=cb498eed4580589794480e4aa0a9d42fc2814fde0e64ad6620c16e6d220d2cf8
+overlay=success
+production_release_gate=success
+dependency_audit=low=0 moderate=4 high=0 critical=0 total=4
+four_customer_ready_packages=success
+control_plane_tests_typecheck_dryrun=success
+artifact_freeze=success
+migration_ceiling=0008_add_update_state.sql
+v16_rebuilt=false
+v16_modified=false
+cloudflare_touched=false
+existing_d1_touched=false
+v17_customer_ready=false
+deployed=false
