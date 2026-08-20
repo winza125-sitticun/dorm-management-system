@@ -1,0 +1,73 @@
+name: V16 Suspension Refresh Diagnostic V20
+on:
+  push:
+    branches: [agent/v16-production-gate]
+    paths: ['.github/workflows/v16-production-suspension-refresh-diagnostic-v20.yml']
+permissions: { contents: write, actions: read }
+env:
+  SOURCE_ARTIFACT_ID: '9391068149'
+  SOURCE_ARTIFACT_SHA256: '14e094a00c75bf0b538df4b0d396264c3af28f53b96a95d379e01390005e72ff'
+  PRO_ZIP_SHA256: '75945096ec0346dc31ab0b3c20ca25ee0828e2c0f4efd1fe0150ab6dd91a5182'
+jobs:
+  diagnostic:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: agent/v16-production-gate }
+      - name: Download exact V13 Pro candidate
+        env: { GH_TOKEN: '${{ github.token }}' }
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 8 --retry-all-errors --retry-delay 3 \
+            -H "Authorization: Bearer ${GH_TOKEN}" -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${SOURCE_ARTIFACT_ID}/zip" -o /tmp/source.zip
+          echo "$SOURCE_ARTIFACT_SHA256  /tmp/source.zip" | sha256sum -c -
+          rm -rf /tmp/source /tmp/pro; mkdir -p /tmp/source /tmp/pro
+          unzip -q /tmp/source.zip -d /tmp/source
+          echo "$PRO_ZIP_SHA256  /tmp/source/customer-previews/dorm-management-system-pro-v16-SOURCE-GATE-V13.zip" | sha256sum -c -
+          unzip -q /tmp/source/customer-previews/dorm-management-system-pro-v16-SOURCE-GATE-V13.zip -d /tmp/pro
+      - name: Extract refresh fail-closed path
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' > /tmp/diag.txt
+          from pathlib import Path
+          files=[Path('/tmp/pro/functions/api/[[path]].ts'),Path('/tmp/pro/src/server/services/license.service.ts')]
+          needles=['/api/license/refresh','refreshLicense','refreshLicenseState','LICENSE_READ_ONLY','LicenseOperationError','mark','status =','status:']
+          for p in files:
+            s=p.read_text()
+            print('===',p.name,'===')
+            lines=s.splitlines()
+            hits=[]
+            for i,l in enumerate(lines):
+              if any(n in l for n in needles): hits.append(i)
+            seen=set()
+            for i in hits:
+              a=max(0,i-8); b=min(len(lines),i+16)
+              key=(a,b)
+              if key in seen: continue
+              seen.add(key)
+              print(f'--- lines {a+1}-{b} ---')
+              for j in range(a,b): print(f'{j+1}: {lines[j]}')
+          PY
+          test -s /tmp/diag.txt
+      - name: Persist diagnostic evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p v16-production-evidence
+          {
+            echo "source_artifact_id=${SOURCE_ARTIFACT_ID}"
+            echo "source_artifact_sha256=${SOURCE_ARTIFACT_SHA256}"
+            echo "pro_zip_sha256=${PRO_ZIP_SHA256}"
+            echo "cloudflare_touched=false"
+            echo "existing_d1_touched=false"
+            cat /tmp/diag.txt
+          } > v16-production-evidence/suspension-refresh-diagnostic-v20-latest.txt
+          git config user.name 'github-actions[bot]'; git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add v16-production-evidence/suspension-refresh-diagnostic-v20-latest.txt
+          git commit -m 'ci(v16): record suspension refresh diagnostic v20'
+          git fetch origin agent/v16-production-gate
+          git rebase origin/agent/v16-production-gate
+          git push origin HEAD:agent/v16-production-gate
