@@ -1,0 +1,14 @@
+run_id=32325820431
+source_sha=761e7470db20c290441c67f0f1f2cf779973d47e
+job_status=failure
+source_artifact_id=9391068149
+source_artifact_sha256=14e094a00c75bf0b538df4b0d396264c3af28f53b96a95d379e01390005e72ff
+pro_zip_sha256=75945096ec0346dc31ab0b3c20ca25ee0828e2c0f4efd1fe0150ab6dd91a5182
+exact_artifact=success
+offline_grace_runtime=failure
+grace_days=7
+inside_grace=offline_mutation_allowed
+after_grace=expired_LICENSE_READ_ONLY_403
+cloudflare_touched=false
+existing_d1_touched=false
+customer_ready=false
