@@ -1,0 +1,39 @@
+name: V17 Live API Readiness Recovery V27
+on:
+  push:
+    branches: [agent/v16-production-gate]
+    paths: ['.github/workflows/v17-live-api-readiness-recovery-v27.yml']
+permissions: { contents: write }
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: agent/v16-production-gate }
+      - name: Add bounded Pages Functions readiness to V20
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('.github/workflows/v17-live-upgrade-v20.yml')
+          s=p.read_text()
+          old="          curl --fail -s -H 'content-type: application/json' --data @/tmp/setup \"$URL/api/setup/init\">/tmp/setupout;curl --fail -s -H 'content-type: application/json' --data @/tmp/login \"$URL/api/auth/login\">/tmp/loginout"
+          new="""          api_post(){ local data=\"$1\" path=\"$2\" out=\"$3\" code=; for i in $(seq 1 45); do code=\"$(curl -sS -o \"$out\" -w '%{http_code}' --max-time 15 -H 'content-type: application/json' --data @\"$data\" \"$URL$path\" || true)\"; [[ \"$code\" =~ ^2 ]] && return 0; sleep 2; done; echo \"$path HTTP $code\" >&2; cat \"$out\" >&2 || true; return 1; }
+          api_get(){ local token=\"$1\" path=\"$2\" out=\"$3\" code=; for i in $(seq 1 45); do code=\"$(curl -sS -o \"$out\" -w '%{http_code}' --max-time 15 -H \"authorization: Bearer $token\" \"$URL$path\" || true)\"; [[ \"$code\" =~ ^2 ]] && return 0; sleep 2; done; echo \"$path HTTP $code\" >&2; cat \"$out\" >&2 || true; return 1; }
+          api_post /tmp/setup /api/setup/init /tmp/setupout
+          api_post /tmp/login /api/auth/login /tmp/loginout"""
+          if s.count(old)!=1: raise SystemExit(f'setup/login anchor count={s.count(old)}')
+          s=s.replace(old,new,1)
+          old2='          curl --fail -s -H "authorization: Bearer $T" "$URL/api/license/status">/tmp/status;node -e "const fs=require(\'node:fs\'),x=JSON.parse(fs.readFileSync(\'/tmp/status\',\'utf8\')),d=x.data||x;if(d.effectivePlan!==\'pro\')throw Error(JSON.stringify(d))"\n          curl --fail -s -H "authorization: Bearer $T" "$URL/api/admin/backup/export">/tmp/before-backup'
+          new2='          api_get "$T" /api/license/status /tmp/status;node -e "const fs=require(\'node:fs\'),x=JSON.parse(fs.readFileSync(\'/tmp/status\',\'utf8\')),d=x.data||x;if(d.effectivePlan!==\'pro\')throw Error(JSON.stringify(d))"\n          api_get "$T" /api/admin/backup/export /tmp/before-backup'
+          if s.count(old2)!=1: raise SystemExit(f'status/backup anchor count={s.count(old2)}')
+          p.write_text(s.replace(old2,new2,1))
+          PY
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add .github/workflows/v17-live-upgrade-v20.yml
+          git commit -m 'ci(v17): wait for live Pages Functions routes'
+          git fetch origin agent/v16-production-gate
+          git rebase origin/agent/v16-production-gate
+          git push origin HEAD:agent/v16-production-gate
