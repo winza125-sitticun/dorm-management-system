@@ -1,0 +1,88 @@
+name: V17 Control Plane Update Runtime Diagnostic V15
+on:
+  push:
+    branches: [agent/v16-production-gate]
+    paths: ['.github/workflows/v17-control-plane-diagnostic-v15.yml']
+permissions: { contents: write, actions: read }
+env:
+  V17_ARTIFACT_ID: '9394092671'
+  V17_ARTIFACT_SHA256: '0503ec400e7e52e7e9a23723155aa2eebbc3e64f8ead898cc49b9a9968f63ad3'
+  STABLE_CP_D1: 'dorm-license-control-plane-v16-db'
+  STABLE_CP_D1_UUID: '68695864-48de-4d8a-932b-9d11cd4d6b4d'
+  CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+  CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+  LICENSE_SIGNING_PRIVATE_KEY: ${{ secrets.V16_LICENSE_SIGNING_PRIVATE_KEY }}
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    environment: "fulfilling-communication / production"
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: agent/v16-production-gate }
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+      - name: Deploy exact isolated diagnostic worker
+        env: { GH_TOKEN: '${{ github.token }}' }
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/a /tmp/cp; mkdir -p /tmp/a /tmp/cp
+          curl --fail --location --retry 8 --retry-all-errors --retry-delay 3 -H "Authorization: Bearer ${GH_TOKEN}" "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${V17_ARTIFACT_ID}/zip" -o /tmp/a.zip
+          echo "$V17_ARTIFACT_SHA256  /tmp/a.zip"|sha256sum -c -; unzip -q /tmp/a.zip -d /tmp/a
+          ROOT=/tmp/a; [ -f "$ROOT/SHA256SUMS.txt" ] || ROOT="$(dirname "$(find /tmp/a -name SHA256SUMS.txt -print -quit)")"; (cd "$ROOT" && sha256sum -c SHA256SUMS.txt)
+          unzip -q "$ROOT/dorm-control-plane-v17-SOURCE-GATE-V11.zip" -d /tmp/cp; cd /tmp/cp; npm ci
+          npx wrangler d1 list --json >/tmp/d1.json
+          WORKER="dorm-control-plane-v17-diag-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          python3 - "$WORKER" <<'PY'
+          import json,os,sys
+          x=json.load(open('/tmp/d1.json')); rows=x if isinstance(x,list) else x.get('result',x.get('databases',[])); m=[r for r in rows if r.get('name')==os.environ['STABLE_CP_D1']]; assert len(m)==1
+          uid=m[0].get('uuid') or m[0].get('id'); assert uid==os.environ['STABLE_CP_D1_UUID']
+          json.dump({'name':sys.argv[1],'main':'src/index.ts','compatibility_date':'2026-08-05','d1_databases':[{'binding':'DB','database_name':os.environ['STABLE_CP_D1'],'database_id':uid,'migrations_dir':'migrations'}]},open('wrangler.diag.jsonc','w'))
+          PY
+          timeout 240s npx wrangler deploy --config wrangler.diag.jsonc | tee /tmp/deploy.log
+          printf '%s\n' "$LICENSE_SIGNING_PRIVATE_KEY"|timeout 90s npx wrangler secret put LICENSE_SIGNING_PRIVATE_KEY --config wrangler.diag.jsonc
+          URL="$(grep -Eo 'https://[^[:space:]]+\.workers\.dev' /tmp/deploy.log|tail -n1)"; test -n "$URL"
+          echo "DIAG_WORKER=$WORKER" >> "$GITHUB_ENV"; echo "DIAG_URL=$URL" >> "$GITHUB_ENV"
+      - name: Capture update runtime error
+        working-directory: /tmp/cp
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 18s npx wrangler tail "$DIAG_WORKER" --format json >/tmp/tail.jsonl 2>/tmp/tail.err & TPID=$!
+          sleep 4
+          CODE="$(curl --silent --show-error --output /tmp/body.json --write-out '%{http_code}' -H 'content-type: application/json' --data '{"demo":true,"currentVersion":"1.1.0","channel":"stable"}' "$DIAG_URL/v1/updates/check" || true)"
+          printf '%s' "$CODE" >/tmp/code
+          sleep 4; kill "$TPID" 2>/dev/null || true; wait "$TPID" 2>/dev/null || true
+          cat /tmp/body.json || true
+          node - <<'NODE'
+          const fs=require('node:fs');let out={status:fs.readFileSync('/tmp/code','utf8').trim(),body:null,consoleMessages:[]};try{out.body=JSON.parse(fs.readFileSync('/tmp/body.json','utf8'))}catch{};for(const line of (fs.existsSync('/tmp/tail.jsonl')?fs.readFileSync('/tmp/tail.jsonl','utf8'):'').split(/\n+/)){if(!line.trim())continue;try{const x=JSON.parse(line);const s=JSON.stringify(x);for(const m of s.match(/control-plane error[^"\\]*/g)||[])out.consoleMessages.push(m)}catch{}}fs.writeFileSync('/tmp/diag-summary.json',JSON.stringify(out,null,2));console.log(JSON.stringify(out));
+          NODE
+          touch /tmp/v17-v15-diagnostic.ok
+      - name: Cleanup diagnostic worker
+        if: always()
+        working-directory: /tmp/cp
+        shell: bash
+        run: |
+          set +e
+          if [ -n "${DIAG_WORKER:-}" ] && [[ "$DIAG_WORKER" == "dorm-control-plane-v17-diag-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" ]]; then timeout 120s npx wrangler delete --config wrangler.diag.jsonc --force; fi
+          touch /tmp/v17-v15-cleanup.ok
+      - name: Persist diagnostic evidence
+        if: always()
+        env: { JOB_STATUS: '${{ job.status }}' }
+        shell: bash
+        run: |
+          set -euo pipefail; mkdir -p v17-production-evidence
+          STATUS="$(cat /tmp/code 2>/dev/null || printf unavailable)"; ERR="$(node -e "try{const x=require('/tmp/diag-summary.json');process.stdout.write((x.consoleMessages||[]).join(' | ')||JSON.stringify(x.body||{}))}catch{process.stdout.write('unavailable')}" | tr '\n' ' ' | cut -c1-500)"
+          cat > v17-production-evidence/control-plane-diagnostic-v15-latest.txt <<EOF
+          run_id=${GITHUB_RUN_ID}
+          source_sha=${GITHUB_SHA}
+          job_status=${JOB_STATUS}
+          exact_artifact=$([ -f /tmp/v17-v15-diagnostic.ok ] && printf success || printf failure)
+          update_http_status=${STATUS}
+          runtime_error=${ERR}
+          diagnostic_worker_cleanup=$([ -f /tmp/v17-v15-cleanup.ok ] && printf success || printf failure)
+          canonical_control_plane_touched=false
+          existing_customer_d1_touched=false
+          EOF
+          git config user.name 'github-actions[bot]';git config user.email '41898282+github-actions[bot]@users.noreply.github.com';git add v17-production-evidence/control-plane-diagnostic-v15-latest.txt;git commit -m 'ci(v17): record control plane diagnostic v15' || exit 0;git fetch origin agent/v16-production-gate;git rebase origin/agent/v16-production-gate;git push origin HEAD:agent/v16-production-gate
