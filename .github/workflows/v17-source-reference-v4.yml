@@ -1,0 +1,57 @@
+name: V17 Source Reference V4
+on:
+  push:
+    branches: [agent/v16-production-gate]
+    paths: ['.github/workflows/v17-source-reference-v4.yml']
+permissions: { contents: write, actions: read }
+env:
+  V16_SOURCE_ARTIFACT_ID: '9392071166'
+  V16_SOURCE_ARTIFACT_SHA256: 'cb498eed4580589794480e4aa0a9d42fc2814fde0e64ad6620c16e6d220d2cf8'
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: agent/v16-production-gate }
+      - name: Extract exact V16 reference files
+        env: { GH_TOKEN: '${{ github.token }}' }
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/v16 /tmp/master /tmp/cp; mkdir -p /tmp/v16 /tmp/master /tmp/cp v17-production-reference/v16
+          curl --fail --location -H "Authorization: Bearer ${GH_TOKEN}" "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${V16_SOURCE_ARTIFACT_ID}/zip" -o /tmp/v16.zip
+          echo "$V16_SOURCE_ARTIFACT_SHA256  /tmp/v16.zip"|sha256sum -c -
+          unzip -q /tmp/v16.zip -d /tmp/v16
+          unzip -q /tmp/v16/dorm-management-system-master-v16-PRODUCTION-SOURCE-GATED-V29.zip -d /tmp/master
+          unzip -q /tmp/v16/dorm-control-plane-v16-PRODUCTION-SOURCE-GATED.zip -d /tmp/cp
+          cp /tmp/master/UPGRADE-PACKAGE.mjs v17-production-reference/v16/UPGRADE-PACKAGE.mjs
+          cp /tmp/master/scripts/plan-upgrade.mjs v17-production-reference/v16/plan-upgrade.mjs
+          cp /tmp/master/src/components/SettingsView.tsx v17-production-reference/v16/SettingsView.tsx
+          cp /tmp/master/src/server/services/license.service.ts v17-production-reference/v16/license.service.ts
+          cp /tmp/master/scripts/build-packages.mjs v17-production-reference/v16/build-packages.mjs
+          cp /tmp/master/scripts/package-audit.mjs v17-production-reference/v16/package-audit.mjs
+          cp /tmp/cp/src/index.ts v17-production-reference/v16/control-plane-index.ts
+          cp /tmp/cp/src/license.service.ts v17-production-reference/v16/control-plane-license.service.ts
+          cp /tmp/cp/migrations/0001_license_schema.sql v17-production-reference/v16/control-plane-schema.sql
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('/tmp/master/functions/api/[[path]].ts'); s=p.read_text()
+          keys=['/api/license','/api/admin/backup/export','/api/admin/backup/validate','/api/admin/backup/restore']
+          out=[]
+          for k in keys:
+            i=s.find(k)
+            if i>=0: out.append(f'===== {k} =====\n'+s[max(0,i-1800):i+7000])
+          Path('v17-production-reference/v16/pages-api-snippets.ts.txt').write_text('\n\n'.join(out))
+          PY
+          (cd v17-production-reference/v16 && sha256sum * > REFERENCE_SHA256SUMS.txt)
+      - name: Commit exact reference snapshot
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'; git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- v17-production-reference/v16
+          git commit -m 'ci(v17): snapshot exact V16 integration source' || exit 0
+          git fetch origin agent/v16-production-gate
+          git rebase origin/agent/v16-production-gate
+          git push origin HEAD:agent/v16-production-gate
