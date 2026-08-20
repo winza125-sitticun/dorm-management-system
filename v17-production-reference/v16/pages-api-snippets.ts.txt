@@ -1,0 +1,652 @@
+===== /api/license =====
+er.id);
+                if (!options?.skipPlanAccess) {
+                  await assertPlanAccessForRequest(effectiveUserId);
+                }
+                return {
+                  ...dbUser,
+                  effectiveUserId
+                };
+              }
+            } catch (e) {
+              if (e instanceof PlanAccessError || e instanceof LicenseOperationError) throw e;
+              console.warn("Auth user lookup error:", e);
+            }
+          } else {
+            return { id: payload.id, effectiveUserId: payload.id, uid: payload.uid, email: payload.email, role: payload.role, parent_id: null, permissions: 'manage_rooms,manage_bills,edit_payments,manage_settings' };
+          }
+        }
+      }
+      return null;
+    }
+
+    function hasCaretakerPermission(user: any, requiredPerm: string): boolean {
+      return Boolean(user) && hasAppPermission(String(user.role), user.permissions, requiredPerm as any);
+    };
+
+    const licenseRoles = ['owner', 'super_admin'];
+    const requireLicenseOwner = async () => {
+      const authUser = await getAuthUser({ skipPlanAccess: true });
+      if (!authUser) return { response: errorResponse('UNAUTHORIZED', 'กรุณาล็อกอินเข้าสู่ระบบก่อนใช้งาน', 401), authUser: null };
+      if (!licenseRoles.includes(String(authUser.role || ''))) return { response: errorResponse('FORBIDDEN', 'เฉพาะเจ้าของหอพักเท่านั้นที่จัดการ License ได้', 403), authUser: null };
+      return { response: null, authUser };
+    };
+
+    function publicLicenseState(state: Awaited<ReturnType<typeof resolveLicenseState>>) {
+      const { signedToken, token, ...safe } = state;
+      return { ...safe, signedToken: signedToken ? '[stored]' : null, activatedAt: token?.issuedAt ? new Date(token.issuedAt * 1000).toISOString() : null };
+    }
+
+    if (path === '/api/license/status' && method === 'GET') {
+      const gate = await requireLicenseOwner();
+      if (gate.response) return gate.response;
+      const ownerId = Number(gate.authUser.effectiveUserId || gate.authUser.id);
+      try {
+        const state = await maybeRefreshCustomerLicense(env, { projectName: new URL(request.url).hostname, hostname: new URL(request.url).hostname, appVersion: APP_VERSION });
+        return successResponse(publicLicenseState(state));
+      } catch {
+        const state = await resolveLicenseState(env, ownerId);
+        return successResponse(publicLicenseState(state));
+      }
+    }
+
+    if (path === '/api/license/activate' && method === 'POST') {
+      const gate = await requireLicenseOwner();
+      if (gate.response) return gate.response;
+      try {
+        const bodyResult = await readBoundedJson(request, 4096, { entityName: 'คำขอ License', invalid: 'รูปแบบคำขอ License ไม่ถูกต้อง', tooLarge: 'คำขอ License มีขนาดใหญ่เกินกำหนด' });
+        if (bodyResult.ok === false) return errorResponse(bodyResult.code, bodyResult.message, bodyResult.status);
+        const state = await activateCustomerLicense(env, String(bodyResult.data.licenseKey || ''), { projectName: new URL(request.url).hostname, hostname: new URL(request.url).hostname, appVersion: APP_VERSION });
+        return successResponse(publicLicenseState(state), 'Activate License สำเร็จ');
+      } catch (error: any) {
+        if (error instanceof LicenseOperationError) return errorResponse(error.code, error.message, error.status);
+        return errorResponse('LICENSE_ACTIVATION_FAILED', 'ไม่สามารถ Activate License ได้', 500);
+      }
+    }
+
+    if (path === '/api/license/refresh' && method === 'POST') {
+      const gate = await requireLicenseOwner();
+      if (gate.response) return gate.response;
+      try {
+        const state = await refreshCustomerLicense(env, { projectName: new URL(request.url).hostname, hostname: new URL(request.url).hostname, appVersion: APP_VERSION });
+        return successResponse(publicLicenseState(state), 'Refresh License สำเร็จ');
+      } catch (error: any) {
+        if (error instanceof LicenseOperationError) return errorResponse(error.code, error.message, error.status);
+        return errorResponse('LICENSE_REFRESH_FAILED', 'ไม่สามารถ Refresh License ได้', 500);
+      }
+    }
+
+    if (path === '/api/license/deactivate' && method === 'POST') {
+      const gate = await requireLicenseOwner();
+      if (gate.response) return gate.response;
+      try {
+        const state = await deactivateCustomerLicense(env);
+        return successResponse(publicLicenseState(state), 'ยกเลิก Activation สำเร็จ');
+      } catch (error: any) {
+        if (error instanceof LicenseOperationError) return errorResponse(error.code, error.message, error.status);
+        return errorResponse('LICENSE_DEACTIVATION_FAILED', 'ไม่สามารถยกเลิก Activation ได้', 500);
+      }
+    }
+
+    async function getSubscriptionMetadata(ownerId: number) {
+      const license = await resolveLicenseState(env, ownerId);
+      let compatibilityStatus = 'active';
+      let compatibilityExpiresAt: string | null = null;
+      if (env.DB) {
+        try {
+          const row = await env.DB.prepare('SELECT subscription_status, subscription_expires_at FROM settings WHERE user_id = ? LIMIT 1').bind(ownerId).first();
+          compatibilityStatus = String(row?.subscription_status || 'active');
+          compatibilityExpiresAt = row?.subscription_expires_at ? String(row.subscription_expires_at) : null;
+        } catch (error) {
+          console.warn('Compatibility subscription metadata lookup warning:', error);
+        }
+      }
+      return {
+        subscriptionPlan: license.effectivePlan,
+        subscriptionStatus: license.status || compatibilityStatus,
+        subscriptionExpiresAt: license.expiresAt || compatibilityExpiresAt,
+      };
+    }
+
+    async function ownerHasPlanFeature(ownerId: number, feature: PlanFeature): Promise<boolean> {
+      const subscriptionPlan = await resolveEffectivePlan(env, ownerId);
+      return subscriptionPlan ? hasPlanFeature(subscriptionPlan, feature) : false;
+    }
+
+
+    async function assertPlanAccessForRequest(ownerId: number): Promise<void> {
+      let licenseState = await resolveLicenseState(env, ownerId);
+      if (licenseState.token && licenseState.token.refreshAfter * 1000 <= Date.now()) {
+        try { licenseState = await maybeRefreshCustomerLicense(env, { projectName: new URL(request.url).hostname, hostname: new URL(request.url).hostname, appVersion: APP_VERSION }); }
+        catch (error) {
+          if (!(error instanceof LicenseOperationError)) throw error;
+          licenseState = await resolveLicenseState(env, ownerId);
+        }
+      }
+      const licenseApi = path === '/api/license/status' || path === '/api/license/activate' || path === '/api/license/refresh' || path === '/api/license/deactivate';
+      const mutating = ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method) && !licenseApi;
+      if (mutating) assertMutationAllowedByLicense(licenseState);
+      const subscriptionPlan = licenseState.effectivePlan;
+      const requiredFeature = requiredPlanFeatureForApiRequest(path, method);
+
+      if (!subscriptionPlan) {
+        if (path === '/api/admin/backup/export' && method === 'GET') return;
+        if (requiredFeature || (method === 'POST' && (path === '/api/rooms' || path === '/api/caretakers'))) {
+          throw new PlanAccessError('LICENSE_REQUIRED', 'แพ็กเกจแบบชำระเงินต้อง Activate License ก่อนใช้งานฟีเจอร์นี้');
+        }
+        return;
+      }
+
+      if (isDemoPlan(subscriptionPlan) && isDemoMutationRestricted(path, method)) {
+        throw new PlanAccessError('PLAN_REQUIRED', 'บัญชี Demo ไม่อนุญาตให้แก้ไขการตั้งค่า ลบข้อมูล หรือจัดการ Integration');
+      }
+
+      if (requiredFeature && !hasPlanFeature(subscriptionPlan, requiredFeature)) {
+        const requiredPlan = minimumPaidPlanForFeature(requiredFeature);
+        throw new PlanAccessError('PLAN_REQUIRED', `ฟีเจอร์นี้อยู่ในแพ็กเกจ ${requiredPlan[0].toUpperCase() + requiredPlan.slice(1)} หรือสูงกว่า`);
+      }
+
+      if (!env.DB) return;
+
+      if (method === 'POST' && path === '/api/rooms') {
+        const countRow = await env.DB.prepare('SELECT COUNT(*) AS count FROM rooms WHERE user_id = ? AND deleted_at IS NULL').bind(ownerId).first();
+        const maxRooms = getPlanLimit(subscriptionPlan, 'maxRooms');
+        if (Number(countRow?.count || 0) >= maxRooms) {
+          throw new PlanAccessError('PLAN_LIMIT_REACHED', `แพ็กเกจ ${subscriptionPlan} รองรับห้องพักสูงสุด ${maxRooms} ห้อง`);
+        }
+      }
+
+      if (method === 'POST' && path === '/api/caretakers') {
+        const countRow = await env.DB.prepare("SELECT COUNT(*) AS count FROM users WHERE parent_id = ? AND role IN ('caretaker','accountant','technician','housekeeper','staff') AND deleted_at IS NULL").bind(ownerId).first();
+        const maxStaff = getPlanLimit(subscriptionPlan, 'maxStaff');
+        if (Number(countRow?.count || 0) >= ma
+
+===== /api/admin/backup/export =====
+ow?.subscription_expires_at ? String(row.subscription_expires_at) : null;
+        } catch (error) {
+          console.warn('Compatibility subscription metadata lookup warning:', error);
+        }
+      }
+      return {
+        subscriptionPlan: license.effectivePlan,
+        subscriptionStatus: license.status || compatibilityStatus,
+        subscriptionExpiresAt: license.expiresAt || compatibilityExpiresAt,
+      };
+    }
+
+    async function ownerHasPlanFeature(ownerId: number, feature: PlanFeature): Promise<boolean> {
+      const subscriptionPlan = await resolveEffectivePlan(env, ownerId);
+      return subscriptionPlan ? hasPlanFeature(subscriptionPlan, feature) : false;
+    }
+
+
+    async function assertPlanAccessForRequest(ownerId: number): Promise<void> {
+      let licenseState = await resolveLicenseState(env, ownerId);
+      if (licenseState.token && licenseState.token.refreshAfter * 1000 <= Date.now()) {
+        try { licenseState = await maybeRefreshCustomerLicense(env, { projectName: new URL(request.url).hostname, hostname: new URL(request.url).hostname, appVersion: APP_VERSION }); }
+        catch (error) {
+          if (!(error instanceof LicenseOperationError)) throw error;
+          licenseState = await resolveLicenseState(env, ownerId);
+        }
+      }
+      const licenseApi = path === '/api/license/status' || path === '/api/license/activate' || path === '/api/license/refresh' || path === '/api/license/deactivate';
+      const mutating = ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method) && !licenseApi;
+      if (mutating) assertMutationAllowedByLicense(licenseState);
+      const subscriptionPlan = licenseState.effectivePlan;
+      const requiredFeature = requiredPlanFeatureForApiRequest(path, method);
+
+      if (!subscriptionPlan) {
+        if (path === '/api/admin/backup/export' && method === 'GET') return;
+        if (requiredFeature || (method === 'POST' && (path === '/api/rooms' || path === '/api/caretakers'))) {
+          throw new PlanAccessError('LICENSE_REQUIRED', 'แพ็กเกจแบบชำระเงินต้อง Activate License ก่อนใช้งานฟีเจอร์นี้');
+        }
+        return;
+      }
+
+      if (isDemoPlan(subscriptionPlan) && isDemoMutationRestricted(path, method)) {
+        throw new PlanAccessError('PLAN_REQUIRED', 'บัญชี Demo ไม่อนุญาตให้แก้ไขการตั้งค่า ลบข้อมูล หรือจัดการ Integration');
+      }
+
+      if (requiredFeature && !hasPlanFeature(subscriptionPlan, requiredFeature)) {
+        const requiredPlan = minimumPaidPlanForFeature(requiredFeature);
+        throw new PlanAccessError('PLAN_REQUIRED', `ฟีเจอร์นี้อยู่ในแพ็กเกจ ${requiredPlan[0].toUpperCase() + requiredPlan.slice(1)} หรือสูงกว่า`);
+      }
+
+      if (!env.DB) return;
+
+      if (method === 'POST' && path === '/api/rooms') {
+        const countRow = await env.DB.prepare('SELECT COUNT(*) AS count FROM rooms WHERE user_id = ? AND deleted_at IS NULL').bind(ownerId).first();
+        const maxRooms = getPlanLimit(subscriptionPlan, 'maxRooms');
+        if (Number(countRow?.count || 0) >= maxRooms) {
+          throw new PlanAccessError('PLAN_LIMIT_REACHED', `แพ็กเกจ ${subscriptionPlan} รองรับห้องพักสูงสุด ${maxRooms} ห้อง`);
+        }
+      }
+
+      if (method === 'POST' && path === '/api/caretakers') {
+        const countRow = await env.DB.prepare("SELECT COUNT(*) AS count FROM users WHERE parent_id = ? AND role IN ('caretaker','accountant','technician','housekeeper','staff') AND deleted_at IS NULL").bind(ownerId).first();
+        const maxStaff = getPlanLimit(subscriptionPlan, 'maxStaff');
+        if (Number(countRow?.count || 0) >= maxStaff) {
+          throw new PlanAccessError('PLAN_LIMIT_REACHED', `แพ็กเกจ ${subscriptionPlan} รองรับผู้ดูแลร่วมสูงสุด ${maxStaff} คน`);
+        }
+      }
+    }
+
+
+    const backupJsonMessages = {
+      entityName: 'คำขอ Backup/Restore',
+      invalid: 'รูปแบบข้อมูล Backup/Restore ไม่ถูกต้อง',
+      tooLarge: 'ข้อมูล Backup/Restore มีขนาดใหญ่เกินกำหนด',
+    };
+    const isBackupAdminRole = (role?: string | null) => ['owner', 'super_admin'].includes(String(role || ''));
+    const requireBackupAdmin = async () => {
+      const authUser = await getAuthUser();
+      if (!authUser) return { response: errorResponse('UNAUTHORIZED', 'กรุณาล็อกอินเข้าสู่ระบบก่อนใช้งาน', 401), authUser: null };
+      if (!isBackupAdminRole(authUser.role)) return { response: errorResponse('FORBIDDEN', 'เฉพาะเจ้าของหอพักหรือผู้ดูแลระบบเท่านั้นที่ใช้ Backup/Restore ได้', 403), authUser: null };
+      return { response: null, authUser };
+    };
+    const auditRestoreFailure = async (authUser: any, body: Record<string, unknown> | null, reasonCode: string, recoveryRequired: boolean) => {
+      const manifest = body?.manifest && typeof body.manifest === 'object' ? body.manifest as Record<string, unknown> : null;
+      await logAuditAction(env.DB, {
+        userId: authUser?.id,
+        userEmail: authUser?.email || 'system',
+        userRole: authUser?.role || 'owner',
+        action: 'RESTORE_BACKUP_FAILED',
+        targetType: 'backup',
+        targetId: null,
+        newValue: {
+          dataSha256: typeof manifest?.dataSha256 === 'string' ? manifest.dataSha256 : null,
+          formatVersion: Number(manifest?.formatVersion || 1),
+          reasonCode,
+          recoveryRequired,
+        },
+        ipAddress: clientIp,
+        userAgent,
+      });
+    };
+
+    if (path === '/api/admin/backup/export' && method === 'GET') {
+      const gate = await requireBackupAdmin();
+      if (gate.response) return gate.response;
+      if (!env.DB) return errorResponse('DATABASE_ERROR', 'ไม่พบการเชื่อมต่อฐานข้อมูล D1', 500);
+      try {
+        const ownerId = Number(gate.authUser.effectiveUserId || gate.authUser.id);
+        return successResponse(await exportBusinessBackup(env.DB, ownerId, APP_VERSION));
+      } catch (error: any) {
+        return errorResponse('BACKUP_EXPORT_FAILED', error?.message || 'ไม่สามารถสร้างไฟล์สำรองข้อมูลได้', 500);
+      }
+    }
+
+    if (path === '/api/admin/backup/validate' && method === 'POST') {
+      const gate = await requireBackupAdmin();
+      if (gate.response) return gate.response;
+      if (!env.DB) return errorResponse('DATABASE_ERROR', 'ไม่พบการเชื่อมต่อฐานข้อมูล D1', 500);
+      const bodyResult = await readBoundedJson(request, BACKUP_REQUEST_MAX_BYTES, backupJsonMessages);
+      if (bodyResult.ok === false) return errorResponse(bodyResult.code, bodyResult.message, bodyResult.status);
+      try {
+        const ownerId = Number(gate.authUser.effectiveUserId || gate.authUser.id);
+        const result = await validateBackupForRestore(env.DB, ownerId, getJwtSecret(env), {
+          manifest: bodyResult.data.manifest,
+          data: bodyResult.data.data,
+        });
+        return successResponse(result);
+      } catch (error: any) {
+        if (error instanceof BackupValidationError) return errorResponse(error.code, error.message, error.status);
+        return errorResponse('BACKUP_VALIDATION_FAILED', error?.message || 'ตรวจสอบไฟล์ Backup ไม่สำเร็จ', 400);
+      }
+    }
+
+    if (path === '/api/admin/backup/restore' && method === 'POST') {
+      const gate = await requireBackupAdmin();
+      if (gate.response) return gate.response;
+      if (!env.DB) return errorResponse('DATABASE_ERROR', 'ไม่พบการเชื่อมต่อฐานข้อมูล D1', 500);
+      const bodyResult = await readBoundedJson(request, BACKUP_REQUEST_MAX_BYTES, backupJsonMessages);
+      if (bodyResult.ok === false) return errorResponse(bodyResult.code, bodyResult.message, bodyResult.status);
+      const body = bodyResult.data;
+      const ownerId = Number(gate.authUser.effectiveUserId || gate.authUser.id);
+      const restoreLimit = await RateLimiterService.checkRateLimit(env.DB, `${ownerId}:${clientIp}`, 'backup_restore');
+      if (!restoreLimit.allowed) {
+        await auditRestoreFailure(gate.authUser, body, 'RESTORE_RATE_LIMIT', false);
+        return errorResponse('TOO_MANY_REQUESTS', `คุณทำ Restore ถี่เกินไป กรุณารอ ${restoreLimit.retryAfterSeconds} วินาที`, 429);
+      }
+      if (body.confirmation !== 'RESTORE') {
+        await auditRestoreFailure(gate.authUser, body, 'RESTORE_CONFIRMATION_REQUIRED', false);
+        return errorResponse('RESTORE_CONFIRMATION_REQUIRED', 'กรุณาพิมพ์ RESTORE เพื่อยืนยัน', 400);
+      }
+      try {
+        const validation = await validateBackupForRestore(env.DB, ownerId, getJwtSecret(env), {
+          manifest: body.manifest,
+          data: body.data,
+        });
+        const manifest = body.manifest as BackupManifestV1;
+        const tokenCheck = await verifyRestoreToken(String(body.restoreToken || ''), getJwtSecret(env), {
+          ownerId,
+          ownerScope: manifest.ownerScope,
+          dataSha256: manifest.dataSha256,
+          formatVersion: manifest.formatVersion,
+        });
+        if (!tokenCheck.ok) throw new BackupValidationError('RESTORE_TOKEN
+
+===== /api/admin/backup/validate =====
+authUser) return { response: errorResponse('UNAUTHORIZED', 'กรุณาล็อกอินเข้าสู่ระบบก่อนใช้งาน', 401), authUser: null };
+      if (!isBackupAdminRole(authUser.role)) return { response: errorResponse('FORBIDDEN', 'เฉพาะเจ้าของหอพักหรือผู้ดูแลระบบเท่านั้นที่ใช้ Backup/Restore ได้', 403), authUser: null };
+      return { response: null, authUser };
+    };
+    const auditRestoreFailure = async (authUser: any, body: Record<string, unknown> | null, reasonCode: string, recoveryRequired: boolean) => {
+      const manifest = body?.manifest && typeof body.manifest === 'object' ? body.manifest as Record<string, unknown> : null;
+      await logAuditAction(env.DB, {
+        userId: authUser?.id,
+        userEmail: authUser?.email || 'system',
+        userRole: authUser?.role || 'owner',
+        action: 'RESTORE_BACKUP_FAILED',
+        targetType: 'backup',
+        targetId: null,
+        newValue: {
+          dataSha256: typeof manifest?.dataSha256 === 'string' ? manifest.dataSha256 : null,
+          formatVersion: Number(manifest?.formatVersion || 1),
+          reasonCode,
+          recoveryRequired,
+        },
+        ipAddress: clientIp,
+        userAgent,
+      });
+    };
+
+    if (path === '/api/admin/backup/export' && method === 'GET') {
+      const gate = await requireBackupAdmin();
+      if (gate.response) return gate.response;
+      if (!env.DB) return errorResponse('DATABASE_ERROR', 'ไม่พบการเชื่อมต่อฐานข้อมูล D1', 500);
+      try {
+        const ownerId = Number(gate.authUser.effectiveUserId || gate.authUser.id);
+        return successResponse(await exportBusinessBackup(env.DB, ownerId, APP_VERSION));
+      } catch (error: any) {
+        return errorResponse('BACKUP_EXPORT_FAILED', error?.message || 'ไม่สามารถสร้างไฟล์สำรองข้อมูลได้', 500);
+      }
+    }
+
+    if (path === '/api/admin/backup/validate' && method === 'POST') {
+      const gate = await requireBackupAdmin();
+      if (gate.response) return gate.response;
+      if (!env.DB) return errorResponse('DATABASE_ERROR', 'ไม่พบการเชื่อมต่อฐานข้อมูล D1', 500);
+      const bodyResult = await readBoundedJson(request, BACKUP_REQUEST_MAX_BYTES, backupJsonMessages);
+      if (bodyResult.ok === false) return errorResponse(bodyResult.code, bodyResult.message, bodyResult.status);
+      try {
+        const ownerId = Number(gate.authUser.effectiveUserId || gate.authUser.id);
+        const result = await validateBackupForRestore(env.DB, ownerId, getJwtSecret(env), {
+          manifest: bodyResult.data.manifest,
+          data: bodyResult.data.data,
+        });
+        return successResponse(result);
+      } catch (error: any) {
+        if (error instanceof BackupValidationError) return errorResponse(error.code, error.message, error.status);
+        return errorResponse('BACKUP_VALIDATION_FAILED', error?.message || 'ตรวจสอบไฟล์ Backup ไม่สำเร็จ', 400);
+      }
+    }
+
+    if (path === '/api/admin/backup/restore' && method === 'POST') {
+      const gate = await requireBackupAdmin();
+      if (gate.response) return gate.response;
+      if (!env.DB) return errorResponse('DATABASE_ERROR', 'ไม่พบการเชื่อมต่อฐานข้อมูล D1', 500);
+      const bodyResult = await readBoundedJson(request, BACKUP_REQUEST_MAX_BYTES, backupJsonMessages);
+      if (bodyResult.ok === false) return errorResponse(bodyResult.code, bodyResult.message, bodyResult.status);
+      const body = bodyResult.data;
+      const ownerId = Number(gate.authUser.effectiveUserId || gate.authUser.id);
+      const restoreLimit = await RateLimiterService.checkRateLimit(env.DB, `${ownerId}:${clientIp}`, 'backup_restore');
+      if (!restoreLimit.allowed) {
+        await auditRestoreFailure(gate.authUser, body, 'RESTORE_RATE_LIMIT', false);
+        return errorResponse('TOO_MANY_REQUESTS', `คุณทำ Restore ถี่เกินไป กรุณารอ ${restoreLimit.retryAfterSeconds} วินาที`, 429);
+      }
+      if (body.confirmation !== 'RESTORE') {
+        await auditRestoreFailure(gate.authUser, body, 'RESTORE_CONFIRMATION_REQUIRED', false);
+        return errorResponse('RESTORE_CONFIRMATION_REQUIRED', 'กรุณาพิมพ์ RESTORE เพื่อยืนยัน', 400);
+      }
+      try {
+        const validation = await validateBackupForRestore(env.DB, ownerId, getJwtSecret(env), {
+          manifest: body.manifest,
+          data: body.data,
+        });
+        const manifest = body.manifest as BackupManifestV1;
+        const tokenCheck = await verifyRestoreToken(String(body.restoreToken || ''), getJwtSecret(env), {
+          ownerId,
+          ownerScope: manifest.ownerScope,
+          dataSha256: manifest.dataSha256,
+          formatVersion: manifest.formatVersion,
+        });
+        if (!tokenCheck.ok) throw new BackupValidationError('RESTORE_TOKEN_INVALID', 400, 'Restore Token ไม่ถูกต้องหรือหมดอายุ');
+
+        const currentState = await loadRestoreCurrentState(env.DB, ownerId);
+        const prepared = prepareRestoreData(body.data as BackupDataV1, currentState, ownerId, manifest.schemaVersion);
+        const restoreResult = await restoreBusinessBackup(env.DB, ownerId, prepared);
+        await verifyRestoredBackup(env.DB, ownerId, prepared);
+        await logAuditActionStrict(env.DB, {
+          userId: gate.authUser.id,
+          userEmail: gate.authUser.email,
+          userRole: gate.authUser.role,
+          action: 'RESTORE_BACKUP',
+          targetType: 'backup',
+          targetId: manifest.dataSha256.slice(0, 16),
+          newValue: { dataSha256: manifest.dataSha256, formatVersion: manifest.formatVersion, preRestoreDataSha256: restoreResult.preRestoreDataSha256 },
+          ipAddress: clientIp,
+          userAgent,
+        });
+        return successResponse({
+          restored: true,
+          preRestoreDataSha256: restoreResult.preRestoreDataSha256,
+          warnings: validation.warnings,
+        }, 'กู้คืนข้อมูลสำเร็จ');
+      } catch (error: any) {
+        const recoveryRequired = error instanceof RestorePartialFailure || Boolean(error?.recoveryRequired);
+        const reasonCode = String(error?.code || (recoveryRequired ? 'RESTORE_PARTIAL_FAILURE' : 'RESTORE_FAILED'));
+        await auditRestoreFailure(gate.authUser, body, reasonCode, recoveryRequired);
+        if (error instanceof BackupValidationError) return errorResponse(error.code, error.message, error.status);
+        if (recoveryRequired) {
+          return jsonResponse({
+            success: false,
+            error: {
+              code: 'RESTORE_PARTIAL_FAILURE',
+              message: error?.message || 'กู้คืนข้อมูลไม่สมบูรณ์',
+              recoveryRequired: true,
+              preRestoreDataSha256: error?.preRestoreDataSha256 || null,
+            },
+          }, 503);
+        }
+        return errorResponse(reasonCode, error?.message || 'กู้คืนข้อมูลไม่สำเร็จ', 500);
+      }
+    }
+
+    const requireGoogleConfig = () => {
+      if (!env.GOOGLE_CLIENT_ID || !env.GOOGLE_CLIENT_SECRET) {
+        throw new Error('ยังไม่ได้ตั้งค่า GOOGLE_CLIENT_ID และ GOOGLE_CLIENT_SECRET บน Cloudflare Pages');
+      }
+    }
+
+    if (path === '/api/google-sheets/status' && method === 'GET') {
+      const authUser = await getAuthUser();
+      if (!authUser || !env.DB) return errorResponse('UNAUTHORIZED', 'กรุณาเข้าสู่ระบบก่อนตรวจสอบ Google Sheets', 401);
+      const ownerId = authUser.effectiveUserId || authUser.id;
+      const saved = await env.DB.prepare('SELECT 1 AS connected FROM google_oauth_tokens WHERE user_id = ? LIMIT 1').bind(ownerId).first();
+      return successResponse({
+        connected: !!saved,
+        hasClientConfig: !!(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET)
+      });
+    }
+
+    if (path === '/api/google-sheets/disconnect' && (method === 'POST' || method === 'DELETE')) {
+      const authUser = await getAuthUser();
+      if (!authUser || !env.DB) return errorResponse('UNAUTHORIZED', 'กรุณาเข้าสู่ระบบก่อนยกเลิก Google Sheets', 401);
+      const ownerId = authUser.effectiveUserId || authUser.id;
+      await env.DB.prepare('DELETE FROM google_oauth_tokens WHERE user_id = ?').bind(ownerId).run();
+      return successResponse({ connected: false }, 'ยกเลิกการเชื่อมต่อ Google Sheets เรียบร้อยแล้ว');
+    }
+
+    // Google OAuth callback is handled on the server so the client secret and
+    // refresh token never have to be exposed to the browser.
+    if (path === '/api/google-sheets/connect' && method === 'POST') {
+      const authUser = await getAuthUser();
+      if (!authUser || !env.DB) return errorResponse('UNAUTHORIZED', 'กรุณาเข้าสู่ระบบก่อนเชื่อมต่อ Google', 401);
+      try {
+        requireGoogleConfig();
+        const state = crypto.randomUUID();
+        const ownerId = authUser.effectiveUserId || authUser.id;
+        await env.DB.prepare('INSERT INTO google_oauth_states (state, user_id, expires_at) VALUES (?, ?, ?)').bind(state, ownerId, Date.now() + 600000).run();
+        const redirectUri = new URL('/api/google-sheets
+
+===== /api/admin/backup/restore =====
+ode,
+          recoveryRequired,
+        },
+        ipAddress: clientIp,
+        userAgent,
+      });
+    };
+
+    if (path === '/api/admin/backup/export' && method === 'GET') {
+      const gate = await requireBackupAdmin();
+      if (gate.response) return gate.response;
+      if (!env.DB) return errorResponse('DATABASE_ERROR', 'ไม่พบการเชื่อมต่อฐานข้อมูล D1', 500);
+      try {
+        const ownerId = Number(gate.authUser.effectiveUserId || gate.authUser.id);
+        return successResponse(await exportBusinessBackup(env.DB, ownerId, APP_VERSION));
+      } catch (error: any) {
+        return errorResponse('BACKUP_EXPORT_FAILED', error?.message || 'ไม่สามารถสร้างไฟล์สำรองข้อมูลได้', 500);
+      }
+    }
+
+    if (path === '/api/admin/backup/validate' && method === 'POST') {
+      const gate = await requireBackupAdmin();
+      if (gate.response) return gate.response;
+      if (!env.DB) return errorResponse('DATABASE_ERROR', 'ไม่พบการเชื่อมต่อฐานข้อมูล D1', 500);
+      const bodyResult = await readBoundedJson(request, BACKUP_REQUEST_MAX_BYTES, backupJsonMessages);
+      if (bodyResult.ok === false) return errorResponse(bodyResult.code, bodyResult.message, bodyResult.status);
+      try {
+        const ownerId = Number(gate.authUser.effectiveUserId || gate.authUser.id);
+        const result = await validateBackupForRestore(env.DB, ownerId, getJwtSecret(env), {
+          manifest: bodyResult.data.manifest,
+          data: bodyResult.data.data,
+        });
+        return successResponse(result);
+      } catch (error: any) {
+        if (error instanceof BackupValidationError) return errorResponse(error.code, error.message, error.status);
+        return errorResponse('BACKUP_VALIDATION_FAILED', error?.message || 'ตรวจสอบไฟล์ Backup ไม่สำเร็จ', 400);
+      }
+    }
+
+    if (path === '/api/admin/backup/restore' && method === 'POST') {
+      const gate = await requireBackupAdmin();
+      if (gate.response) return gate.response;
+      if (!env.DB) return errorResponse('DATABASE_ERROR', 'ไม่พบการเชื่อมต่อฐานข้อมูล D1', 500);
+      const bodyResult = await readBoundedJson(request, BACKUP_REQUEST_MAX_BYTES, backupJsonMessages);
+      if (bodyResult.ok === false) return errorResponse(bodyResult.code, bodyResult.message, bodyResult.status);
+      const body = bodyResult.data;
+      const ownerId = Number(gate.authUser.effectiveUserId || gate.authUser.id);
+      const restoreLimit = await RateLimiterService.checkRateLimit(env.DB, `${ownerId}:${clientIp}`, 'backup_restore');
+      if (!restoreLimit.allowed) {
+        await auditRestoreFailure(gate.authUser, body, 'RESTORE_RATE_LIMIT', false);
+        return errorResponse('TOO_MANY_REQUESTS', `คุณทำ Restore ถี่เกินไป กรุณารอ ${restoreLimit.retryAfterSeconds} วินาที`, 429);
+      }
+      if (body.confirmation !== 'RESTORE') {
+        await auditRestoreFailure(gate.authUser, body, 'RESTORE_CONFIRMATION_REQUIRED', false);
+        return errorResponse('RESTORE_CONFIRMATION_REQUIRED', 'กรุณาพิมพ์ RESTORE เพื่อยืนยัน', 400);
+      }
+      try {
+        const validation = await validateBackupForRestore(env.DB, ownerId, getJwtSecret(env), {
+          manifest: body.manifest,
+          data: body.data,
+        });
+        const manifest = body.manifest as BackupManifestV1;
+        const tokenCheck = await verifyRestoreToken(String(body.restoreToken || ''), getJwtSecret(env), {
+          ownerId,
+          ownerScope: manifest.ownerScope,
+          dataSha256: manifest.dataSha256,
+          formatVersion: manifest.formatVersion,
+        });
+        if (!tokenCheck.ok) throw new BackupValidationError('RESTORE_TOKEN_INVALID', 400, 'Restore Token ไม่ถูกต้องหรือหมดอายุ');
+
+        const currentState = await loadRestoreCurrentState(env.DB, ownerId);
+        const prepared = prepareRestoreData(body.data as BackupDataV1, currentState, ownerId, manifest.schemaVersion);
+        const restoreResult = await restoreBusinessBackup(env.DB, ownerId, prepared);
+        await verifyRestoredBackup(env.DB, ownerId, prepared);
+        await logAuditActionStrict(env.DB, {
+          userId: gate.authUser.id,
+          userEmail: gate.authUser.email,
+          userRole: gate.authUser.role,
+          action: 'RESTORE_BACKUP',
+          targetType: 'backup',
+          targetId: manifest.dataSha256.slice(0, 16),
+          newValue: { dataSha256: manifest.dataSha256, formatVersion: manifest.formatVersion, preRestoreDataSha256: restoreResult.preRestoreDataSha256 },
+          ipAddress: clientIp,
+          userAgent,
+        });
+        return successResponse({
+          restored: true,
+          preRestoreDataSha256: restoreResult.preRestoreDataSha256,
+          warnings: validation.warnings,
+        }, 'กู้คืนข้อมูลสำเร็จ');
+      } catch (error: any) {
+        const recoveryRequired = error instanceof RestorePartialFailure || Boolean(error?.recoveryRequired);
+        const reasonCode = String(error?.code || (recoveryRequired ? 'RESTORE_PARTIAL_FAILURE' : 'RESTORE_FAILED'));
+        await auditRestoreFailure(gate.authUser, body, reasonCode, recoveryRequired);
+        if (error instanceof BackupValidationError) return errorResponse(error.code, error.message, error.status);
+        if (recoveryRequired) {
+          return jsonResponse({
+            success: false,
+            error: {
+              code: 'RESTORE_PARTIAL_FAILURE',
+              message: error?.message || 'กู้คืนข้อมูลไม่สมบูรณ์',
+              recoveryRequired: true,
+              preRestoreDataSha256: error?.preRestoreDataSha256 || null,
+            },
+          }, 503);
+        }
+        return errorResponse(reasonCode, error?.message || 'กู้คืนข้อมูลไม่สำเร็จ', 500);
+      }
+    }
+
+    const requireGoogleConfig = () => {
+      if (!env.GOOGLE_CLIENT_ID || !env.GOOGLE_CLIENT_SECRET) {
+        throw new Error('ยังไม่ได้ตั้งค่า GOOGLE_CLIENT_ID และ GOOGLE_CLIENT_SECRET บน Cloudflare Pages');
+      }
+    }
+
+    if (path === '/api/google-sheets/status' && method === 'GET') {
+      const authUser = await getAuthUser();
+      if (!authUser || !env.DB) return errorResponse('UNAUTHORIZED', 'กรุณาเข้าสู่ระบบก่อนตรวจสอบ Google Sheets', 401);
+      const ownerId = authUser.effectiveUserId || authUser.id;
+      const saved = await env.DB.prepare('SELECT 1 AS connected FROM google_oauth_tokens WHERE user_id = ? LIMIT 1').bind(ownerId).first();
+      return successResponse({
+        connected: !!saved,
+        hasClientConfig: !!(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET)
+      });
+    }
+
+    if (path === '/api/google-sheets/disconnect' && (method === 'POST' || method === 'DELETE')) {
+      const authUser = await getAuthUser();
+      if (!authUser || !env.DB) return errorResponse('UNAUTHORIZED', 'กรุณาเข้าสู่ระบบก่อนยกเลิก Google Sheets', 401);
+      const ownerId = authUser.effectiveUserId || authUser.id;
+      await env.DB.prepare('DELETE FROM google_oauth_tokens WHERE user_id = ?').bind(ownerId).run();
+      return successResponse({ connected: false }, 'ยกเลิกการเชื่อมต่อ Google Sheets เรียบร้อยแล้ว');
+    }
+
+    // Google OAuth callback is handled on the server so the client secret and
+    // refresh token never have to be exposed to the browser.
+    if (path === '/api/google-sheets/connect' && method === 'POST') {
+      const authUser = await getAuthUser();
+      if (!authUser || !env.DB) return errorResponse('UNAUTHORIZED', 'กรุณาเข้าสู่ระบบก่อนเชื่อมต่อ Google', 401);
+      try {
+        requireGoogleConfig();
+        const state = crypto.randomUUID();
+        const ownerId = authUser.effectiveUserId || authUser.id;
+        await env.DB.prepare('INSERT INTO google_oauth_states (state, user_id, expires_at) VALUES (?, ?, ?)').bind(state, ownerId, Date.now() + 600000).run();
+        const redirectUri = new URL('/api/google-sheets/callback', request.url).toString();
+        const url = new URL('https://accounts.google.com/o/oauth2/v2/auth');
+        url.search = new URLSearchParams({ client_id: env.GOOGLE_CLIENT_ID, redirect_uri: redirectUri, response_type: 'code', access_type: 'offline', prompt: 'consent', scope: 'https://www.googleapis.com/auth/spreadsheets', state }).toString();
+        return jsonResponse({ success: true, data: { authorizationUrl: url.toString() } });
+      } catch (e: any) { return errorResponse('GOOGLE_OAUTH_CONFIG', e.message, 500); }
+    }
+
+    if (path === '/api/google-sheets/callback' && method === 'GET') {
+      try {
+        requireGoogleConfig();
+        const state = url.searchParams.get('state'); const code = url.searchParams.get('code');
+        if (!state || !code || !env.DB) return new Response('Invalid Google authorization response', { status: 400 });
+        const record = await env.DB.prepare('SELECT * FROM google_oauth_states WHERE state = ? AND expires_at > ?').bind(state, Date.now()).first();
+        await env.DB.prepare('DELETE FROM google_
