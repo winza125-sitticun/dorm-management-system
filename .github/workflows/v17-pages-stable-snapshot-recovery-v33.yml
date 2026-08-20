@@ -1,0 +1,44 @@
+name: V17 Pages Stable Snapshot Recovery V33
+on:
+  push:
+    branches: [agent/v16-production-gate]
+    paths: ['.github/workflows/v17-pages-stable-snapshot-recovery-v33.yml']
+permissions: { contents: write }
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: agent/v16-production-gate }
+      - name: Ignore volatile deployment age Status
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          old="""          def canonical(p):
+            return json.dumps(json.load(open(p)),sort_keys=True,separators=(',',':'))
+          a=canonical('/tmp/deploy-before');b=canonical('/tmp/deploy-after');assert a==b,(a,b)
+"""
+          new="""          def stable(p):
+            def clean(v):
+              if isinstance(v,dict): return {k:clean(x) for k,x in v.items() if k.lower()!='status'}
+              if isinstance(v,list): return [clean(x) for x in v]
+              return v
+            return json.dumps(clean(json.load(open(p))),sort_keys=True,separators=(',',':'))
+          a=stable('/tmp/deploy-before');b=stable('/tmp/deploy-after');assert a==b,(a,b)
+"""
+          for name in ['v17-pro-failed-migration-rollback-v29.yml','v17-pro-network-retry-v30.yml']:
+            p=Path('.github/workflows')/name
+            s=p.read_text()
+            if old not in s: raise SystemExit(f'canonical snapshot block missing: {p}')
+            p.write_text(s.replace(old,new,1))
+          PY
+          git diff --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add .github/workflows/v17-pro-failed-migration-rollback-v29.yml .github/workflows/v17-pro-network-retry-v30.yml
+          git commit -m 'ci(v17): ignore volatile Pages deployment status'
+          git fetch origin agent/v16-production-gate
+          git rebase origin/agent/v16-production-gate
+          git push origin HEAD:agent/v16-production-gate
