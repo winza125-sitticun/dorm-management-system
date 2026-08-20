@@ -1,0 +1,149 @@
+name: V17 Failed Migration Rollback Gate V24
+on:
+  push:
+    branches: [agent/v16-production-gate]
+    paths: ['.github/workflows/v17-failed-migration-rollback-v24.yml']
+permissions: { contents: write, actions: read }
+concurrency: { group: v17-failed-migration-rollback-v24, cancel-in-progress: false }
+env:
+  V16_FINAL_ARTIFACT_ID: '9393238249'
+  V16_FINAL_ARTIFACT_SHA256: 'fe17d6426d66722068fd2d003590ca3d0ef188d19dca33c58ed6200ed2de85f1'
+  V16_DEMO_SHA256: '5ae4bddca8807f7eeda273c406e982c196ba675be75526e5fbcc7044487728c3'
+  V17_ARTIFACT_ID: '9394092671'
+  V17_ARTIFACT_SHA256: '0503ec400e7e52e7e9a23723155aa2eebbc3e64f8ead898cc49b9a9968f63ad3'
+  CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+  CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+jobs:
+  rollback:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    environment: "fulfilling-communication / production"
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: agent/v16-production-gate }
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+      - name: Verify exact immutable artifacts
+        env: { GH_TOKEN: '${{ github.token }}' }
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -Fxq 'job_status=success' v17-production-evidence/v16-final-baseline-v18-latest.txt
+          grep -Fxq 'job_status=success' v17-production-evidence/production-publish-v19-latest.txt
+          rm -rf /tmp/v16a /tmp/v17a /tmp/v16;mkdir -p /tmp/v16a /tmp/v17a /tmp/v16
+          curl --fail --location --retry 8 --retry-all-errors --retry-delay 3 -H "Authorization: Bearer ${GH_TOKEN}" "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${V16_FINAL_ARTIFACT_ID}/zip" -o /tmp/v16a.zip
+          echo "$V16_FINAL_ARTIFACT_SHA256  /tmp/v16a.zip"|sha256sum -c -;unzip -q /tmp/v16a.zip -d /tmp/v16a
+          R16=/tmp/v16a;[ -f "$R16/CUSTOMER-READY-SHA256SUMS.txt" ]||R16="$(dirname "$(find /tmp/v16a -name CUSTOMER-READY-SHA256SUMS.txt -print -quit)")";(cd "$R16"&&sha256sum -c CUSTOMER-READY-SHA256SUMS.txt)
+          P16="$R16/customer-previews/dorm-management-system-demo-v16-SOURCE-GATE-V29.zip";echo "$V16_DEMO_SHA256  $P16"|sha256sum -c -;unzip -q "$P16" -d /tmp/v16
+          test "$(node -p "require('/tmp/v16/package.json').version")" = 1.1.0
+          curl --fail --location --retry 8 --retry-all-errors --retry-delay 3 -H "Authorization: Bearer ${GH_TOKEN}" "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${V17_ARTIFACT_ID}/zip" -o /tmp/v17a.zip
+          echo "$V17_ARTIFACT_SHA256  /tmp/v17a.zip"|sha256sum -c -;unzip -q /tmp/v17a.zip -d /tmp/v17a
+          R17=/tmp/v17a;[ -f "$R17/SHA256SUMS.txt" ]||R17="$(dirname "$(find /tmp/v17a -name SHA256SUMS.txt -print -quit)")";(cd "$R17"&&sha256sum -c SHA256SUMS.txt)
+          cp "$R17/BOOTSTRAP-V16-TO-V17.mjs" /tmp/v16/
+          touch /tmp/v24-exact.ok
+      - name: Deploy disposable exact V16 Demo
+        working-directory: /tmp/v16
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci
+          M="$(printf '%s' "$GITHUB_RUN_ID"|tail -c 9)-${GITHUB_RUN_ATTEMPT}-$(python3 -c 'import secrets;print(secrets.token_hex(3))')";D1="v17-v24-${M}-db";PAGES="v17-v24-${M}";printf 'D1=%q\nPAGES=%q\n' "$D1" "$PAGES">/tmp/v24.env
+          timeout 120s npx wrangler d1 create "$D1" --location apac;timeout 60s npx wrangler d1 info "$D1" --json >/tmp/d1info
+          python3 - "$D1" "$PAGES" <<'PY'
+          import json,re,sys
+          s=json.dumps(json.load(open('/tmp/d1info')));m=re.search(r'[0-9a-fA-F-]{36}',s);assert m
+          json.dump({'name':sys.argv[2],'compatibility_date':'2026-08-05','compatibility_flags':['nodejs_compat'],'pages_build_output_dir':'./dist','upload_source_maps':True,'d1_databases':[{'binding':'DB','database_name':sys.argv[1],'database_id':m.group(0),'migrations_dir':'./d1-migrations'}]},open('wrangler.jsonc','w'))
+          PY
+          timeout 120s npx wrangler pages project create "$PAGES" --production-branch main
+          JWT="$(python3 -c 'import secrets;print(secrets.token_urlsafe(48))')";printf '%s\n' "$JWT"|timeout 90s npx wrangler pages secret put JWT_SECRET --project-name "$PAGES";unset JWT
+          timeout 180s npx wrangler d1 migrations apply DB --remote --config wrangler.jsonc
+          npm run build:pages;timeout 240s npx wrangler pages deploy dist --project-name "$PAGES" --branch main --commit-hash "$GITHUB_SHA" --commit-dirty=false|tee /tmp/pages
+          URL="$(grep -Eo 'https://[^[:space:]]+\.pages\.dev' /tmp/pages|tail -n1)";test -n "$URL";printf 'URL=%q\n' "$URL">>/tmp/v24.env
+          for i in $(seq 1 60);do curl --fail -s --max-time 10 "$URL/" -o /dev/null&&break;sleep 2;done;curl --fail -s "$URL/" -o /dev/null
+          npx wrangler pages deployment list --project-name "$PAGES" --json >/tmp/deploy-before.json
+          touch /tmp/v24-deploy.ok
+      - name: Setup owner and baseline business hash
+        shell: bash
+        run: |
+          set -euo pipefail;set -a;. /tmp/v24.env;set +a
+          EMAIL="v24-${GITHUB_RUN_ID}@example.invalid";PASS="V24!ReadyAa$(python3 -c 'import secrets;print(secrets.token_hex(10))')";printf '%s' "$EMAIL">/tmp/email;printf '%s' "$PASS">/tmp/pass
+          python3 - <<'PY'
+          import json
+          e=open('/tmp/email').read();p=open('/tmp/pass').read();json.dump({'email':e,'password':p,'displayName':'V24 Owner','dormName':'V24 Rollback'},open('/tmp/setup','w'));json.dump({'username':e,'password':p},open('/tmp/login','w'))
+          PY
+          curl --fail -s -H 'content-type: application/json' --data @/tmp/setup "$URL/api/setup/init">/tmp/setupout
+          curl --fail -s -H 'content-type: application/json' --data @/tmp/login "$URL/api/auth/login">/tmp/loginout
+          node -e "const fs=require('node:fs'),x=JSON.parse(fs.readFileSync('/tmp/loginout','utf8')),d=x.data||x;if(!d.token)process.exit(1);fs.writeFileSync('/tmp/auth',d.token)"
+          T="$(cat /tmp/auth)";curl --fail -s -H "authorization: Bearer $T" "$URL/api/admin/backup/export">/tmp/before
+          node - <<'NODE'
+          const fs=require('node:fs'),crypto=require('node:crypto'),x=JSON.parse(fs.readFileSync('/tmp/before')),p=x.data||x,canon=v=>Array.isArray(v)?v.map(canon):v&&typeof v==='object'?Object.fromEntries(Object.keys(v).sort().map(k=>[k,canon(v[k])])):v;fs.writeFileSync('/tmp/before.sha',crypto.createHash('sha256').update(JSON.stringify(canon(p.data))).digest('hex'));
+          NODE
+          touch /tmp/v24-baseline.ok
+      - name: Inject migration failure and prove rollback
+        working-directory: /tmp/v16
+        shell: bash
+        run: |
+          set -euo pipefail;set -a;. /tmp/v24.env;set +a
+          export DORM_UPDATE_ADMIN_USERNAME="$(cat /tmp/email)" DORM_UPDATE_ADMIN_PASSWORD="$(cat /tmp/pass)"
+          REAL_NPM="$(command -v npm)";mkdir -p /tmp/v24-shim
+          cat >/tmp/v24-shim/npm <<EOF
+          #!/usr/bin/env bash
+          if [ "\$*" = "run d1:migrate:remote" ]; then echo V24_INJECTED_MIGRATION_FAILURE >&2; exit 97; fi
+          exec "$REAL_NPM" "\$@"
+          EOF
+          chmod +x /tmp/v24-shim/npm;export PATH="/tmp/v24-shim:$PATH"
+          set +e;timeout 1200s node BOOTSTRAP-V16-TO-V17.mjs > /tmp/bootstrap.log 2>&1;RC=$?;set -e
+          test "$RC" -ne 0;grep -q V24_INJECTED_MIGRATION_FAILURE /tmp/bootstrap.log
+          test "$(node -p "require('./package.json').version")" = 1.1.0
+          test ! -f .dorm-update-state.json
+          find backups -maxdepth 1 -type f -name 'pre-update-*.dormbackup' -print -quit | grep -q .
+          timeout 90s npx wrangler d1 execute DB --remote --config wrangler.jsonc --command "SELECT name FROM sqlite_master WHERE type='table' AND name='update_state';" >/tmp/update-table
+          ! grep -q update_state /tmp/update-table
+          npx wrangler pages deployment list --project-name "$PAGES" --json >/tmp/deploy-after.json
+          python3 - <<'PY'
+          import json
+          def ids(path):
+            x=json.load(open(path)); rows=x if isinstance(x,list) else x.get('result',x.get('deployments',[])); return [r.get('id') for r in rows if r.get('id')]
+          a=ids('/tmp/deploy-before.json');b=ids('/tmp/deploy-after.json');assert a and b and a[0]==b[0],(a[:2],b[:2])
+          PY
+          curl --fail -s -H 'content-type: application/json' --data @/tmp/login "$URL/api/auth/login">/tmp/login2
+          node -e "const fs=require('node:fs'),x=JSON.parse(fs.readFileSync('/tmp/login2','utf8')),d=x.data||x;if(!d.token)process.exit(1);fs.writeFileSync('/tmp/auth2',d.token)"
+          T="$(cat /tmp/auth2)";curl --fail -s -H "authorization: Bearer $T" "$URL/api/admin/backup/export">/tmp/after
+          node - <<'NODE'
+          const fs=require('node:fs'),crypto=require('node:crypto'),x=JSON.parse(fs.readFileSync('/tmp/after')),p=x.data||x,canon=v=>Array.isArray(v)?v.map(canon):v&&typeof v==='object'?Object.fromEntries(Object.keys(v).sort().map(k=>[k,canon(v[k])])):v,h=crypto.createHash('sha256').update(JSON.stringify(canon(p.data))).digest('hex');if(h!==fs.readFileSync('/tmp/before.sha','utf8').trim())throw Error(h);fs.writeFileSync('/tmp/after.sha',h)
+          NODE
+          touch /tmp/v24-rollback.ok
+      - name: Guarded cleanup
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          if [ -f /tmp/v24.env ];then set -a;. /tmp/v24.env;set +a;[[ "$PAGES" == v17-v24-* ]]&&[[ "$D1" == v17-v24-*-db ]]&&cd /tmp/v16&&timeout 120s npx wrangler pages project delete "$PAGES" --yes&&timeout 120s npx wrangler d1 delete "$D1" --skip-confirmation;fi
+          touch /tmp/v24-cleanup.ok;exit 0
+      - name: Persist rollback evidence
+        if: always()
+        env: { JOB_STATUS: '${{ job.status }}' }
+        shell: bash
+        run: |
+          set -euo pipefail;mkdir -p v17-production-evidence;v(){ [ -f "/tmp/v24-$1.ok" ]&&printf success||printf failure;};cat >v17-production-evidence/failed-migration-rollback-v24-latest.txt <<EOF
+          run_id=${GITHUB_RUN_ID}
+          run_attempt=${GITHUB_RUN_ATTEMPT}
+          source_sha=${GITHUB_SHA}
+          job_status=${JOB_STATUS}
+          exact_artifacts=$(v exact)
+          disposable_v16=$(v deploy)
+          baseline_business_snapshot=$(v baseline)
+          migration_failure_rollback=$(v rollback)
+          cleanup=$(v cleanup)
+          before_business_sha256=$(cat /tmp/before.sha 2>/dev/null||printf unavailable)
+          after_business_sha256=$(cat /tmp/after.sha 2>/dev/null||printf unavailable)
+          pages_redeploy_on_failed_migration=false
+          update_state_created=false
+          local_version_after_failure=1.1.0
+          automatic_backup_created=$([ -d /tmp/v16/backups ]&&find /tmp/v16/backups -maxdepth 1 -name 'pre-update-*.dormbackup' -print -quit|grep -q .&&printf true||printf false)
+          v16_rebuilt=false
+          v16_modified=false
+          existing_customer_d1_touched=false
+          v17_customer_ready=false
+          EOF
+          git config user.name 'github-actions[bot]';git config user.email '41898282+github-actions[bot]@users.noreply.github.com';git add v17-production-evidence/failed-migration-rollback-v24-latest.txt;git commit -m 'ci(v17): record failed migration rollback v24 evidence' || exit 0;git fetch origin agent/v16-production-gate;git rebase origin/agent/v16-production-gate;git push origin HEAD:agent/v16-production-gate
