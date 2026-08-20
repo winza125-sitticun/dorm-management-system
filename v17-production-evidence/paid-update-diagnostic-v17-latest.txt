@@ -1,0 +1,9 @@
+run_id=32335260378
+job_status=success
+activate_http=200
+activate_body={"token":"[redacted]","license":{"v":1,"licenseId":"lic-v17diag-32335260378-1","installationId":"install-v17diag-32335260378-1","plan":"basic","status":"active","issuedAt":1787203289,"expiresAt":1789795289,"refreshAfter":1787289689},"idempotent":false}
+update_http=200
+update_body={"updateAvailable":true,"licensePlan":"basic","manifest":{"schemaVersion":1,"product":"dorm-management-system","version":"1.2.0","channel":"stable","plan":"basic","packageSha256":"bbabb5928c08c38fc26c43719b38061963c5796f80dbcaea4f6f2765363dec8c","packageSize":4142432,"migrationCeiling":"0008_add_update_state.sql","minimumSupportedVersion":"1.1.0","releaseNotes":"V17 Auto Update signed plan-aware s
+cleanup=success
+canonical_control_plane_touched=false
+existing_customer_d1_touched=false
