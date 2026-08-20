@@ -1,0 +1,35 @@
+name: V17 Release Reference V9A
+on:
+  push:
+    branches: [agent/v16-production-gate]
+    paths: ['.github/workflows/v17-release-reference-v9a.yml']
+permissions: { contents: write, actions: read }
+env:
+  V16_SOURCE_ARTIFACT_ID: '9392071166'
+  V16_SOURCE_ARTIFACT_SHA256: 'cb498eed4580589794480e4aa0a9d42fc2814fde0e64ad6620c16e6d220d2cf8'
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: agent/v16-production-gate }
+      - name: Extract release references
+        env: { GH_TOKEN: '${{ github.token }}' }
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/v16 /tmp/master;mkdir -p /tmp/v16 /tmp/master v17-production-reference/v16/release
+          curl --fail --location -H "Authorization: Bearer ${GH_TOKEN}" "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${V16_SOURCE_ARTIFACT_ID}/zip" -o /tmp/v16.zip
+          echo "$V16_SOURCE_ARTIFACT_SHA256  /tmp/v16.zip"|sha256sum -c -
+          unzip -q /tmp/v16.zip -d /tmp/v16
+          unzip -q /tmp/v16/dorm-management-system-master-v16-PRODUCTION-SOURCE-GATED-V29.zip -d /tmp/master
+          cp /tmp/master/package.json v17-production-reference/v16/release/package.json
+          cp /tmp/master/scripts/release-packages.mjs v17-production-reference/v16/release/release-packages.mjs
+          cp /tmp/master/scripts/build-packages.mjs v17-production-reference/v16/release/build-packages.mjs
+      - name: Commit refs
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]';git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- v17-production-reference/v16/release
+          git commit -m 'ci(v17): snapshot release orchestrator' || exit 0
+          git fetch origin agent/v16-production-gate;git rebase origin/agent/v16-production-gate;git push origin HEAD:agent/v16-production-gate
