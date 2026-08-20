@@ -75,7 +75,7 @@ jobs:
           JWT="$(python3 -c 'import secrets;print(secrets.token_urlsafe(48))')";printf '%s\n' "$JWT"|timeout 90s npx wrangler pages secret put JWT_SECRET --project-name "$PAGES";unset JWT
           timeout 180s npx wrangler d1 migrations apply DB --remote --config wrangler.jsonc
           npm run build:pages;timeout 240s npx wrangler pages deploy dist --project-name "$PAGES" --branch main --commit-hash "$GITHUB_SHA" --commit-dirty=false|tee /tmp/pages
-          URL="$(grep -Eo 'https://[^[:space:]]+\.pages\.dev' /tmp/pages|tail -n1)";test -n "$URL";printf 'URL=%q\n' "$URL">>/tmp/v20.env
+          URL="https://${PAGES}.pages.dev";printf 'URL=%q\n' "$URL">>/tmp/v20.env
           for i in $(seq 1 60);do curl --fail -s --max-time 10 "$URL/" -o /dev/null&&break;sleep 2;done;curl --fail -s "$URL/" -o /dev/null
           touch /tmp/v20-deploy.ok
       - name: Setup owner activate license and capture business-data hash
