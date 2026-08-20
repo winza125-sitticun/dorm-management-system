@@ -19,4 +19,14 @@ for rel in ['tests/package-parity.test.mjs','tests/package-release.test.mjs']:
         if old not in s: raise RuntimeError('package-release migration ceiling anchor missing')
         s=s.replace(old,new)
     p.write_text(s)
+# These V15 branding portable tests assert the then-current migration ceiling as a non-branding invariant.
+# V17 legitimately adds exactly 0008 for update_state, so only that invariant moves; branding assertions stay intact.
+for rel in ['tests/task5-login-app-shell-branding.test.mjs','tests/task6-bill-branding.test.mjs','tests/task7-tenant-portal-branding.test.mjs']:
+    p=r/rel
+    if not p.exists(): raise RuntimeError(f'missing portable test: {rel}')
+    s=p.read_text()
+    n=s.count('0007_add_license_state.sql')
+    if n != 1: raise RuntimeError(f'{rel}: expected exactly one migration ceiling assertion, got {n}')
+    s=s.replace('0007_add_license_state.sql','0008_add_update_state.sql')
+    p.write_text(s)
 print('V17 release tests aligned')
