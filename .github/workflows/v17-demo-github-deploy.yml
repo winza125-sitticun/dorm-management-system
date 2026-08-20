@@ -178,17 +178,50 @@ jobs:
           set -euo pipefail
           OUTPUT="$(npx wrangler pages deploy dist --project-name "$V17_DEMO_PAGES_NAME" --branch main --commit-hash "$GITHUB_SHA" --commit-dirty=true)"
           printf '%s\n' "$OUTPUT"
-          URL="$(printf '%s\n' "$OUTPUT" | grep -Eo 'https://[A-Za-z0-9.-]+\.pages\.dev' | tail -n 1)"
-          test -n "$URL" || { echo "::error::Unable to resolve Pages deployment URL"; exit 1; }
-          echo "V17_DEMO_URL=$URL" >> "$GITHUB_ENV"
-          echo "url=$URL" >> "$GITHUB_OUTPUT"
+          DEPLOYMENT_URL="$(printf '%s\n' "$OUTPUT" | grep -Eo 'https://[A-Za-z0-9.-]+\.pages\.dev' | tail -n 1)"
+          test -n "$DEPLOYMENT_URL" || { echo "::error::Unable to resolve Pages deployment URL"; exit 1; }
+          PRODUCTION_URL="https://${V17_DEMO_PAGES_NAME}.pages.dev"
+          echo "V17_DEMO_DEPLOYMENT_URL=$DEPLOYMENT_URL" >> "$GITHUB_ENV"
+          echo "V17_DEMO_URL=$PRODUCTION_URL" >> "$GITHUB_ENV"
+          echo "deployment_url=$DEPLOYMENT_URL" >> "$GITHUB_OUTPUT"
+          echo "url=$PRODUCTION_URL" >> "$GITHUB_OUTPUT"
+          echo "Deployment URL: $DEPLOYMENT_URL"
+          echo "Production URL: $PRODUCTION_URL"
 
       - name: Production health check
         shell: bash
         run: |
           set -euo pipefail
-          curl --fail --silent --show-error --retry 8 --retry-delay 3 "$V17_DEMO_URL/" >/dev/null
-          curl --fail --silent --show-error --retry 8 --retry-delay 3 "$V17_DEMO_URL/api/health" | tee health.json
+
+          wait_for_url() {
+            local url="$1"
+            local output_path="${2:-}"
+            local tmp
+            tmp="$(mktemp)"
+
+            for attempt in $(seq 1 24); do
+              echo "Health attempt ${attempt}/24: ${url}"
+              if curl --fail --silent --show-error \
+                --connect-timeout 5 --max-time 10 \
+                "$url" -o "$tmp"; then
+                if [ -n "$output_path" ]; then
+                  mv "$tmp" "$output_path"
+                else
+                  rm -f "$tmp"
+                fi
+                return 0
+              fi
+              sleep 5
+            done
+
+            rm -f "$tmp"
+            echo "::error::Pages endpoint did not become ready: $url"
+            return 1
+          }
+
+          wait_for_url "$V17_DEMO_URL/"
+          wait_for_url "$V17_DEMO_URL/api/health" health.json
+          cat health.json
 
       - name: Record deploy evidence
         shell: bash
@@ -203,7 +236,8 @@ jobs:
           d1_database=${V17_DEMO_D1_NAME}
           d1_id=${V17_DEMO_D1_ID}
           migration_ceiling=0008_add_update_state.sql
-          deployment_url=${V17_DEMO_URL}
+          deployment_url=${V17_DEMO_DEPLOYMENT_URL}
+          production_url=${V17_DEMO_URL}
           github_run_id=${GITHUB_RUN_ID}
           github_sha=${GITHUB_SHA}
           retained_for_manual_test=true
@@ -224,6 +258,7 @@ jobs:
         shell: bash
         run: |
           echo "Demo resources intentionally retained for manual testing."
-          echo "Pages: $V17_DEMO_PAGES_NAME"
-          echo "D1:    $V17_DEMO_D1_NAME"
-          echo "URL:   $V17_DEMO_URL"
+          echo "Pages:      $V17_DEMO_PAGES_NAME"
+          echo "D1:         $V17_DEMO_D1_NAME"
+          echo "Production: $V17_DEMO_URL"
+          echo "Deployment: $V17_DEMO_DEPLOYMENT_URL"
