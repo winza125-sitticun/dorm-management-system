@@ -1,0 +1,286 @@
+source_artifact_id=9365183203
+source_artifact_sha256=102f94d86cdde64819420afbe747ca1d8ef6764977562df846f2d823be71e47f
+pro_zip_sha256=c350d9ab87b1e379ec5fc37edb52ea4009d346d4f74ff62a62e164b7526c442b
+cloudflare_touched=false
+existing_d1_touched=false
+FILE=src/server/services/license.service.ts
+-- 46-63 --
+46:
+47:type InstallationMetadata = { projectName?: string | null; hostname?: string | null; appVersion?: string | null };
+48:
+49:type ControlPlaneResult = { token: string; license: LicenseTokenPayload };
+50:
+51:export class LicenseOperationError extends Error {
+52:  constructor(public code: string, message: string, public status = 400) { super(message); }
+53:}
+54:
+55:function base64UrlToBytes(value: string): Uint8Array {
+56:  const padded = value.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - (value.length % 4)) % 4);
+57:  const binary = atob(padded);
+58:  return Uint8Array.from(binary, (c) => c.charCodeAt(0));
+59:}
+60:
+61:function base64ToBytes(value: string): Uint8Array {
+62:  const normalized = value.trim().replace(/-/g, '+').replace(/_/g, '/');
+63:  return base64UrlToBytes(normalized.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, ''));
+-- 186-203 --
+186:export async function refreshCustomerLicense(env: LicenseEnv, metadata: InstallationMetadata = {}, nowMs = Date.now()): Promise<ResolvedLicenseState> {
+187:  if (!env.DB) throw new LicenseOperationError('DATABASE_ERROR', 'ไม่พบการเชื่อมต่อฐานข้อมูล D1', 500);
+188:  const installationId = await ensureInstallationState(env, nowMs);
+189:  const row = await env.DB.prepare('SELECT signed_token, last_checked_at, grace_until FROM license_state WHERE id = 1 LIMIT 1').first<Record<string, unknown>>();
+190:  const token = String(row?.signed_token || '');
+191:  if (!token) throw new LicenseOperationError('LICENSE_REQUIRED', 'ยังไม่ได้ Activate License', 409);
+192:  try {
+193:    const result = await postControlPlane(env, '/v1/licenses/refresh', {
+194:      token, installationId, projectName: metadata.projectName || null, hostname: metadata.hostname || null,
+195:    });
+196:    if ('ok' in result) throw new LicenseOperationError('INVALID_CONTROL_PLANE_RESPONSE', 'Control Plane ส่งข้อมูล License ไม่ถูกต้อง', 502);
+197:    await persistActiveToken(env, installationId, result, nowMs);
+198:  } catch (error) {
+199:    if (!(error instanceof LicenseOperationError) || error.code !== 'CONTROL_PLANE_UNAVAILABLE') throw error;
+200:    const lastCheckedMs = row?.last_checked_at ? Date.parse(String(row.last_checked_at)) : NaN;
+201:    const graceUntilMs = Number.isFinite(lastCheckedMs) ? lastCheckedMs + GRACE_MS : (row?.grace_until ? Date.parse(String(row.grace_until)) : NaN);
+202:    const state = await resolveLicenseState(env, 0, nowMs);
+203:    const usableOffline = Boolean(state.token) && Number.isFinite(graceUntilMs) && nowMs <= graceUntilMs;
+-- 194-211 --
+194:      token, installationId, projectName: metadata.projectName || null, hostname: metadata.hostname || null,
+195:    });
+196:    if ('ok' in result) throw new LicenseOperationError('INVALID_CONTROL_PLANE_RESPONSE', 'Control Plane ส่งข้อมูล License ไม่ถูกต้อง', 502);
+197:    await persistActiveToken(env, installationId, result, nowMs);
+198:  } catch (error) {
+199:    if (!(error instanceof LicenseOperationError) || error.code !== 'CONTROL_PLANE_UNAVAILABLE') throw error;
+200:    const lastCheckedMs = row?.last_checked_at ? Date.parse(String(row.last_checked_at)) : NaN;
+201:    const graceUntilMs = Number.isFinite(lastCheckedMs) ? lastCheckedMs + GRACE_MS : (row?.grace_until ? Date.parse(String(row.grace_until)) : NaN);
+202:    const state = await resolveLicenseState(env, 0, nowMs);
+203:    const usableOffline = Boolean(state.token) && Number.isFinite(graceUntilMs) && nowMs <= graceUntilMs;
+204:    const now = new Date(nowMs).toISOString();
+205:    await env.DB.prepare(`UPDATE license_state SET status = ?, grace_until = ?, effective_plan = ?, updated_at = ? WHERE id = 1`)
+206:      .bind(usableOffline ? 'offline' : 'expired', Number.isFinite(graceUntilMs) ? new Date(graceUntilMs).toISOString() : null, usableOffline ? state.token?.plan || null : null, now).run();
+207:  }
+208:  return resolveLicenseState(env, 0, nowMs);
+209:}
+210:
+211:export async function deactivateCustomerLicense(env: LicenseEnv, nowMs = Date.now()): Promise<ResolvedLicenseState> {
+-- 265-282 --
+265:  const state = await resolveLicenseState(env, 0, nowMs);
+266:  if (!state.token || !PACKAGE_LICENSE_CONFIG.requiresLicense) return state;
+267:  if (state.token.refreshAfter * 1000 > nowMs && state.status !== 'offline') return state;
+268:  try { return await refreshCustomerLicense(env, metadata, nowMs); }
+269:  catch (error) {
+270:    if (error instanceof LicenseOperationError && ['INVALID_TOKEN', 'LICENSE_INVALID', 'LICENSE_INACTIVE', 'LICENSE_EXPIRED', 'ACTIVATION_REVOKED'].includes(error.code)) {
+271:      if (env.DB) {
+272:        const now = new Date(nowMs).toISOString();
+273:        const nextStatus = error.code === 'LICENSE_EXPIRED' ? 'expired' : 'revoked';
+274:        await env.DB.prepare(`UPDATE license_state SET status = ?, effective_plan = NULL, updated_at = ? WHERE id = 1`).bind(nextStatus, now).run();
+275:        return resolveLicenseState(env, 0, nowMs);
+276:      }
+277:    }
+278:    throw error;
+279:  }
+280:}
+281:
+282:export async function resolveEffectivePlan(env: LicenseEnv, ownerId: number, nowMs = Date.now()): Promise<SubscriptionPlan | null> {
+-- 281-290 --
+281:
+282:export async function resolveEffectivePlan(env: LicenseEnv, ownerId: number, nowMs = Date.now()): Promise<SubscriptionPlan | null> {
+283:  return (await resolveLicenseState(env, ownerId, nowMs)).effectivePlan;
+284:}
+285:
+286:export function assertMutationAllowedByLicense(state: ResolvedLicenseState): void {
+287:  if (!PACKAGE_LICENSE_CONFIG.requiresLicense) return;
+288:  if ((state.status === 'active' || state.status === 'offline') && state.effectivePlan) return;
+289:  throw new LicenseOperationError('LICENSE_READ_ONLY', 'License ไม่พร้อมใช้งาน ระบบอยู่ในโหมดอ่านอย่างเดียว', 403);
+290:}
+-- 284-290 --
+284:}
+285:
+286:export function assertMutationAllowedByLicense(state: ResolvedLicenseState): void {
+287:  if (!PACKAGE_LICENSE_CONFIG.requiresLicense) return;
+288:  if ((state.status === 'active' || state.status === 'offline') && state.effectivePlan) return;
+289:  throw new LicenseOperationError('LICENSE_READ_ONLY', 'License ไม่พร้อมใช้งาน ระบบอยู่ในโหมดอ่านอย่างเดียว', 403);
+290:}
+FILE=functions/api/[[path]].ts
+-- 19-36 --
+19:import { generateToken, verifyToken } from '../../src/server/services/jwt.service.ts';
+20:import { APP_VERSION } from '../../src/generated/version.ts';
+21:import { PERMISSIONS, hasAppPermission, permissionsForRole } from '../../src/constants/permissions.ts';
+22:import { getPlanLimit, hasPlanFeature, isDemoPlan, type PlanFeature } from '../../src/constants/planEntitlements.ts';
+23:import { isDemoMutationRestricted, minimumPaidPlanForFeature, requiredPlanFeatureForApiRequest, requiredPlanFeaturesForSettingsUpdate } from '../../src/server/services/planAccess.service.ts';
+24:import { activateCustomerLicense, assertMutationAllowedByLicense, deactivateCustomerLicense, LicenseOperationError, maybeRefreshCustomerLicense, refreshCustomerLicense, resolveEffectivePlan, resolveLicenseState } from '../../src/server/services/license.service.ts';
+25:import { normalizeBillingMonths } from '../../src/utils/recurringCharges.ts';
+26:import { canTransitionHousekeeping } from '../../src/utils/housekeeping.ts';
+27:import { BACKUP_REQUEST_MAX_BYTES, type BackupDataV1, type BackupManifestV1 } from '../../src/utils/backupFormat.ts';
+28:import { exportBusinessBackup, validateBackupForRestore, verifyRestoreToken } from '../../src/server/services/backup.service.ts';
+29:import { loadRestoreCurrentState, prepareRestoreData, restoreBusinessBackup, verifyRestoredBackup, RestorePartialFailure } from '../../src/server/services/restore.service.ts';
+30:import { BackupValidationError } from '../../src/server/validators/backup.ts';
+31:import { changedWhiteLabelFields, normalizeWhiteLabelPatch } from '../../src/server/validators/settings.ts';
+32:import { LOGO_REQUEST_MAX_BYTES, safeStoredLogoDataUri, validateLogoDataUri } from '../../src/server/validators/logo.ts';
+33:import { buildPublicBranding } from '../../src/server/services/branding.service.ts';
+34:
+35:function getJwtSecret(env: Env): string {
+36:  if (!env.JWT_SECRET || env.JWT_SECRET.length < 32) {
+-- 203-220 --
+203:    }
+204:  }, status);
+205:};
+206:
+207:class PlanAccessError extends Error {
+208:  constructor(public code: 'PLAN_REQUIRED' | 'PLAN_LIMIT_REACHED' | 'LICENSE_REQUIRED', message: string, public status = 403) {
+209:    super(message);
+210:    this.name = 'PlanAccessError';
+211:  }
+212:}
+213:
+214:function normalizeRoomName(name: string): string {
+215:  if (!name) return "";
+216:  let clean = name.toString().trim().toLowerCase()
+217:    .replace(/^ห้อง\s*/, "")
+218:    .replace(/\s+/g, "");
+219:  
+220:  const thaiNumberMap: Record<string, string> = {
+-- 1407-1424 --
+1407:                  ...dbUser,
+1408:                  effectiveUserId
+1409:                };
+1410:              }
+1411:            } catch (e) {
+1412:              if (e instanceof PlanAccessError) throw e;
+1413:              console.warn("Auth user lookup error:", e);
+1414:            }
+1415:          } else {
+1416:            return { id: payload.id, effectiveUserId: payload.id, uid: payload.uid, email: payload.email, role: payload.role, parent_id: null, permissions: 'manage_rooms,manage_bills,edit_payments,manage_settings' };
+1417:          }
+1418:        }
+1419:      }
+1420:      return null;
+1421:    }
+1422:
+1423:    function hasCaretakerPermission(user: any, requiredPerm: string): boolean {
+1424:      return Boolean(user) && hasAppPermission(String(user.role), user.permissions, requiredPerm as any);
+-- 1457-1474 --
+1457:        const bodyResult = await readBoundedJson(request, 4096, { entityName: 'คำขอ License', invalid: 'รูปแบบคำขอ License ไม่ถูกต้อง', tooLarge: 'คำขอ License มีขนาดใหญ่เกินกำหนด' });
+1458:        if (bodyResult.ok === false) return errorResponse(bodyResult.code, bodyResult.message, bodyResult.status);
+1459:        const state = await activateCustomerLicense(env, String(bodyResult.data.licenseKey || ''), { projectName: new URL(request.url).hostname, hostname: new URL(request.url).hostname, appVersion: APP_VERSION });
+1460:        return successResponse(publicLicenseState(state), 'Activate License สำเร็จ');
+1461:      } catch (error: any) {
+1462:        if (error instanceof LicenseOperationError) return errorResponse(error.code, error.message, error.status);
+1463:        return errorResponse('LICENSE_ACTIVATION_FAILED', 'ไม่สามารถ Activate License ได้', 500);
+1464:      }
+1465:    }
+1466:
+1467:    if (path === '/api/license/refresh' && method === 'POST') {
+1468:      const gate = await requireLicenseOwner();
+1469:      if (gate.response) return gate.response;
+1470:      try {
+1471:        const state = await refreshCustomerLicense(env, { projectName: new URL(request.url).hostname, hostname: new URL(request.url).hostname, appVersion: APP_VERSION });
+1472:        return successResponse(publicLicenseState(state), 'Refresh License สำเร็จ');
+1473:      } catch (error: any) {
+1474:        if (error instanceof LicenseOperationError) return errorResponse(error.code, error.message, error.status);
+-- 1469-1486 --
+1469:      if (gate.response) return gate.response;
+1470:      try {
+1471:        const state = await refreshCustomerLicense(env, { projectName: new URL(request.url).hostname, hostname: new URL(request.url).hostname, appVersion: APP_VERSION });
+1472:        return successResponse(publicLicenseState(state), 'Refresh License สำเร็จ');
+1473:      } catch (error: any) {
+1474:        if (error instanceof LicenseOperationError) return errorResponse(error.code, error.message, error.status);
+1475:        return errorResponse('LICENSE_REFRESH_FAILED', 'ไม่สามารถ Refresh License ได้', 500);
+1476:      }
+1477:    }
+1478:
+1479:    if (path === '/api/license/deactivate' && method === 'POST') {
+1480:      const gate = await requireLicenseOwner();
+1481:      if (gate.response) return gate.response;
+1482:      try {
+1483:        const state = await deactivateCustomerLicense(env);
+1484:        return successResponse(publicLicenseState(state), 'ยกเลิก Activation สำเร็จ');
+1485:      } catch (error: any) {
+1486:        if (error instanceof LicenseOperationError) return errorResponse(error.code, error.message, error.status);
+-- 1481-1498 --
+1481:      if (gate.response) return gate.response;
+1482:      try {
+1483:        const state = await deactivateCustomerLicense(env);
+1484:        return successResponse(publicLicenseState(state), 'ยกเลิก Activation สำเร็จ');
+1485:      } catch (error: any) {
+1486:        if (error instanceof LicenseOperationError) return errorResponse(error.code, error.message, error.status);
+1487:        return errorResponse('LICENSE_DEACTIVATION_FAILED', 'ไม่สามารถยกเลิก Activation ได้', 500);
+1488:      }
+1489:    }
+1490:
+1491:    async function getSubscriptionMetadata(ownerId: number) {
+1492:      const license = await resolveLicenseState(env, ownerId);
+1493:      let compatibilityStatus = 'active';
+1494:      let compatibilityExpiresAt: string | null = null;
+1495:      if (env.DB) {
+1496:        try {
+1497:          const row = await env.DB.prepare('SELECT subscription_status, subscription_expires_at FROM settings WHERE user_id = ? LIMIT 1').bind(ownerId).first();
+1498:          compatibilityStatus = String(row?.subscription_status || 'active');
+-- 1517-1534 --
+1517:    async function assertPlanAccessForRequest(ownerId: number): Promise<void> {
+1518:      let licenseState = await resolveLicenseState(env, ownerId);
+1519:      if (licenseState.token && licenseState.token.refreshAfter * 1000 <= Date.now()) {
+1520:        try { licenseState = await maybeRefreshCustomerLicense(env, { projectName: new URL(request.url).hostname, hostname: new URL(request.url).hostname, appVersion: APP_VERSION }); }
+1521:        catch (error) {
+1522:          if (!(error instanceof LicenseOperationError)) throw error;
+1523:          licenseState = await resolveLicenseState(env, ownerId);
+1524:        }
+1525:      }
+1526:      const licenseApi = path === '/api/license/status' || path === '/api/license/activate' || path === '/api/license/refresh' || path === '/api/license/deactivate';
+1527:      const mutating = ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method) && !licenseApi;
+1528:      if (mutating) assertMutationAllowedByLicense(licenseState);
+1529:      const subscriptionPlan = licenseState.effectivePlan;
+1530:      const requiredFeature = requiredPlanFeatureForApiRequest(path, method);
+1531:
+1532:      if (!subscriptionPlan) {
+1533:        if (path === '/api/admin/backup/export' && method === 'GET') return;
+1534:        if (requiredFeature || (method === 'POST' && (path === '/api/rooms' || path === '/api/caretakers'))) {
+-- 1523-1540 --
+1523:          licenseState = await resolveLicenseState(env, ownerId);
+1524:        }
+1525:      }
+1526:      const licenseApi = path === '/api/license/status' || path === '/api/license/activate' || path === '/api/license/refresh' || path === '/api/license/deactivate';
+1527:      const mutating = ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method) && !licenseApi;
+1528:      if (mutating) assertMutationAllowedByLicense(licenseState);
+1529:      const subscriptionPlan = licenseState.effectivePlan;
+1530:      const requiredFeature = requiredPlanFeatureForApiRequest(path, method);
+1531:
+1532:      if (!subscriptionPlan) {
+1533:        if (path === '/api/admin/backup/export' && method === 'GET') return;
+1534:        if (requiredFeature || (method === 'POST' && (path === '/api/rooms' || path === '/api/caretakers'))) {
+1535:          throw new PlanAccessError('LICENSE_REQUIRED', 'แพ็กเกจแบบชำระเงินต้อง Activate License ก่อนใช้งานฟีเจอร์นี้');
+1536:        }
+1537:        return;
+1538:      }
+1539:
+1540:      if (isDemoPlan(subscriptionPlan) && isDemoMutationRestricted(path, method)) {
+-- 1530-1547 --
+1530:      const requiredFeature = requiredPlanFeatureForApiRequest(path, method);
+1531:
+1532:      if (!subscriptionPlan) {
+1533:        if (path === '/api/admin/backup/export' && method === 'GET') return;
+1534:        if (requiredFeature || (method === 'POST' && (path === '/api/rooms' || path === '/api/caretakers'))) {
+1535:          throw new PlanAccessError('LICENSE_REQUIRED', 'แพ็กเกจแบบชำระเงินต้อง Activate License ก่อนใช้งานฟีเจอร์นี้');
+1536:        }
+1537:        return;
+1538:      }
+1539:
+1540:      if (isDemoPlan(subscriptionPlan) && isDemoMutationRestricted(path, method)) {
+1541:        throw new PlanAccessError('PLAN_REQUIRED', 'บัญชี Demo ไม่อนุญาตให้แก้ไขการตั้งค่า ลบข้อมูล หรือจัดการ Integration');
+1542:      }
+1543:
+1544:      if (requiredFeature && !hasPlanFeature(subscriptionPlan, requiredFeature)) {
+1545:        const requiredPlan = minimumPaidPlanForFeature(requiredFeature);
+1546:        throw new PlanAccessError('PLAN_REQUIRED', `ฟีเจอร์นี้อยู่ในแพ็กเกจ ${requiredPlan[0].toUpperCase() + requiredPlan.slice(1)} หรือสูงกว่า`);
+1547:      }
+-- 3554-3565 --
+3554:      return successResponse([]);
+3555:    }
+3556:
+3557:    return errorResponse("NOT_FOUND", `ไม่พบเอนด์พอยต์ ${path} ในระบบ`, 404);
+3558:  } catch (error: any) {
+3559:    if (error instanceof PlanAccessError) {
+3560:      return errorResponse(error.code, error.message, error.status);
+3561:    }
+3562:    console.error("Cloudflare Pages Function Exception:", error);
+3563:    return errorResponse("SERVER_ERROR", error.message || "เกิดข้อผิดพลาดภายในเซิร์ฟเวอร์", 500);
+3564:  }
+3565:};
