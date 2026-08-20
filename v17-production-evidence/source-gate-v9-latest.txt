@@ -1,0 +1,21 @@
+run_id=32333444194
+run_attempt=1
+source_sha=7b41b572ea97be351ce35c81e82cbfc81184a5b6
+job_status=failure
+v16_source_artifact_id=9392071166
+v16_source_artifact_sha256=cb498eed4580589794480e4aa0a9d42fc2814fde0e64ad6620c16e6d220d2cf8
+overlay=success
+master_security_regression_build=success
+dependency_audit=low=0 moderate=4 high=0 critical=0 total=4
+control_plane_tests_typecheck_dryrun=success
+four_plan_packages=failure
+artifact_freeze=failure
+migration_ceiling=0008_add_update_state.sql
+bootstrap_v16_to_v17=failure
+local_source_switch_rollback=success
+v16_rebuilt=false
+v16_modified=false
+cloudflare_touched=false
+existing_d1_touched=false
+v17_customer_ready=false
+deployed=false
