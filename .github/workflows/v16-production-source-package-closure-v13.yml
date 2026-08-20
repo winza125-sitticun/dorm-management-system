@@ -1,0 +1,192 @@
+name: V16 Production Source Package Closure V13
+on:
+  push:
+    branches: [agent/v16-production-gate]
+    paths: ['.github/workflows/v16-production-source-package-closure-v13.yml']
+permissions: { contents: write, actions: read }
+concurrency: { group: v16-production-source-package-closure-v13, cancel-in-progress: true }
+env:
+  V10_ARTIFACT_ID: '9365183203'
+  V10_ARTIFACT_SHA256: '102f94d86cdde64819420afbe747ca1d8ef6764977562df846f2d823be71e47f'
+  FIX7_SHA256: 'b4bb9befa717915e5879eaa7746a8bdf317d6523a19348f17f10d3394218bbe3'
+  SIGNING_PUBLIC_KEY_B64: 'fgdHGCi74MiMXHbI5+KVY6S9wnh/L369ekdI8NmrwdY='
+  SIGNING_PUBLIC_KEY_FINGERPRINT: '6c8a2c8fda3dbf224148ff77464fda9bc252c082e05755f211c52a232ae3db82'
+  CONTROL_PLANE_URL: 'https://dorm-control-plane.winza125.workers.dev'
+  MIGRATION_CEILING: '0007_add_license_state.sql'
+jobs:
+  closure:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: agent/v16-production-gate }
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+
+      - name: Reconstruct exact V10 and apply Fix 7
+        env: { GH_TOKEN: '${{ github.token }}' }
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f /tmp/v16-v13-*.ok
+          echo "$FIX7_SHA256  v16-production-input/V16_PRODUCTION_FIX_7_LICENSE_AUTH_PROPAGATION.patch" | sha256sum -c -
+          rm -rf /tmp/v10 /tmp/work /tmp/control-plane
+          mkdir -p /tmp/v10 /tmp/work /tmp/control-plane
+          curl --fail --location --retry 8 --retry-all-errors --retry-delay 3 -H "Authorization: Bearer ${GH_TOKEN}" -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${V10_ARTIFACT_ID}/zip" -o /tmp/v10.zip
+          echo "$V10_ARTIFACT_SHA256  /tmp/v10.zip" | sha256sum -c -
+          unzip -q /tmp/v10.zip -d /tmp/v10
+          (cd /tmp/v10 && sed 's#v16-production-source-package-v10/##' SHA256SUMS.txt | sha256sum -c -)
+          unzip -q /tmp/v10/dorm-management-system-master-v16-PRODUCTION-SOURCE-GATED.zip -d /tmp/work
+          unzip -q /tmp/v10/dorm-control-plane-v16-PRODUCTION-SOURCE-GATED.zip -d /tmp/control-plane
+          (cd /tmp/work && patch --dry-run -p1 < "$GITHUB_WORKSPACE/v16-production-input/V16_PRODUCTION_FIX_7_LICENSE_AUTH_PROPAGATION.patch" && patch -p1 < "$GITHUB_WORKSPACE/v16-production-input/V16_PRODUCTION_FIX_7_LICENSE_AUTH_PROPAGATION.patch")
+          test "$(find /tmp/work/d1-migrations -maxdepth 1 -type f -printf '%f\n' | sort | tail -n1)" = "$MIGRATION_CEILING"
+          test ! -e /tmp/work/control-plane
+          touch /tmp/v16-v13-reconstruct.ok
+
+      - name: Regression proof
+        working-directory: /tmp/work
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('functions/api/[[path]].ts').read_text()
+          assert 'if (e instanceof PlanAccessError || e instanceof LicenseOperationError) throw e;' in p
+          assert 'if (error instanceof PlanAccessError || error instanceof LicenseOperationError) {' in p
+          s=Path('src/server/services/license.service.ts').read_text(); i=s.index("throw new LicenseOperationError('LICENSE_READ_ONLY'")
+          assert '403' in s[i:i+220]
+          PY
+          touch /tmp/v16-v13-regression.ok
+
+      - name: Customer audit tests types builds
+        working-directory: /tmp/work
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci
+          npm audit --omit=dev --json > /tmp/v13-audit.json 2>/tmp/v13-audit.err || true
+          node - <<'NODE'
+          const a=require('/tmp/v13-audit.json'),v=a.metadata?.vulnerabilities||{};
+          console.log(`audit low=${v.low||0} moderate=${v.moderate||0} high=${v.high||0} critical=${v.critical||0} total=${v.total||0}`);
+          if((v.high||0)!==0||(v.critical||0)!==0) process.exit(1);
+          NODE
+          touch /tmp/v16-v13-audit.ok
+          npm test
+          npm run lint
+          npm run check:cloudflare-types:master
+          npm run build:pages
+          npm run build:vps
+          touch /tmp/v16-v13-customer.ok
+
+      - name: Generate and verify customer packages
+        working-directory: /tmp/work
+        env:
+          V16_LICENSE_SIGNING_PUBLIC_KEY: '${{ env.SIGNING_PUBLIC_KEY_B64 }}'
+          V16_LICENSE_CONTROL_PLANE_URL: '${{ env.CONTROL_PLANE_URL }}'
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run packages:generate
+          for plan in demo basic standard pro; do
+            z="preview-v14/dorm-management-system-${plan}-v14-PREVIEW.zip"
+            test -f "$z"; unzip -t "$z" >/dev/null
+            tmp="$(mktemp -d)"; unzip -q "$z" -d "$tmp"
+            cfg="$tmp/src/generated/licenseConfig.ts"
+            test -f "$cfg"
+            test "$(find "$tmp/d1-migrations" -maxdepth 1 -type f -printf '%f\n' | sort | tail -n1)" = "$MIGRATION_CEILING"
+            test ! -e "$tmp/control-plane"
+            ! grep -RIl --exclude='*.zip' 'LICENSE_SIGNING_PRIVATE_KEY' "$tmp" | grep -q .
+            grep -Fq 'if (e instanceof PlanAccessError || e instanceof LicenseOperationError) throw e;' "$tmp/functions/api/[[path]].ts"
+            grep -Fq 'if (error instanceof PlanAccessError || error instanceof LicenseOperationError) {' "$tmp/functions/api/[[path]].ts"
+            CFG="$cfg" PLAN="$plan" PUBLIC_KEY="$SIGNING_PUBLIC_KEY_B64" CONTROL_URL="$CONTROL_PLANE_URL" node - <<'NODE'
+          const fs=require('fs'),s=fs.readFileSync(process.env.CFG,'utf8');
+          const get=n=>s.match(new RegExp(n+'\\s*:\\s*["\\\']([^"\\\']*)["\\\']'))?.[1];
+          const req=s.match(/requiresLicense\s*:\s*(true|false)/)?.[1];
+          if(get('publicKeyBase64')!==process.env.PUBLIC_KEY||get('controlPlaneUrl')!==process.env.CONTROL_URL||get('packagePlan')!==process.env.PLAN||req!==(process.env.PLAN==='demo'?'false':'true')) process.exit(1);
+          NODE
+            rm -rf "$tmp"
+          done
+          touch /tmp/v16-v13-packages.ok
+
+      - name: Control Plane tests and typecheck
+        working-directory: /tmp/control-plane
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install --no-audit --no-fund
+          npm test
+          npm run typecheck
+          touch /tmp/v16-v13-control-plane.ok
+
+      - name: Private material scans
+        shell: bash
+        run: |
+          set -euo pipefail
+          ! grep -RIl --exclude='*.zip' --exclude-dir=node_modules --exclude-dir=dist --exclude-dir=dist-server 'LICENSE_SIGNING_PRIVATE_KEY' /tmp/work | grep -q .
+          ! grep -RIl --exclude='*.zip' --exclude-dir=node_modules --exclude-dir=dist --exclude-dir=dist-server 'BEGIN PRIVATE KEY' /tmp/work | grep -q .
+          ! grep -RIl --exclude='*.zip' --exclude-dir=node_modules 'BEGIN PRIVATE KEY' /tmp/control-plane | grep -q .
+          test ! -e /tmp/work/control-plane
+          touch /tmp/v16-v13-private.ok
+
+      - name: Freeze V13 candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          for m in reconstruct regression audit customer packages control-plane private; do test -f "/tmp/v16-v13-${m}.ok"; done
+          rm -rf v16-production-source-package-v13
+          mkdir -p v16-production-source-package-v13/customer-previews
+          (cd /tmp/work && zip -qr "$GITHUB_WORKSPACE/v16-production-source-package-v13/dorm-management-system-master-v16-PRODUCTION-SOURCE-GATED-V13.zip" . -x 'node_modules/*' 'dist/*' 'dist-server/*' 'preview-v14/*' 'release-v14/*')
+          (cd /tmp/control-plane && zip -qr "$GITHUB_WORKSPACE/v16-production-source-package-v13/dorm-control-plane-v16-PRODUCTION-SOURCE-GATED.zip" . -x 'node_modules/*')
+          for p in demo basic standard pro; do cp "/tmp/work/preview-v14/dorm-management-system-${p}-v14-PREVIEW.zip" "v16-production-source-package-v13/customer-previews/dorm-management-system-${p}-v16-SOURCE-GATE-V13.zip"; done
+          cp v16-production-input/V16_PRODUCTION_FIX_7_LICENSE_AUTH_PROPAGATION.patch v16-production-source-package-v13/
+          find /tmp/work -type f ! -path '/tmp/work/node_modules/*' ! -path '/tmp/work/dist/*' ! -path '/tmp/work/dist-server/*' ! -path '/tmp/work/preview-v14/*' ! -path '/tmp/work/release-v14/*' -print0 | sort -z | xargs -0 sha256sum > v16-production-source-package-v13/V16_FINAL_CUSTOMER_SOURCE_TREE_SHA256.txt
+          find /tmp/control-plane -type f ! -path '/tmp/control-plane/node_modules/*' -print0 | sort -z | xargs -0 sha256sum > v16-production-source-package-v13/V16_FINAL_CONTROL_PLANE_TREE_SHA256.txt
+          (cd v16-production-source-package-v13 && sha256sum *.zip customer-previews/*.zip > SHA256SUMS.txt)
+          touch /tmp/v16-v13-freeze.ok
+
+      - uses: actions/upload-artifact@v4
+        with: { name: v16-production-source-package-v13, path: 'v16-production-source-package-v13/**', if-no-files-found: error, retention-days: 14 }
+
+      - name: Persist fail-safe evidence
+        if: always()
+        env: { JOB_STATUS: '${{ job.status }}' }
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p v16-production-evidence
+          val(){ if [ -f "/tmp/v16-v13-$1.ok" ]; then printf success; else printf failure; fi; }
+          audit=unavailable; if [ -s /tmp/v13-audit.json ]; then audit="$(node -e "const a=require('/tmp/v13-audit.json'),v=a.metadata?.vulnerabilities||{};process.stdout.write('low='+(v.low||0)+' moderate='+(v.moderate||0)+' high='+(v.high||0)+' critical='+(v.critical||0)+' total='+(v.total||0))")"; fi
+          customer_tree=unavailable; cp_tree=unavailable
+          [ -f v16-production-source-package-v13/V16_FINAL_CUSTOMER_SOURCE_TREE_SHA256.txt ] && customer_tree="$(sha256sum v16-production-source-package-v13/V16_FINAL_CUSTOMER_SOURCE_TREE_SHA256.txt|cut -d' ' -f1)"
+          [ -f v16-production-source-package-v13/V16_FINAL_CONTROL_PLANE_TREE_SHA256.txt ] && cp_tree="$(sha256sum v16-production-source-package-v13/V16_FINAL_CONTROL_PLANE_TREE_SHA256.txt|cut -d' ' -f1)"
+          cat > v16-production-evidence/source-package-v13-latest.txt <<EOF
+          run_id=${GITHUB_RUN_ID}
+          source_sha=${GITHUB_SHA}
+          job_status=${JOB_STATUS}
+          reconstruct=$(val reconstruct)
+          license_error_regression=$(val regression)
+          preactivation_mutation_contract=LICENSE_READ_ONLY:403
+          dependency_audit=$(val audit)
+          audit_counts=${audit}
+          customer_tests_types_builds=$(val customer)
+          four_packages=$(val packages)
+          control_plane_tests_typecheck=$(val control-plane)
+          private_material_scan=$(val private)
+          artifact_freeze=$(val freeze)
+          source_v10_artifact_id=${V10_ARTIFACT_ID}
+          source_v10_artifact_sha256=${V10_ARTIFACT_SHA256}
+          fix7_sha256=${FIX7_SHA256}
+          customer_source_tree_manifest_sha256=${customer_tree}
+          control_plane_tree_manifest_sha256=${cp_tree}
+          signing_public_key_fingerprint=${SIGNING_PUBLIC_KEY_FINGERPRINT}
+          control_plane_url=${CONTROL_PLANE_URL}
+          migration_ceiling=${MIGRATION_CEILING}
+          cloudflare_touched=false
+          existing_d1_touched=false
+          customer_ready=false
+          deployed=false
+          EOF
+          git config user.name 'github-actions[bot]'; git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add v16-production-evidence/source-package-v13-latest.txt
+          git commit -m 'ci(v16): record source package closure v13' || exit 0
+          git push origin HEAD:agent/v16-production-gate
