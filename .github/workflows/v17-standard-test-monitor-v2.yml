@@ -1,0 +1,77 @@
+name: V17 Standard Test Deploy Monitor V2
+on:
+  push:
+    branches: [agent/v16-production-gate]
+    paths: ['.github/workflows/v17-standard-test-monitor-v2.yml']
+permissions: { contents: write, actions: read }
+concurrency: { group: v17-standard-test-monitor-v2, cancel-in-progress: true }
+env:
+  TARGET_HEAD_SHA: '1d43646d6951aaec1b90fc738165e52438fbaa50'
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: agent/v16-production-gate }
+      - name: Wait for Standard V2 deployment completion
+        env: { GH_TOKEN: '${{ github.token }}' }
+        shell: bash
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 180); do
+            gh run list --repo "$GITHUB_REPOSITORY" --workflow v17-standard-test-deploy-v2.yml --branch agent/v16-production-gate --limit 30 --json databaseId,status,conclusion,headSha,attempt,url > /tmp/runs.json
+            python3 - <<'PY'
+          import json,os
+          rows=json.load(open('/tmp/runs.json')); m=[r for r in rows if r.get('headSha')==os.environ['TARGET_HEAD_SHA']]
+          if m:
+              r=m[0]
+              for k,n in [('databaseId','run-id'),('status','run-status'),('conclusion','run-conclusion'),('attempt','run-attempt'),('url','run-url')]: open('/tmp/'+n,'w').write(str(r.get(k) or ''))
+          PY
+            if [ -s /tmp/run-id ] && [ "$(cat /tmp/run-status)" = completed ]; then break; fi
+            sleep 10
+          done
+          test -s /tmp/run-id
+          test "$(cat /tmp/run-status)" = completed
+          RID="$(cat /tmp/run-id)"
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RID}/artifacts" > /tmp/artifacts.json
+          python3 - <<'PY'
+          import json
+          rid=open('/tmp/run-id').read().strip(); name=f'v17-standard-test-access-v2-{rid}'
+          rows=[a for a in json.load(open('/tmp/artifacts.json')).get('artifacts',[]) if a.get('name')==name]
+          if rows:
+              open('/tmp/artifact-id','w').write(str(rows[0].get('id',''))); open('/tmp/artifact-name','w').write(name)
+          PY
+      - name: Persist V2 monitor evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p v17-production-evidence
+          RID="$(cat /tmp/run-id 2>/dev/null || printf unavailable)"; ATT="$(cat /tmp/run-attempt 2>/dev/null || printf 1)"; STATUS="$(cat /tmp/run-status 2>/dev/null || printf unavailable)"; C="$(cat /tmp/run-conclusion 2>/dev/null || printf unavailable)"; U="$(cat /tmp/run-url 2>/dev/null || printf unavailable)"; AID="$(cat /tmp/artifact-id 2>/dev/null || printf unavailable)"; AN="$(cat /tmp/artifact-name 2>/dev/null || printf unavailable)"
+          cat > v17-production-evidence/standard-test-deploy-v2-latest.txt <<EOF
+          run_id=${RID}
+          run_attempt=${ATT}
+          source_sha=${TARGET_HEAD_SHA}
+          status=${STATUS}
+          job_status=${C}
+          run_url=${U}
+          app_url=https://dorm-standard-v17-test-${RID}-${ATT}.pages.dev
+          pages_project=dorm-standard-v17-test-${RID}-${ATT}
+          customer_d1=dorm-standard-v17-test-${RID}-${ATT}-db
+          license_id=stdtest-${RID}-${ATT}
+          license_plan=standard
+          max_activations=1
+          expires_at=NULL
+          source_artifact_id=9398295831
+          source_artifact_sha256=db97970252514639a4387a42aaf26d3a5513330c3cdcfba8fb339d86dda3151c
+          standard_zip_sha256=3b1b95a294b7b2f46eb029cd83e22e0281e39d27542bce97ed965aceea929072
+          access_artifact_id=${AID}
+          access_artifact_name=${AN}
+          EOF
+          git config user.name 'github-actions[bot]'; git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add v17-production-evidence/standard-test-deploy-v2-latest.txt
+          git commit -m 'ci(v17): record Standard test V2 monitor' || exit 0
+          git fetch origin agent/v16-production-gate
+          git rebase origin/agent/v16-production-gate
+          git push origin HEAD:agent/v16-production-gate
