@@ -1,0 +1,16 @@
+run_id=32332190355
+run_attempt=1
+source_sha=694a25b2a03c202f4ca625935621ff977f53713c
+job_status=failure
+v16_customer_ready=success
+v16_final_artifact_id=9393238249
+v16_final_artifact_sha256=fe17d6426d66722068fd2d003590ca3d0ef188d19dca33c58ed6200ed2de85f1
+v16_source_artifact_id=9392071166
+v16_source_artifact_sha256=cb498eed4580589794480e4aa0a9d42fc2814fde0e64ad6620c16e6d220d2cf8
+v16_migration_ceiling=0007_add_license_state.sql
+v16_control_plane_url=https://dorm-control-plane.winza125.workers.dev
+exact_artifacts=failure
+source_inventory=failure
+v16_rebuilt=false
+v16_modified=false
+v17_customer_ready=false
