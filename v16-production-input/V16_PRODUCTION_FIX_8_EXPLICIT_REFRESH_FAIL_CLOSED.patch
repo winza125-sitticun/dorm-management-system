@@ -1,0 +1,18 @@
+diff --git a/src/server/services/license.service.ts b/src/server/services/license.service.ts
+--- a/src/server/services/license.service.ts
++++ b/src/server/services/license.service.ts
+@@ -195,6 +195,14 @@ export async function refreshCustomerLicense(env: LicenseEnv, metadata: Install
+     });
+     if ('ok' in result) throw new LicenseOperationError('INVALID_CONTROL_PLANE_RESPONSE', 'Control Plane ส่งข้อมูล License ไม่ถูกต้อง', 502);
+     await persistActiveToken(env, installationId, result, nowMs);
+   } catch (error) {
++    if (error instanceof LicenseOperationError && ['INVALID_TOKEN', 'LICENSE_INVALID', 'LICENSE_INACTIVE', 'LICENSE_EXPIRED', 'ACTIVATION_REVOKED'].includes(error.code)) {
++      const now = new Date(nowMs).toISOString();
++      const nextStatus = error.code === 'LICENSE_EXPIRED' ? 'expired' : 'revoked';
++      await env.DB.prepare(`UPDATE license_state SET status = ?, effective_plan = NULL, updated_at = ? WHERE id = 1`)
++        .bind(nextStatus, now).run();
++      throw error;
++    }
+     if (!(error instanceof LicenseOperationError) || error.code !== 'CONTROL_PLANE_UNAVAILABLE') throw error;
+     const lastCheckedMs = row?.last_checked_at ? Date.parse(String(row.last_checked_at)) : NaN;
+     const graceUntilMs = Number.isFinite(lastCheckedMs) ? lastCheckedMs + GRACE_MS : (row?.grace_until ? Date.parse(String(row.grace_until)) : NaN);
