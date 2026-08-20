@@ -1,0 +1,191 @@
+name: V17 Auto Update Source Gate V5
+on:
+  push:
+    branches: [agent/v16-production-gate]
+    paths: ['.github/workflows/v17-source-gate-v5.yml']
+permissions: { contents: write, actions: read }
+concurrency: { group: v17-source-gate-v5, cancel-in-progress: false }
+env:
+  V16_SOURCE_ARTIFACT_ID: '9392071166'
+  V16_SOURCE_ARTIFACT_SHA256: 'cb498eed4580589794480e4aa0a9d42fc2814fde0e64ad6620c16e6d220d2cf8'
+  V16_FINAL_ARTIFACT_ID: '9393238249'
+  V16_FINAL_ARTIFACT_SHA256: 'fe17d6426d66722068fd2d003590ca3d0ef188d19dca33c58ed6200ed2de85f1'
+  SIGNING_PUBLIC_KEY_B64: 'fgdHGCi74MiMXHbI5+KVY6S9wnh/L369ekdI8NmrwdY='
+  CONTROL_PLANE_URL: 'https://dorm-control-plane.winza125.workers.dev'
+  V17_MIGRATION_CEILING: '0008_add_update_state.sql'
+jobs:
+  source-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: agent/v16-production-gate }
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+      - name: Require immutable V16 baseline and reconstruct exact source
+        env: { GH_TOKEN: '${{ github.token }}' }
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -Fxq 'job_status=success' v17-production-evidence/baseline-v2-latest.txt
+          grep -Fxq 'exact_artifacts=success' v17-production-evidence/baseline-v2-latest.txt
+          grep -Fxq 'v16_rebuilt=false' v17-production-evidence/baseline-v2-latest.txt
+          grep -Fxq 'v16_modified=false' v17-production-evidence/baseline-v2-latest.txt
+          rm -rf /tmp/v16 /tmp/v17-master /tmp/v17-cp; mkdir -p /tmp/v16 /tmp/v17-master /tmp/v17-cp
+          curl --fail --location --retry 8 --retry-all-errors --retry-delay 3 -H "Authorization: Bearer ${GH_TOKEN}" "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${V16_SOURCE_ARTIFACT_ID}/zip" -o /tmp/v16-source.zip
+          echo "$V16_SOURCE_ARTIFACT_SHA256  /tmp/v16-source.zip" | sha256sum -c -
+          unzip -q /tmp/v16-source.zip -d /tmp/v16
+          (cd /tmp/v16 && sha256sum -c SHA256SUMS.txt)
+          unzip -q /tmp/v16/dorm-management-system-master-v16-PRODUCTION-SOURCE-GATED-V29.zip -d /tmp/v17-master
+          unzip -q /tmp/v16/dorm-control-plane-v16-PRODUCTION-SOURCE-GATED.zip -d /tmp/v17-cp
+          test "$(find /tmp/v17-master/d1-migrations -maxdepth 1 -type f -printf '%f\n'|sort|tail -n1)" = '0007_add_license_state.sql'
+          touch /tmp/v17-v5-baseline.ok
+      - name: Apply V17 overlay without modifying V16 artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 v17-production-input/apply-v17-overlay.py /tmp/v17-master /tmp/v17-cp
+          python3 v17-production-input/harden-v17-overlay.py /tmp/v17-master
+          test "$(node -p "require('/tmp/v17-master/package.json').version")" = '1.2.0'
+          test "$(find /tmp/v17-master/d1-migrations -maxdepth 1 -type f -printf '%f\n'|sort|tail -n1)" = "$V17_MIGRATION_CEILING"
+          test -f /tmp/v17-cp/migrations/0002_update_releases.sql
+          test -f /tmp/v17-master/UPDATE-WINDOWS.cmd
+          test -f /tmp/v17-master/UPDATE-ANDROID.sh
+          test -f /tmp/v17-master/src/components/AutoUpdateSettings.tsx
+          touch /tmp/v17-v5-overlay.ok
+      - name: Static security and contract proof
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check /tmp/v17-master/scripts/update-contract.mjs
+          node --check /tmp/v17-master/UPDATE-PACKAGE.mjs
+          node --check /tmp/v17-master/scripts/plan-upgrade.mjs
+          python3 -m py_compile v17-production-input/apply-v17-overlay.py v17-production-input/harden-v17-overlay.py
+          grep -Fq 'dorm-update-manifest-v1' /tmp/v17-master/scripts/update-contract.mjs
+          grep -Fq 'UPDATE_PLAN_MISMATCH' /tmp/v17-master/scripts/update-contract.mjs
+          grep -Fq 'UPDATE_DOWNGRADE_OR_REPLAY' /tmp/v17-master/scripts/update-contract.mjs
+          grep -Fq 'DORM_UPDATE_ADMIN_TOKEN' /tmp/v17-master/UPDATE-PACKAGE.mjs
+          ! grep -Fq "ask('Owner password" /tmp/v17-master/UPDATE-PACKAGE.mjs
+          ! grep -RIl --exclude='*.zip' --exclude-dir=node_modules 'BEGIN PRIVATE KEY' /tmp/v17-master | grep -q .
+          ! grep -RIl --exclude='*.zip' --exclude-dir=node_modules 'LICENSE_SIGNING_PRIVATE_KEY' /tmp/v17-master | grep -q .
+          grep -Fq "'/v1/updates/check'" /tmp/v17-cp/src/index.ts
+          grep -Fq 'update_releases' /tmp/v17-cp/src/update.service.ts
+          touch /tmp/v17-v5-static.ok
+      - name: Master tests lint types and builds
+        working-directory: /tmp/v17-master
+        env:
+          V16_LICENSE_SIGNING_PUBLIC_KEY: '${{ env.SIGNING_PUBLIC_KEY_B64 }}'
+          V16_LICENSE_CONTROL_PLANE_URL: '${{ env.CONTROL_PLANE_URL }}'
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci
+          npm run test:update
+          npm test
+          npm run lint
+          npm run check:cloudflare-types:master
+          npm run build:pages
+          npm run build:vps
+          touch /tmp/v17-v5-master.ok
+      - name: Control Plane tests typecheck and dry run
+        working-directory: /tmp/v17-cp
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci
+          npm test
+          npm run typecheck
+          python3 - <<'PY'
+          import json
+          x=json.load(open('wrangler.template.jsonc')); x['name']='v17-v5-dry-run'; x['d1_databases'][0]['database_name']='v17-v5-dry-run-db'; x['d1_databases'][0]['database_id']='00000000-0000-0000-0000-000000000001'; json.dump(x,open('wrangler.v5.jsonc','w'))
+          PY
+          npx wrangler deploy --dry-run --config wrangler.v5.jsonc
+          touch /tmp/v17-v5-control-plane.ok
+      - name: Generate and verify all V17 plan packages
+        working-directory: /tmp/v17-master
+        env:
+          V16_LICENSE_SIGNING_PUBLIC_KEY: '${{ env.SIGNING_PUBLIC_KEY_B64 }}'
+          V16_LICENSE_CONTROL_PLANE_URL: '${{ env.CONTROL_PLANE_URL }}'
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run packages:generate
+          for p in demo basic standard pro; do
+            z="preview-v14/dorm-management-system-${p}-v14-PREVIEW.zip"
+            test -f "$z"; unzip -t "$z" >/dev/null
+            d="$(mktemp -d)"; unzip -q "$z" -d "$d"
+            test -f "$d/UPDATE-PACKAGE.mjs"; test -f "$d/UPDATE-WINDOWS.cmd"; test -f "$d/UPDATE-ANDROID.sh"
+            test -f "$d/src/components/AutoUpdateSettings.tsx"
+            test "$(find "$d/d1-migrations" -maxdepth 1 -type f -printf '%f\n'|sort|tail -n1)" = "$V17_MIGRATION_CEILING"
+            grep -Fq "$CONTROL_PLANE_URL" "$d/src/generated/licenseConfig.ts"
+            grep -Fq "$SIGNING_PUBLIC_KEY_B64" "$d/src/generated/licenseConfig.ts"
+            grep -Fq "packagePlan: '$p'" "$d/src/generated/licenseConfig.ts"
+            ! grep -RIl --exclude='*.zip' --exclude-dir=node_modules 'BEGIN PRIVATE KEY' "$d" | grep -q .
+            ! grep -RIl --exclude='*.zip' --exclude-dir=node_modules 'LICENSE_SIGNING_PRIVATE_KEY' "$d" | grep -q .
+            grep -RIl 'Customer Delivery V14\|PREVIEW V14' "$d" | tee /tmp/stale-v14-${p}.txt || true
+            test ! -s /tmp/stale-v14-${p}.txt
+            rm -rf "$d"
+          done
+          touch /tmp/v17-v5-packages.ok
+      - name: Freeze exact V17 source candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          for x in baseline overlay static master control-plane packages; do test -f "/tmp/v17-v5-${x}.ok"; done
+          rm -rf v17-source-candidate-v5; mkdir -p v17-source-candidate-v5/customer-packages
+          (cd /tmp/v17-master && zip -qr "$GITHUB_WORKSPACE/v17-source-candidate-v5/dorm-management-system-master-v17-SOURCE-GATE-V5.zip" . -x 'node_modules/*' 'dist/*' 'dist-server/*' 'preview-v14/*' '.dorm-update-staging/*' '.dorm-update-rollback-dist/*' 'backups/*')
+          (cd /tmp/v17-cp && zip -qr "$GITHUB_WORKSPACE/v17-source-candidate-v5/dorm-control-plane-v17-SOURCE-GATE-V5.zip" . -x 'node_modules/*' 'wrangler.v5.jsonc')
+          for p in demo basic standard pro; do cp "/tmp/v17-master/preview-v14/dorm-management-system-${p}-v14-PREVIEW.zip" "v17-source-candidate-v5/customer-packages/dorm-management-system-${p}-v17-SOURCE-GATE-V5.zip"; done
+          cat > v17-source-candidate-v5/V16_IMMUTABLE_BASELINE.txt <<EOF
+          final_artifact_id=${V16_FINAL_ARTIFACT_ID}
+          final_artifact_sha256=${V16_FINAL_ARTIFACT_SHA256}
+          source_artifact_id=${V16_SOURCE_ARTIFACT_ID}
+          source_artifact_sha256=${V16_SOURCE_ARTIFACT_SHA256}
+          v16_migration_ceiling=0007_add_license_state.sql
+          v16_rebuilt=false
+          v16_modified=false
+          EOF
+          (cd v17-source-candidate-v5 && sha256sum *.zip customer-packages/*.zip > SHA256SUMS.txt)
+          touch /tmp/v17-v5-freeze.ok
+      - uses: actions/upload-artifact@v4
+        with:
+          name: v17-source-candidate-v5
+          path: v17-source-candidate-v5/**
+          if-no-files-found: error
+          retention-days: 30
+      - name: Persist V17 source gate evidence
+        if: always()
+        env: { JOB_STATUS: '${{ job.status }}' }
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p v17-production-evidence
+          val(){ [ -f "/tmp/v17-v5-$1.ok" ] && printf success || printf failure; }
+          cat > v17-production-evidence/source-gate-v5-latest.txt <<EOF
+          run_id=${GITHUB_RUN_ID}
+          run_attempt=${GITHUB_RUN_ATTEMPT}
+          source_sha=${GITHUB_SHA}
+          job_status=${JOB_STATUS}
+          v16_source_artifact_id=${V16_SOURCE_ARTIFACT_ID}
+          v16_source_artifact_sha256=${V16_SOURCE_ARTIFACT_SHA256}
+          immutable_v16_baseline=$(val baseline)
+          overlay=$(val overlay)
+          static_security_contract=$(val static)
+          master_tests_lint_types_builds=$(val master)
+          control_plane_tests_typecheck_dryrun=$(val control-plane)
+          four_plan_packages=$(val packages)
+          artifact_freeze=$(val freeze)
+          migration_ceiling=${V17_MIGRATION_CEILING}
+          v16_rebuilt=false
+          v16_modified=false
+          cloudflare_touched=false
+          existing_d1_touched=false
+          v17_customer_ready=false
+          deployed=false
+          EOF
+          git config user.name 'github-actions[bot]'; git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- v17-production-evidence/source-gate-v5-latest.txt
+          git commit -m 'ci(v17): record source gate v5 evidence' || exit 0
+          git fetch origin agent/v16-production-gate
+          git rebase origin/agent/v16-production-gate
+          git push origin HEAD:agent/v16-production-gate
