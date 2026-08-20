@@ -1,0 +1,98 @@
+name: V17 Standard Test Deploy Monitor V1
+on:
+  push:
+    branches: [agent/v16-production-gate]
+    paths: ['.github/workflows/v17-standard-test-monitor-v1.yml']
+permissions: { contents: write, actions: read }
+concurrency: { group: v17-standard-test-monitor-v1, cancel-in-progress: true }
+env:
+  TARGET_HEAD_SHA: '78d271eff270d98edaee3b6c222e2b09551c6f3f'
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: agent/v16-production-gate }
+      - name: Wait for Standard deployment run completion
+        env: { GH_TOKEN: '${{ github.token }}' }
+        shell: bash
+        run: |
+          set -euo pipefail
+          found=0
+          for i in $(seq 1 180); do
+            gh run list --repo "$GITHUB_REPOSITORY" --workflow v17-standard-test-deploy-v1.yml --branch agent/v16-production-gate --limit 30 --json databaseId,status,conclusion,headSha,attempt,url > /tmp/runs.json
+            python3 - <<'PY'
+          import json,os
+          rows=json.load(open('/tmp/runs.json'))
+          matches=[r for r in rows if r.get('headSha')==os.environ['TARGET_HEAD_SHA']]
+          if matches:
+              r=matches[0]
+              open('/tmp/run-id','w').write(str(r['databaseId']))
+              open('/tmp/run-status','w').write(str(r.get('status') or ''))
+              open('/tmp/run-conclusion','w').write(str(r.get('conclusion') or ''))
+              open('/tmp/run-attempt','w').write(str(r.get('attempt') or 1))
+              open('/tmp/run-url','w').write(str(r.get('url') or ''))
+          PY
+            if [ -s /tmp/run-id ]; then
+              found=1
+              if [ "$(cat /tmp/run-status)" = completed ]; then break; fi
+            fi
+            sleep 10
+          done
+          test "$found" = 1
+          test -s /tmp/run-id
+          test "$(cat /tmp/run-status)" = completed
+          RUN_ID="$(cat /tmp/run-id)"
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/artifacts" > /tmp/artifacts.json
+          python3 - <<'PY'
+          import json,os
+          x=json.load(open('/tmp/artifacts.json'))
+          rid=open('/tmp/run-id').read().strip()
+          name=f'v17-standard-test-access-{rid}'
+          rows=[a for a in x.get('artifacts',[]) if a.get('name')==name]
+          if rows:
+              a=rows[0]
+              open('/tmp/access-artifact-id','w').write(str(a.get('id','')))
+              open('/tmp/access-artifact-name','w').write(name)
+          PY
+      - name: Persist monitor evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p v17-production-evidence
+          RID="$(cat /tmp/run-id 2>/dev/null || printf unavailable)"
+          ATT="$(cat /tmp/run-attempt 2>/dev/null || printf 1)"
+          STATUS="$(cat /tmp/run-status 2>/dev/null || printf unavailable)"
+          CONCLUSION="$(cat /tmp/run-conclusion 2>/dev/null || printf unavailable)"
+          RUN_URL="$(cat /tmp/run-url 2>/dev/null || printf unavailable)"
+          AID="$(cat /tmp/access-artifact-id 2>/dev/null || printf unavailable)"
+          ANAME="$(cat /tmp/access-artifact-name 2>/dev/null || printf unavailable)"
+          cat > v17-production-evidence/standard-test-deploy-v1-latest.txt <<EOF
+          run_id=${RID}
+          run_attempt=${ATT}
+          source_sha=${TARGET_HEAD_SHA}
+          status=${STATUS}
+          job_status=${CONCLUSION}
+          run_url=${RUN_URL}
+          app_url=https://dorm-standard-v17-test-${RID}-${ATT}.pages.dev
+          pages_project=dorm-standard-v17-test-${RID}-${ATT}
+          customer_d1=dorm-standard-v17-test-${RID}-${ATT}-db
+          license_id=stdtest-${RID}-${ATT}
+          license_plan=standard
+          max_activations=1
+          expires_at=NULL
+          source_artifact_id=9398295831
+          source_artifact_sha256=db97970252514639a4387a42aaf26d3a5513330c3cdcfba8fb339d86dda3151c
+          standard_zip_sha256=3b1b95a294b7b2f46eb029cd83e22e0281e39d27542bce97ed965aceea929072
+          access_artifact_id=${AID}
+          access_artifact_name=${ANAME}
+          EOF
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add v17-production-evidence/standard-test-deploy-v1-latest.txt
+          git commit -m 'ci(v17): record Standard test deployment monitor' || exit 0
+          git fetch origin agent/v16-production-gate
+          git rebase origin/agent/v16-production-gate
+          git push origin HEAD:agent/v16-production-gate
