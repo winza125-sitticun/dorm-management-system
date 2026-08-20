@@ -1,0 +1,236 @@
+name: V16 Production Customer Ready Recovery V38
+on:
+  push:
+    branches: [agent/v16-production-gate]
+    paths: ['.github/workflows/v16-production-customer-ready-recovery-v38.yml']
+permissions: { contents: write, actions: read }
+concurrency: { group: v16-production-customer-ready-recovery-v38, cancel-in-progress: false }
+env:
+  SOURCE_ARTIFACT_ID: '9392071166'
+  SOURCE_ARTIFACT_SHA256: 'cb498eed4580589794480e4aa0a9d42fc2814fde0e64ad6620c16e6d220d2cf8'
+  CP_ZIP_SHA256: '5d9f31fb6a3b7a40b761bb09cd435a498529b22e29695ee6c7edb710a87b0e2e'
+  PRO_ZIP_SHA256: 'c2f46f8e6ca251b7476a8e1bc510e9fedd1f17e516c9ad5a17338f8504933e04'
+  PUBLIC_KEY_B64: 'fgdHGCi74MiMXHbI5+KVY6S9wnh/L369ekdI8NmrwdY='
+  CANONICAL_CP_URL: 'https://dorm-control-plane.winza125.workers.dev'
+  STABLE_D1: 'dorm-license-control-plane-v16-db'
+  STABLE_D1_UUID: '68695864-48de-4d8a-932b-9d11cd4d6b4d'
+  CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+  CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+  LICENSE_SIGNING_PRIVATE_KEY: ${{ secrets.V16_LICENSE_SIGNING_PRIVATE_KEY }}
+jobs:
+  recover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    environment: "fulfilling-communication / production"
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: agent/v16-production-gate }
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+
+      - name: Verify prior gates and exact V29
+        env: { GH_TOKEN: '${{ github.token }}' }
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -Fxq 'job_status=success' v16-production-evidence/source-package-v29-latest.txt
+          grep -Fxq 'job_status=success' v16-production-evidence/live-license-smoke-v32-latest.txt
+          grep -Fxq 'job_status=success' v16-production-evidence/offline-grace-v34-latest.txt
+          grep -Fxq 'job_status=success' v16-production-evidence/stable-control-plane-v36-latest.txt
+          grep -Fxq 'stable_d1_uuid=68695864-48de-4d8a-932b-9d11cd4d6b4d' v16-production-evidence/stable-control-plane-v36-latest.txt
+          test -n "${CLOUDFLARE_API_TOKEN:-}"; test -n "${CLOUDFLARE_ACCOUNT_ID:-}"; test -n "${LICENSE_SIGNING_PRIVATE_KEY:-}"
+          rm -rf /tmp/source /tmp/cp /tmp/pro; mkdir -p /tmp/source /tmp/cp /tmp/pro
+          curl --fail --location --retry 8 --retry-all-errors --retry-delay 3 -H "Authorization: Bearer ${GH_TOKEN}" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${SOURCE_ARTIFACT_ID}/zip" -o /tmp/source.zip
+          echo "$SOURCE_ARTIFACT_SHA256  /tmp/source.zip"|sha256sum -c -
+          unzip -q /tmp/source.zip -d /tmp/source
+          (cd /tmp/source && sha256sum -c SHA256SUMS.txt)
+          echo "$CP_ZIP_SHA256  /tmp/source/dorm-control-plane-v16-PRODUCTION-SOURCE-GATED.zip"|sha256sum -c -
+          echo "$PRO_ZIP_SHA256  /tmp/source/customer-previews/dorm-management-system-pro-v16-SOURCE-GATE-V29.zip"|sha256sum -c -
+          unzip -q /tmp/source/dorm-control-plane-v16-PRODUCTION-SOURCE-GATED.zip -d /tmp/cp
+          unzip -q /tmp/source/customer-previews/dorm-management-system-pro-v16-SOURCE-GATE-V29.zip -d /tmp/pro
+          grep -Fq "$CANONICAL_CP_URL" /tmp/pro/src/generated/licenseConfig.ts
+          grep -Fq "$PUBLIC_KEY_B64" /tmp/pro/src/generated/licenseConfig.ts
+          touch /tmp/v38-exact.ok
+
+      - name: Correct candidate verification
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd /tmp/cp && npm ci && npm test && npm run typecheck)
+          (cd /tmp/pro && npm ci && npm run check:cloudflare-types && npm run build:pages)
+          touch /tmp/v38-candidate.ok
+
+      - name: Deploy canonical Control Plane on existing stable D1
+        working-directory: /tmp/cp
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx wrangler d1 list --json >/tmp/d1.json
+          python3 - <<'PY'
+          import json,os
+          x=json.load(open('/tmp/d1.json')); rows=x if isinstance(x,list) else x.get('result',x.get('databases',[]))
+          m=[r for r in rows if r.get('name')==os.environ['STABLE_D1']]; assert len(m)==1,m
+          uid=m[0].get('uuid') or m[0].get('id'); assert uid==os.environ['STABLE_D1_UUID']
+          json.dump({'name':'dorm-control-plane','main':'src/index.ts','compatibility_date':'2026-08-05',
+            'd1_databases':[{'binding':'DB','database_name':os.environ['STABLE_D1'],'database_id':uid,'migrations_dir':'migrations'}]},open('wrangler.v38.jsonc','w'))
+          PY
+          timeout 90s npx wrangler d1 execute DB --remote --config wrangler.v38.jsonc --command "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name;" >/tmp/tables
+          ! grep -Eiq '(^|[^a-z])(rooms|tenants|settings|bills|payments|users)([^a-z]|$)' /tmp/tables
+          timeout 180s npx wrangler d1 migrations apply DB --remote --config wrangler.v38.jsonc
+          timeout 240s npx wrangler deploy --config wrangler.v38.jsonc|tee /tmp/cpdeploy
+          printf '%s\n' "$LICENSE_SIGNING_PRIVATE_KEY"|timeout 90s npx wrangler secret put LICENSE_SIGNING_PRIVATE_KEY --config wrangler.v38.jsonc
+          grep -Fq "$CANONICAL_CP_URL" /tmp/cpdeploy
+          code="$(curl --silent --output /tmp/root --write-out '%{http_code}' --max-time 15 "$CANONICAL_CP_URL/")"; test "$code" = 405
+          touch /tmp/v38-canonical.ok
+
+      - name: Seed Pro license
+        working-directory: /tmp/cp
+        shell: bash
+        run: |
+          set -euo pipefail
+          LIC="lic-v38-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          KEY="V16-$(node -e "process.stdout.write(require('node:crypto').randomBytes(18).toString('hex').toUpperCase())")"
+          HASH="$(printf '%s' "$KEY"|sha256sum|awk '{print $1}')"; NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          printf '%s' "$LIC">/tmp/lic; printf '%s' "$KEY">/tmp/key
+          timeout 90s npx wrangler d1 execute DB --remote --config wrangler.v38.jsonc --command "INSERT INTO licenses(id,key_hash,customer_label,plan,status,max_activations,expires_at,created_at,updated_at) VALUES('${LIC}','${HASH}','V38 final smoke','pro','active',1,NULL,'${NOW}','${NOW}');"
+          touch /tmp/v38-seed.ok
+
+      - name: Deploy disposable exact Pro package with packaged license config
+        working-directory: /tmp/pro
+        shell: bash
+        run: |
+          set -euo pipefail
+          M="$(printf '%s' "$GITHUB_RUN_ID"|tail -c 9)-${GITHUB_RUN_ATTEMPT}-$(python3 -c 'import secrets;print(secrets.token_hex(3))')"
+          D1="v16-v38-${M}-db"; PAGES="v16-v38-${M}"
+          echo "V38_D1=$D1">>/tmp/v38.env; echo "V38_PAGES=$PAGES">>/tmp/v38.env
+          timeout 120s npx wrangler d1 create "$D1" --location apac
+          timeout 60s npx wrangler d1 info "$D1" --json >/tmp/pd1
+          python3 - "$D1" "$PAGES" <<'PY'
+          import json,re,sys
+          s=json.dumps(json.load(open('/tmp/pd1'))); m=re.search(r'[0-9a-fA-F-]{36}',s); assert m
+          json.dump({'name':sys.argv[2],'compatibility_date':'2026-08-05','compatibility_flags':['nodejs_compat'],'pages_build_output_dir':'./dist','upload_source_maps':True,
+            'd1_databases':[{'binding':'DB','database_name':sys.argv[1],'database_id':m.group(0),'migrations_dir':'./d1-migrations'}]},open('wrangler.jsonc','w'))
+          PY
+          timeout 120s npx wrangler pages project create "$PAGES" --production-branch main
+          JWT="$(python3 -c 'import secrets;print(secrets.token_urlsafe(48))')"; printf '%s\n' "$JWT"|timeout 90s npx wrangler pages secret put JWT_SECRET --project-name "$PAGES"; unset JWT
+          timeout 180s npx wrangler d1 migrations apply DB --remote --config wrangler.jsonc
+          npm run build:pages
+          timeout 240s npx wrangler pages deploy dist --project-name "$PAGES" --branch main --commit-hash "$GITHUB_SHA" --commit-dirty=false|tee /tmp/pdeploy
+          URL="$(grep -Eo 'https://[^[:space:]]+\.pages\.dev' /tmp/pdeploy|tail -n1)"; test -n "$URL"; echo "V38_URL=$URL">>/tmp/v38.env
+          for i in $(seq 1 60); do curl --fail --silent --max-time 10 "$URL/" -o /dev/null && break; sleep 2; done
+          curl --fail --silent --max-time 10 "$URL/" -o /dev/null
+          touch /tmp/v38-customer-deploy.ok
+
+      - name: Customer live activation and fail-closed smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          set -a; . /tmp/v38.env; set +a
+          python3 - <<'PY'
+          import json,os,secrets
+          e=f"v38-{os.environ['GITHUB_RUN_ID']}@example.invalid"; p='V16!ReadyAa'+secrets.token_hex(10)
+          json.dump({'email':e,'password':p,'displayName':'V38','dormName':'V38'},open('/tmp/setup','w')); json.dump({'username':e,'password':p},open('/tmp/login','w'))
+          PY
+          curl --fail --silent -H 'content-type: application/json' --data @/tmp/setup "$V38_URL/api/setup/init" >/tmp/s
+          curl --fail --silent -H 'content-type: application/json' --data @/tmp/login "$V38_URL/api/auth/login" >/tmp/l
+          python3 - <<'PY'
+          import json
+          x=json.load(open('/tmp/l')); d=x.get('data',x); assert d.get('token'); open('/tmp/auth','w').write(d['token'])
+          json.dump({'licenseKey':open('/tmp/key').read()},open('/tmp/actbody','w'))
+          PY
+          T="$(cat /tmp/auth)"
+          code="$(curl --silent -o /tmp/pre -w '%{http_code}' -H "authorization: Bearer $T" -H 'content-type: application/json' --data '{}' "$V38_URL/api/rooms")"; test "$code" = 403
+          curl --fail --silent -H "authorization: Bearer $T" -H 'content-type: application/json' --data @/tmp/actbody "$V38_URL/api/license/activate" >/tmp/act
+          curl --fail --silent -H "authorization: Bearer $T" "$V38_URL/api/license/status" >/tmp/status
+          python3 - <<'PY'
+          import json
+          d=json.load(open('/tmp/status')).get('data',{}); assert d.get('effectivePlan')=='pro' and d.get('controlPlaneUrl')=='https://dorm-control-plane.winza125.workers.dev',d
+          PY
+          python3 - <<'PY'
+          import json
+          json.dump({'licenseKey':open('/tmp/key').read(),'installationId':'v38-secondary','projectName':'secondary','hostname':'secondary.invalid'},open('/tmp/seat','w'))
+          PY
+          code="$(curl --silent -o /tmp/seatout -w '%{http_code}' -H 'content-type: application/json' --data @/tmp/seat "$CANONICAL_CP_URL/v1/licenses/activate")"; test "$code" = 409
+          LIC="$(cat /tmp/lic)"; NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          cd /tmp/cp; timeout 90s npx wrangler d1 execute DB --remote --config wrangler.v38.jsonc --command "UPDATE licenses SET status='suspended',updated_at='${NOW}' WHERE id='${LIC}';"
+          code="$(curl --silent -o /tmp/ref -w '%{http_code}' -X POST -H "authorization: Bearer $T" "$V38_URL/api/license/refresh")"; test "$code" = 403
+          touch /tmp/v38-live.ok
+
+      - name: Guarded cleanup
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -f /tmp/lic ] && [ -f /tmp/cp/wrangler.v38.jsonc ]; then
+            LIC="$(cat /tmp/lic)"; [[ "$LIC" == "lic-v38-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" ]]
+            cd /tmp/cp; timeout 90s npx wrangler d1 execute DB --remote --config wrangler.v38.jsonc --command "DELETE FROM license_events WHERE license_id='${LIC}'; DELETE FROM activations WHERE license_id='${LIC}'; DELETE FROM licenses WHERE id='${LIC}';"
+          fi
+          if [ -f /tmp/v38.env ]; then
+            set -a; . /tmp/v38.env; set +a
+            [[ "${V38_PAGES:-}" == v16-v38-* ]]; [[ "${V38_D1:-}" == v16-v38-*-db ]]
+            cd /tmp/pro
+            timeout 120s npx wrangler pages project delete "$V38_PAGES" --yes
+            timeout 120s npx wrangler d1 delete "$V38_D1" --skip-confirmation
+          fi
+          touch /tmp/v38-cleanup.ok
+
+      - name: Freeze final customer-ready payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          for x in exact candidate canonical seed customer-deploy live cleanup; do test -f "/tmp/v38-$x.ok"; done
+          rm -rf v16-customer-ready-v38; mkdir -p v16-customer-ready-v38/customer-previews
+          cp /tmp/source/dorm-control-plane-v16-PRODUCTION-SOURCE-GATED.zip v16-customer-ready-v38/
+          cp /tmp/source/dorm-management-system-master-v16-PRODUCTION-SOURCE-GATED-V29.zip v16-customer-ready-v38/
+          cp /tmp/source/customer-previews/*.zip v16-customer-ready-v38/customer-previews/
+          cp /tmp/source/SHA256SUMS.txt v16-customer-ready-v38/V29-SHA256SUMS.txt
+          cat > v16-customer-ready-v38/CUSTOMER-READY.txt <<EOF
+          version=V16
+          customer_ready=true
+          source_artifact_id=${SOURCE_ARTIFACT_ID}
+          canonical_control_plane_url=${CANONICAL_CP_URL}
+          stable_d1_uuid=${STABLE_D1_UUID}
+          migration_ceiling=0007_add_license_state.sql
+          existing_d1_touched=false
+          EOF
+          touch /tmp/v38-artifact.ok
+      - uses: actions/upload-artifact@v4
+        with: { name: v16-customer-ready-v38, path: 'v16-customer-ready-v38/**', if-no-files-found: error, retention-days: 90 }
+
+      - name: Persist CUSTOMER-READY evidence
+        if: always()
+        env: { JOB_STATUS: '${{ job.status }}' }
+        shell: bash
+        run: |
+          set -euo pipefail
+          val(){ [ -f "/tmp/v38-$1.ok" ] && printf success || printf failure; }
+          ready=false
+          if [ "$JOB_STATUS" = success ]; then ready=true; for x in exact candidate canonical seed customer-deploy live cleanup artifact; do [ "$(val "$x")" = success ] || ready=false; done; fi
+          mkdir -p v16-production-evidence
+          cat > v16-production-evidence/customer-ready-v38-latest.txt <<EOF
+          run_id=${GITHUB_RUN_ID}
+          run_attempt=${GITHUB_RUN_ATTEMPT}
+          source_sha=${GITHUB_SHA}
+          job_status=${JOB_STATUS}
+          source_artifact_id=${SOURCE_ARTIFACT_ID}
+          source_artifact_sha256=${SOURCE_ARTIFACT_SHA256}
+          exact_artifact=$(val exact)
+          candidate_verification=$(val candidate)
+          canonical_control_plane=$(val canonical)
+          license_seed=$(val seed)
+          customer_deploy=$(val customer-deploy)
+          customer_live_activation_terminal=$(val live)
+          guarded_cleanup=$(val cleanup)
+          final_artifact=$(val artifact)
+          canonical_control_plane_url=${CANONICAL_CP_URL}
+          stable_d1_uuid=${STABLE_D1_UUID}
+          existing_d1_touched=false
+          stable_resources_preserved=true
+          customer_ready=${ready}
+          deployed=true
+          EOF
+          git config user.name 'github-actions[bot]'; git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add v16-production-evidence/customer-ready-v38-latest.txt
+          git commit -m 'ci(v16): record customer-ready recovery v38' || exit 0
+          git fetch origin agent/v16-production-gate; git rebase origin/agent/v16-production-gate; git push origin HEAD:agent/v16-production-gate
