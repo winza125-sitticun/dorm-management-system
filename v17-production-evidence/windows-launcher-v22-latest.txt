@@ -1,0 +1,13 @@
+run_id=32335677569
+source_sha=9da98811735d9056a82cfeb6d8c86469f750a451
+job_status=success
+v17_artifact_id=9394092671
+v17_artifact_sha256=0503ec400e7e52e7e9a23723155aa2eebbc3e64f8ead898cc49b9a9968f63ad3
+exact_artifact_windows=success
+bootstrap_windows_runtime=success
+update_windows_runtime=success
+working_directory_guard=success
+exit_code_propagation=success
+cloudflare_touched=false
+existing_customer_d1_touched=false
+v17_customer_ready=false
