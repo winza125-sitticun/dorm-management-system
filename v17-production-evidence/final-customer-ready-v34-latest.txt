@@ -1,0 +1,14 @@
+run_id=32346728776
+run_attempt=1
+source_sha=0d3882d217a7ab61e87092b4fa269c1bfe10e2d9
+job_status=success
+source_artifact_id=9394092671
+source_artifact_sha256=0503ec400e7e52e7e9a23723155aa2eebbc3e64f8ead898cc49b9a9968f63ad3
+production_gate_evidence=success
+exact_frozen_artifact=success
+customer_package_isolation=success
+immutable_final_bundle=success
+no_rebuild=true
+cloudflare_touched=false
+existing_customer_d1_touched=false
+v17_customer_ready=true
