@@ -45,8 +45,7 @@ jobs:
         working-directory: /tmp/v16
         shell: bash
         run: |
-          set -euo pipefail
-          npm ci
+          set -euo pipefail;npm ci
           M="$(printf '%s' "$GITHUB_RUN_ID"|tail -c 9)-${GITHUB_RUN_ATTEMPT}-$(python3 -c 'import secrets;print(secrets.token_hex(3))')";D1="v17-v24-${M}-db";PAGES="v17-v24-${M}";printf 'D1=%q\nPAGES=%q\n' "$D1" "$PAGES">/tmp/v24.env
           timeout 120s npx wrangler d1 create "$D1" --location apac;timeout 60s npx wrangler d1 info "$D1" --json >/tmp/d1info
           python3 - "$D1" "$PAGES" <<'PY'
@@ -66,15 +65,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail;set -a;. /tmp/v24.env;set +a
+          api_post(){ local data="$1" path="$2" out="$3" code=;for i in $(seq 1 45);do code="$(curl -sS -o "$out" -w '%{http_code}' --max-time 15 -H 'content-type: application/json' --data @"$data" "$URL$path"||true)";[[ "$code" =~ ^2 ]]&&return 0;sleep 2;done;echo "$path HTTP $code" >&2;cat "$out" >&2||true;return 1; }
+          api_get(){ local token="$1" path="$2" out="$3" code=;for i in $(seq 1 45);do code="$(curl -sS -o "$out" -w '%{http_code}' --max-time 15 -H "authorization: Bearer $token" "$URL$path"||true)";[[ "$code" =~ ^2 ]]&&return 0;sleep 2;done;echo "$path HTTP $code" >&2;cat "$out" >&2||true;return 1; }
           EMAIL="v24-${GITHUB_RUN_ID}@example.invalid";PASS="V24!ReadyAa$(python3 -c 'import secrets;print(secrets.token_hex(10))')";printf '%s' "$EMAIL">/tmp/email;printf '%s' "$PASS">/tmp/pass
           python3 - <<'PY'
           import json
           e=open('/tmp/email').read();p=open('/tmp/pass').read();json.dump({'email':e,'password':p,'displayName':'V24 Owner','dormName':'V24 Rollback'},open('/tmp/setup','w'));json.dump({'username':e,'password':p},open('/tmp/login','w'))
           PY
-          curl --fail -s -H 'content-type: application/json' --data @/tmp/setup "$URL/api/setup/init">/tmp/setupout
-          curl --fail -s -H 'content-type: application/json' --data @/tmp/login "$URL/api/auth/login">/tmp/loginout
+          api_post /tmp/setup /api/setup/init /tmp/setupout
+          api_post /tmp/login /api/auth/login /tmp/loginout
           node -e "const fs=require('node:fs'),x=JSON.parse(fs.readFileSync('/tmp/loginout','utf8')),d=x.data||x;if(!d.token)process.exit(1);fs.writeFileSync('/tmp/auth',d.token)"
-          T="$(cat /tmp/auth)";curl --fail -s -H "authorization: Bearer $T" "$URL/api/admin/backup/export">/tmp/before
+          T="$(cat /tmp/auth)";api_get "$T" /api/admin/backup/export /tmp/before
           node - <<'NODE'
           const fs=require('node:fs'),crypto=require('node:crypto'),x=JSON.parse(fs.readFileSync('/tmp/before')),p=x.data||x,canon=v=>Array.isArray(v)?v.map(canon):v&&typeof v==='object'?Object.fromEntries(Object.keys(v).sort().map(k=>[k,canon(v[k])])):v;fs.writeFileSync('/tmp/before.sha',crypto.createHash('sha256').update(JSON.stringify(canon(p.data))).digest('hex'));
           NODE
@@ -92,24 +93,21 @@ jobs:
           exec "$REAL_NPM" "\$@"
           EOF
           chmod +x /tmp/v24-shim/npm;export PATH="/tmp/v24-shim:$PATH"
-          set +e;timeout 1200s node BOOTSTRAP-V16-TO-V17.mjs > /tmp/bootstrap.log 2>&1;RC=$?;set -e
-          cat /tmp/bootstrap.log
+          set +e;timeout 1200s node BOOTSTRAP-V16-TO-V17.mjs > /tmp/bootstrap.log 2>&1;RC=$?;set -e;cat /tmp/bootstrap.log
           test "$RC" -ne 0;grep -q V24_INJECTED_MIGRATION_FAILURE /tmp/bootstrap.log
-          test "$(node -p "require('./package.json').version")" = 1.1.0
-          test ! -f .dorm-update-state.json
+          test "$(node -p "require('./package.json').version")" = 1.1.0;test ! -f .dorm-update-state.json
           find backups -maxdepth 1 -type f -name 'pre-update-*.dormbackup' -print -quit | grep -q .
-          timeout 90s npx wrangler d1 execute DB --remote --config wrangler.jsonc --command "SELECT name FROM sqlite_master WHERE type='table' AND name='update_state';" >/tmp/update-table
-          ! grep -q update_state /tmp/update-table
+          timeout 90s npx wrangler d1 execute DB --remote --config wrangler.jsonc --command "SELECT name FROM sqlite_master WHERE type='table' AND name='update_state';" >/tmp/update-table;! grep -q update_state /tmp/update-table
           npx wrangler pages deployment list --project-name "$PAGES" --json >/tmp/deploy-after.json
           python3 - <<'PY'
           import json
           def ids(path):
-            x=json.load(open(path)); rows=x if isinstance(x,list) else x.get('result',x.get('deployments',[])); return [r.get('id') for r in rows if r.get('id')]
+            x=json.load(open(path));rows=x if isinstance(x,list) else x.get('result',x.get('deployments',[]));return [r.get('id') for r in rows if r.get('id')]
           a=ids('/tmp/deploy-before.json');b=ids('/tmp/deploy-after.json');assert a and b and a[0]==b[0],(a[:2],b[:2])
           PY
-          curl --fail -s -H 'content-type: application/json' --data @/tmp/login "$URL/api/auth/login">/tmp/login2
+          for i in $(seq 1 45);do c="$(curl -sS -o /tmp/login2 -w '%{http_code}' --max-time 15 -H 'content-type: application/json' --data @/tmp/login "$URL/api/auth/login"||true)";[[ "$c" =~ ^2 ]]&&break;sleep 2;done;[[ "$c" =~ ^2 ]]
           node -e "const fs=require('node:fs'),x=JSON.parse(fs.readFileSync('/tmp/login2','utf8')),d=x.data||x;if(!d.token)process.exit(1);fs.writeFileSync('/tmp/auth2',d.token)"
-          T="$(cat /tmp/auth2)";curl --fail -s -H "authorization: Bearer $T" "$URL/api/admin/backup/export">/tmp/after
+          T="$(cat /tmp/auth2)";for i in $(seq 1 45);do c="$(curl -sS -o /tmp/after -w '%{http_code}' --max-time 15 -H "authorization: Bearer $T" "$URL/api/admin/backup/export"||true)";[[ "$c" =~ ^2 ]]&&break;sleep 2;done;[[ "$c" =~ ^2 ]]
           node - <<'NODE'
           const fs=require('node:fs'),crypto=require('node:crypto'),x=JSON.parse(fs.readFileSync('/tmp/after')),p=x.data||x,canon=v=>Array.isArray(v)?v.map(canon):v&&typeof v==='object'?Object.fromEntries(Object.keys(v).sort().map(k=>[k,canon(v[k])])):v,h=crypto.createHash('sha256').update(JSON.stringify(canon(p.data))).digest('hex');if(h!==fs.readFileSync('/tmp/before.sha','utf8').trim())throw Error(h);fs.writeFileSync('/tmp/after.sha',h)
           NODE
