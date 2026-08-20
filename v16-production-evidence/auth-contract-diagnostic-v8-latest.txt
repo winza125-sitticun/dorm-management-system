@@ -1,0 +1,208 @@
+source_artifact_id=9365183203
+source_artifact_sha256=102f94d86cdde64819420afbe747ca1d8ef6764977562df846f2d823be71e47f
+pro_zip_sha256=c350d9ab87b1e379ec5fc37edb52ea4009d346d4f74ff62a62e164b7526c442b
+cloudflare_touched=false
+existing_d1_touched=false
+rooms_route_hits=1534,1551,2045
+-- 1529-1552 --
+1529:      const subscriptionPlan = licenseState.effectivePlan;
+1530:      const requiredFeature = requiredPlanFeatureForApiRequest(path, method);
+1531:
+1532:      if (!subscriptionPlan) {
+1533:        if (path === '/api/admin/backup/export' && method === 'GET') return;
+1534:        if (requiredFeature || (method === 'POST' && (path === '/api/rooms' || path === '/api/caretakers'))) {
+1535:          throw new PlanAccessError('LICENSE_REQUIRED', 'แพ็กเกจแบบชำระเงินต้อง Activate License ก่อนใช้งานฟีเจอร์นี้');
+1536:        }
+1537:        return;
+1538:      }
+1539:
+1540:      if (isDemoPlan(subscriptionPlan) && isDemoMutationRestricted(path, method)) {
+1541:        throw new PlanAccessError('PLAN_REQUIRED', 'บัญชี Demo ไม่อนุญาตให้แก้ไขการตั้งค่า ลบข้อมูล หรือจัดการ Integration');
+1542:      }
+1543:
+1544:      if (requiredFeature && !hasPlanFeature(subscriptionPlan, requiredFeature)) {
+1545:        const requiredPlan = minimumPaidPlanForFeature(requiredFeature);
+1546:        throw new PlanAccessError('PLAN_REQUIRED', `ฟีเจอร์นี้อยู่ในแพ็กเกจ ${requiredPlan[0].toUpperCase() + requiredPlan.slice(1)} หรือสูงกว่า`);
+1547:      }
+1548:
+1549:      if (!env.DB) return;
+1550:
+1551:      if (method === 'POST' && path === '/api/rooms') {
+1552:        const countRow = await env.DB.prepare('SELECT COUNT(*) AS count FROM rooms WHERE user_id = ? AND deleted_at IS NULL').bind(ownerId).first();
+-- 1546-1569 --
+1546:        throw new PlanAccessError('PLAN_REQUIRED', `ฟีเจอร์นี้อยู่ในแพ็กเกจ ${requiredPlan[0].toUpperCase() + requiredPlan.slice(1)} หรือสูงกว่า`);
+1547:      }
+1548:
+1549:      if (!env.DB) return;
+1550:
+1551:      if (method === 'POST' && path === '/api/rooms') {
+1552:        const countRow = await env.DB.prepare('SELECT COUNT(*) AS count FROM rooms WHERE user_id = ? AND deleted_at IS NULL').bind(ownerId).first();
+1553:        const maxRooms = getPlanLimit(subscriptionPlan, 'maxRooms');
+1554:        if (Number(countRow?.count || 0) >= maxRooms) {
+1555:          throw new PlanAccessError('PLAN_LIMIT_REACHED', `แพ็กเกจ ${subscriptionPlan} รองรับห้องพักสูงสุด ${maxRooms} ห้อง`);
+1556:        }
+1557:      }
+1558:
+1559:      if (method === 'POST' && path === '/api/caretakers') {
+1560:        const countRow = await env.DB.prepare("SELECT COUNT(*) AS count FROM users WHERE parent_id = ? AND role IN ('caretaker','accountant','technician','housekeeper','staff') AND deleted_at IS NULL").bind(ownerId).first();
+1561:        const maxStaff = getPlanLimit(subscriptionPlan, 'maxStaff');
+1562:        if (Number(countRow?.count || 0) >= maxStaff) {
+1563:          throw new PlanAccessError('PLAN_LIMIT_REACHED', `แพ็กเกจ ${subscriptionPlan} รองรับผู้ดูแลร่วมสูงสุด ${maxStaff} คน`);
+1564:        }
+1565:      }
+1566:    }
+1567:
+1568:
+1569:    const backupJsonMessages = {
+-- 2040-2063 --
+2040:      const { results } = await env.DB.prepare(query).bind(...params).all();
+2041:      const due = (results || []).filter((row: any) => row.frequency === 'monthly' || JSON.parse(row.billing_months || '[]').includes(month)).map((row: any) => ({ roomId: row.room_id, assignmentId: row.assignment_id, label: row.name, amount: row.amount_override ?? row.default_amount, kind: 'recurrin
+2042:      return successResponse(due);
+2043:    }
+2044:
+2045:    if ((path === "/api/rooms" || path.startsWith("/api/rooms/")) && !/^\/api\/rooms\/\d+\/recurring-charges$/.test(path)) {
+2046:      const authUser = await getAuthUser();
+2047:      if (!authUser) return errorResponse('UNAUTHORIZED', 'กรุณาล็อกอินเข้าสู่ระบบก่อนใช้งาน', 401);
+2048:
+2049:      if (method === "GET") {
+2050:        if (!hasCaretakerPermission(authUser, PERMISSIONS.VIEW_ROOMS)) return errorResponse('FORBIDDEN', 'ไม่มีสิทธิ์ดูข้อมูลห้องพัก', 403);
+2051:        if (env.DB) {
+2052:          try {
+2053:            const page = parseInt(url.searchParams.get("page") || "0");
+2054:            const limit = parseInt(url.searchParams.get("limit") || "0");
+2055:            const userId = authUser.effectiveUserId || authUser.id;
+2056:
+2057:            let query = "SELECT * FROM rooms WHERE user_id = ? AND deleted_at IS NULL ORDER BY room_number ASC";
+2058:            if (page > 0 && limit > 0) {
+2059:              const offset = (page - 1) * limit;
+2060:              query += ` LIMIT ${limit} OFFSET ${offset}`;
+2061:            }
+2062:
+2063:            const { results } = await env.DB.prepare(query).bind(userId).all();
+-- 1573-1582 --
+1573:    };
+1574:    const isBackupAdminRole = (role?: string | null) => ['owner', 'super_admin'].includes(String(role || ''));
+1575:    const requireBackupAdmin = async () => {
+1576:      const authUser = await getAuthUser();
+1577:      if (!authUser) return { response: errorResponse('UNAUTHORIZED', 'กรุณาล็อกอินเข้าสู่ระบบก่อนใช้งาน', 401), authUser: null };
+1578:      if (!isBackupAdminRole(authUser.role)) return { response: errorResponse('FORBIDDEN', 'เฉพาะเจ้าของหอพักหรือผู้ดูแลระบบเท่านั้นที่ใช้ Backup/Restore ได้', 403), authUser: null };
+1579:      return { response: null, authUser };
+1580:    };
+1581:    const auditRestoreFailure = async (authUser: any, body: Record<string, unknown> | null, reasonCode: string, recoveryRequired: boolean) => {
+1582:      const manifest = body?.manifest && typeof body.manifest === 'object' ? body.manifest as Record<string, unknown> : null;
+-- 1573-1582 --
+1573:    };
+1574:    const isBackupAdminRole = (role?: string | null) => ['owner', 'super_admin'].includes(String(role || ''));
+1575:    const requireBackupAdmin = async () => {
+1576:      const authUser = await getAuthUser();
+1577:      if (!authUser) return { response: errorResponse('UNAUTHORIZED', 'กรุณาล็อกอินเข้าสู่ระบบก่อนใช้งาน', 401), authUser: null };
+1578:      if (!isBackupAdminRole(authUser.role)) return { response: errorResponse('FORBIDDEN', 'เฉพาะเจ้าของหอพักหรือผู้ดูแลระบบเท่านั้นที่ใช้ Backup/Restore ได้', 403), authUser: null };
+1579:      return { response: null, authUser };
+1580:    };
+1581:    const auditRestoreFailure = async (authUser: any, body: Record<string, unknown> | null, reasonCode: string, recoveryRequired: boolean) => {
+1582:      const manifest = body?.manifest && typeof body.manifest === 'object' ? body.manifest as Record<string, unknown> : null;
+-- 2026-2035 --
+2026:    // Resolve due charges before broad module routers so a path segment can never
+2027:    // be consumed by a generic CRUD handler.
+2028:    if (path === '/api/recurring-charges/due' && method === 'GET') {
+2029:      const authUser = await getAuthUser();
+2030:      if (!authUser || !env.DB) return errorResponse('UNAUTHORIZED', 'กรุณาเข้าสู่ระบบ', 401);
+2031:      if (!hasCaretakerPermission(authUser, PERMISSIONS.MANAGE_BILLS)) return errorResponse('FORBIDDEN', 'ไม่มีสิทธิ์ออกบิล', 403);
+2032:      const ownerId = Number(authUser.effectiveUserId || authUser.id);
+2033:      const billMonth = String(url.searchParams.get('billMonth') || '');
+2034:      const roomId = Number(url.searchParams.get('roomId') || 0);
+2035:      if (!/^\d{4}-\d{2}$/.test(billMonth)) return errorResponse('VALIDATION_ERROR', 'billMonth ต้องเป็น YYYY-MM', 400);
+-- 2043-2052 --
+2043:    }
+2044:
+2045:    if ((path === "/api/rooms" || path.startsWith("/api/rooms/")) && !/^\/api\/rooms\/\d+\/recurring-charges$/.test(path)) {
+2046:      const authUser = await getAuthUser();
+2047:      if (!authUser) return errorResponse('UNAUTHORIZED', 'กรุณาล็อกอินเข้าสู่ระบบก่อนใช้งาน', 401);
+2048:
+2049:      if (method === "GET") {
+2050:        if (!hasCaretakerPermission(authUser, PERMISSIONS.VIEW_ROOMS)) return errorResponse('FORBIDDEN', 'ไม่มีสิทธิ์ดูข้อมูลห้องพัก', 403);
+2051:        if (env.DB) {
+2052:          try {
+-- 3383-3393 --
+3383:              "SELECT id, uid, email, role, permissions, parent_id, created_at FROM users WHERE role IN ('caretaker','accountant','technician','housekeeper','staff') AND parent_id = ? AND deleted_at IS NULL ORDER BY id DESC"
+3384:            ).bind(ownerId).all();
+3385:            return successResponse(results || []);
+3386:          } catch (e) {
+3387:            console.warn("D1 caretakers fetch notice:", e);
+3388:          }
+3389:        }
+3390:        return successResponse([]);
+3391:      }
+3392:
+3393:      if (path === "/api/caretakers" && method === "POST") {
+-- 3439-3449 --
+3439:            });
+3440:
+3441:            return successResponse(created, "เพิ่มผู้ดูแลร่วมสำเร็จเรียบร้อยแล้วค่ะ", 201);
+3442:          } catch (e: any) {
+3443:            return errorResponse("DATABASE_ERROR", "เกิดข้อผิดพลาดในการเพิ่มผู้ดูแลร่วม: " + (e?.message || e), 500);
+3444:          }
+3445:        }
+3446:        return successResponse({ id: Date.now(), email, role: staffRole, permissions, parent_id: ownerId });
+3447:      }
+3448:
+3449:      if (path.startsWith("/api/caretakers/") && method === "PUT") {
+-- 3481-3491 --
+3481:            await logAuditAction(env.DB, { userId: authUser.id, userEmail: authUser.email, userRole: authUser.role, action: 'UPDATE_STAFF_ACCESS', targetType: 'user', targetId: id, oldValue: { role: existing.role, permissions: existing.permissions }, newValue: { role: staffRole ?? existing.role, per
+3482:
+3483:            return successResponse({ success: true, id }, "อัปเดตข้อมูลผู้ดูแลร่วมเรียบร้อยแล้วค่ะ");
+3484:          } catch (e: any) {
+3485:            return errorResponse("DATABASE_ERROR", "เกิดข้อผิดพลาดในการอัปเดตข้อมูลผู้ดูแลร่วม", 500);
+3486:          }
+3487:        }
+3488:        return successResponse({ success: true, id });
+3489:      }
+3490:
+3491:      if (path.startsWith("/api/caretakers/") && method === "DELETE") {
+-- 3510-3520 --
+3510:            await logAuditAction(env.DB, { userId: authUser.id, userEmail: authUser.email, userRole: authUser.role, action: 'DELETE_STAFF', targetType: 'user', targetId: id, oldValue: { role: existing.role, permissions: existing.permissions }, ipAddress: clientIp, userAgent });
+3511:
+3512:            return successResponse({ success: true, id }, "ลบผู้ดูแลร่วมออกจากระบบเรียบร้อยแล้วค่ะ");
+3513:          } catch (e: any) {
+3514:            return errorResponse("DATABASE_ERROR", "เกิดข้อผิดพลาดในการลบผู้ดูแลร่วม", 500);
+3515:          }
+3516:        }
+3517:        return successResponse({ success: true, id });
+3518:      }
+3519:    }
+3520:
+-- 3548-3558 --
+3548:          createdAt: a.created_at
+3549:        }));
+3550:        return successResponse(mapped);
+3551:      } catch (e) {
+3552:        console.warn("Audit logs fetch error:", e);
+3553:      }
+3554:      return successResponse([]);
+3555:    }
+3556:
+3557:    return errorResponse("NOT_FOUND", `ไม่พบเอนด์พอยต์ ${path} ในระบบ`, 404);
+3558:  } catch (error: any) {
+-- 3555-3565 --
+3555:    }
+3556:
+3557:    return errorResponse("NOT_FOUND", `ไม่พบเอนด์พอยต์ ${path} ในระบบ`, 404);
+3558:  } catch (error: any) {
+3559:    if (error instanceof PlanAccessError) {
+3560:      return errorResponse(error.code, error.message, error.status);
+3561:    }
+3562:    console.error("Cloudflare Pages Function Exception:", error);
+3563:    return errorResponse("SERVER_ERROR", error.message || "เกิดข้อผิดพลาดภายในเซิร์ฟเวอร์", 500);
+3564:  }
+3565:};
+-- 3556-3565 --
+3556:
+3557:    return errorResponse("NOT_FOUND", `ไม่พบเอนด์พอยต์ ${path} ในระบบ`, 404);
+3558:  } catch (error: any) {
+3559:    if (error instanceof PlanAccessError) {
+3560:      return errorResponse(error.code, error.message, error.status);
+3561:    }
+3562:    console.error("Cloudflare Pages Function Exception:", error);
+3563:    return errorResponse("SERVER_ERROR", error.message || "เกิดข้อผิดพลาดภายในเซิร์ฟเวอร์", 500);
+3564:  }
+3565:};
