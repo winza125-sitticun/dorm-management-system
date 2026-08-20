@@ -16,19 +16,23 @@ jobs:
           set -euo pipefail
           python3 - <<'PY'
           from pathlib import Path
+          import re
           paths=[
             Path('.github/workflows/v17-live-upgrade-v20.yml'),
             Path('.github/workflows/v17-failed-migration-rollback-v24.yml'),
             Path('.github/workflows/v17-network-retry-idempotency-v25.yml'),
           ]
-          old='URL="$(grep -Eo \'https://[^[:space:]]+\\.pages\\.dev\' /tmp/pages|tail -n1)";test -n "$URL";'
-          new='URL="https://${PAGES}.pages.dev";'
+          pat=re.compile(r'URL="\$\(grep -Eo .*? /tmp/pages\|tail -n1\)";test -n "\$URL";')
           for p in paths:
             s=p.read_text()
-            if old not in s:
-              raise SystemExit(f'hostname anchor missing: {p}')
-            p.write_text(s.replace(old,new,1))
+            s2,n=pat.subn('URL="https://${PAGES}.pages.dev";',s,count=1)
+            if n != 1:
+              raise SystemExit(f'hostname anchor count {n}: {p}')
+            p.write_text(s2)
           PY
+          grep -Fq 'URL="https://${PAGES}.pages.dev";' .github/workflows/v17-live-upgrade-v20.yml
+          grep -Fq 'URL="https://${PAGES}.pages.dev";' .github/workflows/v17-failed-migration-rollback-v24.yml
+          grep -Fq 'URL="https://${PAGES}.pages.dev";' .github/workflows/v17-network-retry-idempotency-v25.yml
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add .github/workflows/v17-live-upgrade-v20.yml .github/workflows/v17-failed-migration-rollback-v24.yml .github/workflows/v17-network-retry-idempotency-v25.yml
