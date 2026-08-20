@@ -1,0 +1,195 @@
+name: V17 Final Customer Ready Closure V34
+on:
+  push:
+    branches: [agent/v16-production-gate]
+    paths: ['.github/workflows/v17-final-customer-ready-closure-v34.yml']
+permissions: { contents: write, actions: read }
+concurrency: { group: v17-final-customer-ready-closure-v34, cancel-in-progress: false }
+env:
+  V17_ARTIFACT_ID: '9394092671'
+  V17_ARTIFACT_SHA256: '0503ec400e7e52e7e9a23723155aa2eebbc3e64f8ead898cc49b9a9968f63ad3'
+jobs:
+  closure:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: agent/v16-production-gate }
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+
+      - name: Verify all production acceptance evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          P19=v17-production-evidence/production-publish-v19-latest.txt
+          V20=v17-production-evidence/live-upgrade-v20-latest.txt
+          V22=v17-production-evidence/windows-launcher-v22-latest.txt
+          V29=v17-production-evidence/pro-failed-migration-rollback-v29-latest.txt
+          V30=v17-production-evidence/pro-network-retry-v30-latest.txt
+
+          grep -Fxq 'job_status=success' "$P19"
+          grep -Fxq "v17_artifact_id=${V17_ARTIFACT_ID}" "$P19"
+          grep -Fxq "v17_artifact_sha256=${V17_ARTIFACT_SHA256}" "$P19"
+          grep -Fxq 'exact_candidate_distribution_seed=success' "$P19"
+          grep -Fxq 'canonical_control_plane=success' "$P19"
+          grep -Fxq 'plan_isolation_signature_tamper_terminal=success' "$P19"
+          grep -Fxq 'deployed=success' "$P19"
+          grep -Fxq 'existing_customer_d1_touched=false' "$P19"
+
+          grep -Fxq 'job_status=success' "$V20"
+          grep -Fxq 'exact_v16_v17_artifacts=success' "$V20"
+          grep -Fxq 'automatic_backup_update_migration_deploy=success' "$V20"
+          grep -Fxq 'data_parity_pages_runtime_signature_replay=success' "$V20"
+          grep -Fxq 'existing_customer_d1_touched=false' "$V20"
+          B20="$(sed -n 's/^before_business_sha256=//p' "$V20")"
+          A20="$(sed -n 's/^after_business_sha256=//p' "$V20")"
+          test -n "$B20" && test "$B20" = "$A20"
+
+          grep -Fxq 'job_status=success' "$V22"
+          grep -Fxq "v17_artifact_id=${V17_ARTIFACT_ID}" "$V22"
+          grep -Fxq "v17_artifact_sha256=${V17_ARTIFACT_SHA256}" "$V22"
+          grep -Fxq 'exact_artifact_windows=success' "$V22"
+          grep -Fxq 'bootstrap_windows_runtime=success' "$V22"
+          grep -Fxq 'update_windows_runtime=success' "$V22"
+          grep -Fxq 'working_directory_guard=success' "$V22"
+          grep -Fxq 'exit_code_propagation=success' "$V22"
+          grep -Fxq 'cloudflare_touched=false' "$V22"
+
+          grep -Fxq 'job_status=success' "$V29"
+          grep -Fxq 'injected_migration_failure_rollback=success' "$V29"
+          grep -Fxq 'automatic_backup_created=true' "$V29"
+          grep -Fxq 'local_version_after_failure=1.1.0' "$V29"
+          grep -Fxq 'update_state_created=false' "$V29"
+          grep -Fxq 'pages_redeployed=false' "$V29"
+          grep -Fxq 'existing_customer_d1_touched=false' "$V29"
+          B29="$(sed -n 's/^before_business_sha256=//p' "$V29")"
+          A29="$(sed -n 's/^after_business_sha256=//p' "$V29")"
+          test -n "$B29" && test "$B29" = "$A29"
+
+          grep -Fxq 'job_status=success' "$V30"
+          grep -Fxq 'permanent_package_failure_non_mutating=success' "$V30"
+          grep -Fxq 'transient_package_retry_fifth_attempt=success' "$V30"
+          grep -Fxq 'repeated_failure_idempotent=success' "$V30"
+          grep -Fxq 'package_attempts=5' "$V30"
+          grep -Fxq 'login_attempts=5' "$V30"
+          grep -Fxq 'backup_created=false' "$V30"
+          grep -Fxq 'update_state_created=false' "$V30"
+          grep -Fxq 'pages_redeployed=false' "$V30"
+          grep -Fxq 'existing_customer_d1_touched=false' "$V30"
+          touch /tmp/v34-evidence.ok
+
+      - name: Download and verify exact frozen V17 artifact
+        env: { GH_TOKEN: '${{ github.token }}' }
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/v17-source /tmp/v17-final /tmp/pkg-* /tmp/v17-artifact.zip
+          mkdir -p /tmp/v17-source /tmp/v17-final/customer-packages /tmp/v17-final/updater /tmp/v17-final/vendor
+          curl --fail --location --retry 8 --retry-all-errors --retry-delay 3 \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${V17_ARTIFACT_ID}/zip" \
+            -o /tmp/v17-artifact.zip
+          echo "${V17_ARTIFACT_SHA256}  /tmp/v17-artifact.zip" | sha256sum -c -
+          unzip -q /tmp/v17-artifact.zip -d /tmp/v17-source
+          ROOT=/tmp/v17-source
+          [ -f "$ROOT/SHA256SUMS.txt" ] || ROOT="$(dirname "$(find /tmp/v17-source -name SHA256SUMS.txt -print -quit)")"
+          test -f "$ROOT/SHA256SUMS.txt"
+          (cd "$ROOT" && sha256sum -c SHA256SUMS.txt)
+          printf '%s' "$ROOT" >/tmp/v34-root
+          touch /tmp/v34-frozen.ok
+
+      - name: Verify customer package isolation and version
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="$(cat /tmp/v34-root)"
+          for plan in basic demo standard pro; do
+            ZIP="$ROOT/customer-packages/dorm-management-system-${plan}-v17-CUSTOMER-READY-CANDIDATE.zip"
+            test -f "$ZIP"
+            rm -rf "/tmp/pkg-${plan}";mkdir -p "/tmp/pkg-${plan}"
+            unzip -q "$ZIP" -d "/tmp/pkg-${plan}"
+            test "$(node -p "require('/tmp/pkg-${plan}/package.json').version")" = 1.2.0
+            if unzip -Z1 "$ZIP" | grep -Eiq '(^|/)control-plane/|LICENSE_SIGNING_PRIVATE_KEY|(^|/).*private[-_]?key'; then
+              echo "vendor/private material leaked into ${plan} customer package" >&2
+              exit 1
+            fi
+            test "$(find "/tmp/pkg-${plan}/d1-migrations" -maxdepth 1 -type f -printf '%f\n' | sort | tail -n1)" = '0008_add_update_state.sql'
+          done
+          test -f "$ROOT/BOOTSTRAP-V16-TO-V17.mjs"
+          test -f "$ROOT/BOOTSTRAP-V16-TO-V17-WINDOWS.cmd"
+          test -f "$ROOT/dorm-control-plane-v17-SOURCE-GATE-V11.zip"
+          touch /tmp/v34-isolation.ok
+
+      - name: Assemble immutable final delivery bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="$(cat /tmp/v34-root)"
+          cp "$ROOT/customer-packages/dorm-management-system-basic-v17-CUSTOMER-READY-CANDIDATE.zip" /tmp/v17-final/customer-packages/dorm-management-system-basic-v17-CUSTOMER-READY.zip
+          cp "$ROOT/customer-packages/dorm-management-system-demo-v17-CUSTOMER-READY-CANDIDATE.zip" /tmp/v17-final/customer-packages/dorm-management-system-demo-v17-CUSTOMER-READY.zip
+          cp "$ROOT/customer-packages/dorm-management-system-standard-v17-CUSTOMER-READY-CANDIDATE.zip" /tmp/v17-final/customer-packages/dorm-management-system-standard-v17-CUSTOMER-READY.zip
+          cp "$ROOT/customer-packages/dorm-management-system-pro-v17-CUSTOMER-READY-CANDIDATE.zip" /tmp/v17-final/customer-packages/dorm-management-system-pro-v17-CUSTOMER-READY.zip
+          cp "$ROOT/BOOTSTRAP-V16-TO-V17.mjs" /tmp/v17-final/updater/
+          cp "$ROOT/BOOTSTRAP-V16-TO-V17-WINDOWS.cmd" /tmp/v17-final/updater/
+          cp "$ROOT/dorm-control-plane-v17-SOURCE-GATE-V11.zip" /tmp/v17-final/vendor/
+
+          cat > /tmp/v17-final/V17-CUSTOMER-READY-EVIDENCE.txt <<EOF
+          source_artifact_id=${V17_ARTIFACT_ID}
+          source_artifact_sha256=${V17_ARTIFACT_SHA256}
+          production_publish_run=32335395471
+          live_upgrade_run=32343857260
+          windows_launcher_run=32335677569
+          failed_migration_rollback_run=32346288431
+          network_retry_run=32346360962
+          exact_frozen_packages=true
+          no_rebuild=true
+          cloudflare_touched=false
+          existing_customer_d1_touched=false
+          v17_customer_ready=true
+          EOF
+          (cd /tmp/v17-final && find . -type f ! -name CUSTOMER-READY-SHA256SUMS.txt -print0 | sort -z | xargs -0 sha256sum > CUSTOMER-READY-SHA256SUMS.txt)
+          (cd /tmp/v17-final && sha256sum -c CUSTOMER-READY-SHA256SUMS.txt)
+          touch /tmp/v34-bundle.ok
+
+      - name: Upload V17 customer-ready final artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dorm-management-system-v17-CUSTOMER-READY
+          path: /tmp/v17-final
+          if-no-files-found: error
+          compression-level: 0
+
+      - name: Persist final closure evidence
+        if: always()
+        env: { JOB_STATUS: '${{ job.status }}' }
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p v17-production-evidence
+          ok(){ [ -f "/tmp/v34-$1.ok" ] && printf success || printf failure; }
+          READY=false
+          if [ "$JOB_STATUS" = success ] && [ -f /tmp/v34-evidence.ok ] && [ -f /tmp/v34-frozen.ok ] && [ -f /tmp/v34-isolation.ok ] && [ -f /tmp/v34-bundle.ok ]; then READY=true; fi
+          cat > v17-production-evidence/final-customer-ready-v34-latest.txt <<EOF
+          run_id=${GITHUB_RUN_ID}
+          run_attempt=${GITHUB_RUN_ATTEMPT}
+          source_sha=${GITHUB_SHA}
+          job_status=${JOB_STATUS}
+          source_artifact_id=${V17_ARTIFACT_ID}
+          source_artifact_sha256=${V17_ARTIFACT_SHA256}
+          production_gate_evidence=$(ok evidence)
+          exact_frozen_artifact=$(ok frozen)
+          customer_package_isolation=$(ok isolation)
+          immutable_final_bundle=$(ok bundle)
+          no_rebuild=true
+          cloudflare_touched=false
+          existing_customer_d1_touched=false
+          v17_customer_ready=${READY}
+          EOF
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add v17-production-evidence/final-customer-ready-v34-latest.txt
+          git commit -m 'ci(v17): record final customer-ready v34 evidence' || exit 0
+          git fetch origin agent/v16-production-gate
+          git rebase origin/agent/v16-production-gate
+          git push origin HEAD:agent/v16-production-gate
