@@ -1,0 +1,41 @@
+name: V16 Inspect V27 Live Acceptance
+on:
+  push:
+    branches: [agent/v16-production-gate]
+    paths: ['.github/workflows/v16-production-v27-status-inspector-v28.yml']
+permissions: { contents: write, actions: read }
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: agent/v16-production-gate }
+      - name: Inspect V27 workflow runs
+        env: { GH_TOKEN: '${{ github.token }}' }
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p v16-production-evidence
+          api="https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/v16-production-live-license-smoke-v27.yml/runs?branch=agent%2Fv16-production-gate&per_page=5"
+          code="$(curl --silent --show-error --output /tmp/v27-runs.json --write-out '%{http_code}' -H "Authorization: Bearer ${GH_TOKEN}" -H 'Accept: application/vnd.github+json' "$api")"
+          printf 'http_status=%s\n' "$code"
+          if [ "$code" != 200 ]; then
+            printf 'inspector_status=failure\nhttp_status=%s\ncloudflare_touched=false\nexisting_d1_touched=false\n' "$code" > v16-production-evidence/v27-status-inspector-v28-latest.txt
+          else
+            node - <<'NODE' > v16-production-evidence/v27-status-inspector-v28-latest.txt
+          const fs=require('fs'); const j=JSON.parse(fs.readFileSync('/tmp/v27-runs.json','utf8')); const r=(j.workflow_runs||[])[0]||{};
+          const out={inspector_status:'success',total_count:j.total_count||0,run_id:r.id||null,status:r.status||null,conclusion:r.conclusion||null,run_attempt:r.run_attempt||null,head_sha:r.head_sha||null,created_at:r.created_at||null,updated_at:r.updated_at||null,cloudflare_touched:'unknown_if_run_started',existing_d1_touched:false};
+          for(const [k,v] of Object.entries(out)) console.log(`${k}=${v===null?'null':v}`);
+          NODE
+          fi
+      - name: Commit inspector evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'; git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add v16-production-evidence/v27-status-inspector-v28-latest.txt
+          git commit -m 'ci(v16): record V27 status inspector v28' || exit 0
+          git fetch origin agent/v16-production-gate
+          git rebase origin/agent/v16-production-gate
+          git push origin HEAD:agent/v16-production-gate
