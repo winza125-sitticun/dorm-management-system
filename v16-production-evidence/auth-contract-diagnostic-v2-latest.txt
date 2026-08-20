@@ -1,0 +1,153 @@
+source_artifact_id=9365183203
+source_artifact_sha256=102f94d86cdde64819420afbe747ca1d8ef6764977562df846f2d823be71e47f
+pro_zip_sha256=c350d9ab87b1e379ec5fc37edb52ea4009d346d4f74ff62a62e164b7526c442b
+cloudflare_touched=false
+existing_d1_touched=false
+--- functions/api/[[path]].ts:1860-1940 ---
+1860:            email: validated.email.trim(),
+1861:            role: "super_admin",
+1862:            displayName: validated.displayName || "Super Admin"
+1863:          },
+1864:          token
+1865:        }, "ตั้งค่าระบบและสร้างบัญชีผู้ดูแลระบบสำเร็จแล้วค่ะ!", 201);
+1866:      } catch (e: any) {
+1867:        if (e.name === 'ValidationError') {
+1868:          return errorResponse("VALIDATION_ERROR", e.message, 400, e.details);
+1869:        }
+1870:        return errorResponse("DATABASE_ERROR", "เกิดข้อผิดพลาดในการตั้งค่าระบบ: " + (e?.message || e), 500);
+1871:      }
+1872:    }
+1873:
+1874:    // ──────────────────────────────────────────────
+1875:    // 3. AUTHENTICATION API (LOGIN & PASSWORD CHANGE)
+1876:    // ──────────────────────────────────────────────
+1877:    if (path === "/api/auth/login" && method === "POST") {
+1878:      const body = await getJson();
+1879:      const cleanUser = String(body.username || body.email || "").trim().toLowerCase();
+1880:      const cleanPass = String(body.password || "");
+1881:
+1882:      if (!cleanUser) {
+1883:        return errorResponse("VALIDATION_ERROR", "กรุณาระบุชื่อผู้ใช้งาน หรือ อีเมล", 400);
+1884:      }
+1885:      if (!cleanPass) {
+1886:        return errorResponse("VALIDATION_ERROR", "กรุณาระบุรหัสผ่าน", 400);
+1887:      }
+1888:      if (!env.DB) {
+1889:        return errorResponse("DATABASE_ERROR", "ไม่พบการเชื่อมต่อฐานข้อมูล D1", 500);
+1890:      }
+1891:
+1892:      // SECURITY: Resolve the user solely from the database. No hardcoded /
+1893:      // "bulletproof" admin fallback and no master passwords. Every login is
+1894:      // verified strictly against the stored password hash.
+1895:      let userObj: any;
+1896:      try {
+1897:        const { results } = await env.DB.prepare("SELECT * FROM users WHERE deleted_at IS NULL").all();
+1898:        const allUsers = results || [];
+1899:        userObj = allUsers.find((u: any) => {
+1900:          const uEmail = (u.email || "").trim().toLowerCase();
+1901:          const uUid = (u.uid || "").trim().toLowerCase();
+1902:          return uEmail === cleanUser || uEmail.split('@')[0] === cleanUser || uUid === cleanUser;
+1903:        });
+1904:      } catch (e: any) {
+1905:        console.error("Login DB error:", e);
+1906:        return errorResponse("SERVER_ERROR", "เกิดข้อผิดพลาดในการเข้าสู่ระบบ", 500);
+1907:      }
+1908:
+1909:      if (!userObj) {
+1910:        return errorResponse("UNAUTHORIZED", "ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง", 401);
+1911:      }
+1912:
+1913:      // SECURITY: Always verify the submitted password against the stored hash.
+1914:      const isValid = userObj.password
+1915:        ? await verifyPassword(cleanPass, userObj.password)
+1916:        : false;
+1917:
+1918:      if (!isValid) {
+1919:        return errorResponse("UNAUTHORIZED", "ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง", 401);
+1920:      }
+1921:
+1922:      try {
+1923:        await logAuditAction(env.DB, {
+1924:          userId: userObj.id,
+1925:          userEmail: userObj.email,
+1926:          userRole: userObj.role,
+1927:          action: 'LOGIN',
+1928:          targetType: 'user',
+1929:          targetId: userObj.id,
+1930:          ipAddress: clientIp,
+1931:          userAgent
+1932:        });
+1933:      } catch (e) {}
+1934:
+1935:      const secret = getJwtSecret(env);
+1936:
+1937:      const tokenPayload = {
+1938:        id: userObj.id,
+1939:        uid: userObj.uid,
+1940:        email: userObj.email,
+--- src/context/AuthContext.tsx:50-90 ---
+50:  };
+51:
+52:  const loginWithCredentials = async (username: string, password: string) => {
+53:    // Use loginPending (not loading) so App.tsx does NOT unmount <Login /> during
+54:    // the request — otherwise any error state set in Login.tsx's catch block would
+55:    // be discarded when the fresh Login instance is mounted after loading → false.
+56:    setLoginPending(true);
+57:    try {
+58:      // 1. Attempt the fetch — may throw on network failure (DNS, offline, CORS, etc.)
+59:      let res: Response;
+60:      try {
+61:        res = await fetch('/api/auth/login', {
+62:          method: 'POST',
+63:          headers: { 'Content-Type': 'application/json' },
+64:          body: JSON.stringify({ username, password }),
+65:        });
+66:      } catch (fetchErr: any) {
+67:        // fetch() itself rejected — this is a network-level failure, not an HTTP error.
+68:        console.error('[AuthContext] Network fetch failed:', fetchErr);
+69:        throw new Error(
+70:          'ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์ได้ กรุณาตรวจสอบการเชื่อมต่ออินเทอร์เน็ต'
+71:        );
+72:      }
+73:
+74:      // 2. HTTP-level errors (4xx / 5xx)
+75:      if (!res.ok) {
+76:        let errorMessage = 'การเข้าสู่ระบบล้มเหลว';
+77:        try {
+78:          const errData = await res.json();
+79:          if (errData && errData.error) {
+80:            errorMessage = typeof errData.error === 'string'
+81:              ? errData.error
+82:              : (errData.error.message || errData.error.code || 'ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง');
+83:          }
+84:        } catch {
+85:          // Response body wasn't JSON — build a descriptive fallback
+86:          errorMessage = `ไม่สามารถเชื่อมต่อระบบหลังบ้านได้ (HTTP ${res.status})`;
+87:        }
+88:        throw new Error(errorMessage);
+89:      }
+90:
+--- src/middleware/auth.ts:108-130 ---
+108:  req: AuthRequest,
+109:  res: Response,
+110:  next: NextFunction
+111:) => {
+112:  const authHeader = req.headers.authorization;
+113:  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+114:    return next(new AuthError('UNAUTHORIZED', 'กรุณาล็อกอินเข้าสู่ระบบก่อนใช้งาน'));
+115:  }
+116:
+117:  const token = authHeader.split('Bearer ')[1];
+118:  const secret = process.env.JWT_SECRET;
+119:  if (!secret || secret.length < 32) {
+120:    return next(new ApiError(500, 'INTERNAL_ERROR', 'JWT_SECRET environment variable is not configured on server'));
+121:  }
+122:
+123:  try {
+124:    const payload = await verifyToken(token, secret);
+125:    if (!payload || !payload.id) {
+126:      return next(new AuthError('UNAUTHORIZED', 'โทเค็นยืนยันตัวตนไม่ถูกต้องหรือหมดอายุ'));
+127:    }
+128:
+129:    const [dbUser] = await db.select()
+130:      .from(users)
