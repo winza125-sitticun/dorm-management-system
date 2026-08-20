@@ -1,0 +1,14 @@
+diff --git a/src/server/services/license.service.ts b/src/server/services/license.service.ts
+--- a/src/server/services/license.service.ts
++++ b/src/server/services/license.service.ts
+@@ -255,6 +255,10 @@
+     return { ...base, status: storedStatus, effectivePlan: packageFallbackPlan(), token: null };
+   }
+ 
++  if (['revoked', 'expired', 'suspended'].includes(storedStatus)) {
++    return { ...base, status: storedStatus, effectivePlan: packageFallbackPlan(), token: null };
++  }
++
+   try {
+     const payload = await verifySignedLicenseToken(signedToken, publicKey(env), installationId, Math.floor(nowMs / 1000));
+     const graceUntilMs = base.graceUntil ? Date.parse(base.graceUntil) : NaN;
