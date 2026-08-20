@@ -1,0 +1,35 @@
+name: V17 Standard Test Deploy Contract V1
+on:
+  push:
+    branches: [agent/v16-production-gate]
+    paths:
+      - '.github/workflows/v17-standard-test-contract-v1.yml'
+      - '.github/workflows/v17-standard-test-deploy-v1.yml'
+permissions: { contents: read }
+concurrency: { group: v17-standard-test-contract-v1, cancel-in-progress: true }
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: agent/v16-production-gate }
+      - name: Verify Standard test deployment contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          F=.github/workflows/v17-standard-test-deploy-v1.yml
+          test -f "$F"
+          grep -Fq "V17_FINAL_ARTIFACT_ID: '9398295831'" "$F"
+          grep -Fq "V17_FINAL_ARTIFACT_SHA256: 'db97970252514639a4387a42aaf26d3a5513330c3cdcfba8fb339d86dda3151c'" "$F"
+          grep -Fq "STANDARD_ZIP_SHA256: '3b1b95a294b7b2f46eb029cd83e22e0281e39d27542bce97ed965aceea929072'" "$F"
+          grep -Fq "CANONICAL_CP_URL: 'https://dorm-control-plane.winza125.workers.dev'" "$F"
+          grep -Fq "STABLE_CP_D1_UUID: '68695864-48de-4d8a-932b-9d11cd4d6b4d'" "$F"
+          grep -Fq "TEST_LICENSE_PLAN: 'standard'" "$F"
+          grep -Fq "TEST_LICENSE_MAX_ACTIVATIONS: '1'" "$F"
+          grep -Fq "TEST_LICENSE_EXPIRES_AT: 'NULL'" "$F"
+          grep -Fq "0008_add_update_state.sql" "$F"
+          grep -Fq "expires_at,created_at,updated_at" "$F"
+          grep -Fq "'standard','active',1,NULL" "$F"
+          grep -Fq "LICENSE_KEY=" "$F"
+          grep -Fq "license-key.txt" "$F"
+          grep -Fq "dorm-standard-v17-test" "$F"
