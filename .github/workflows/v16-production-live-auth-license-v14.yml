@@ -1,0 +1,227 @@
+name: V16 Production Live Auth License V14
+on:
+  push:
+    branches: [agent/v16-production-gate]
+    paths: ['.github/workflows/v16-production-live-auth-license-v14.yml']
+permissions: { contents: write, actions: read }
+concurrency: { group: v16-production-live-auth-license-v14, cancel-in-progress: true }
+env:
+  SOURCE_ARTIFACT_ID: '9391068149'
+  SOURCE_ARTIFACT_SHA256: '14e094a00c75bf0b538df4b0d396264c3af28f53b96a95d379e01390005e72ff'
+  PRO_ZIP_SHA256: '75945096ec0346dc31ab0b3c20ca25ee0828e2c0f4efd1fe0150ab6dd91a5182'
+  EXPECTED_PUBLIC_KEY_B64: 'fgdHGCi74MiMXHbI5+KVY6S9wnh/L369ekdI8NmrwdY='
+  CONTROL_PLANE_URL: 'https://dorm-control-plane.winza125.workers.dev'
+  CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+  CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+jobs:
+  focused-live-auth:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: "fulfilling-communication / production"
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: agent/v16-production-gate }
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+
+      - name: Verify prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${CLOUDFLARE_API_TOKEN:-}"
+          test -n "${CLOUDFLARE_ACCOUNT_ID:-}"
+          touch /tmp/v16-v14-prereq.ok
+
+      - name: Download exact V13 Pro candidate
+        env: { GH_TOKEN: '${{ github.token }}' }
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 8 --retry-all-errors --retry-delay 3 \
+            -H "Authorization: Bearer ${GH_TOKEN}" -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${SOURCE_ARTIFACT_ID}/zip" -o /tmp/source.zip
+          echo "$SOURCE_ARTIFACT_SHA256  /tmp/source.zip" | sha256sum -c -
+          rm -rf /tmp/source /tmp/pro
+          mkdir -p /tmp/source /tmp/pro
+          unzip -q /tmp/source.zip -d /tmp/source
+          echo "$PRO_ZIP_SHA256  /tmp/source/customer-previews/dorm-management-system-pro-v16-SOURCE-GATE-V13.zip" | sha256sum -c -
+          unzip -q /tmp/source/customer-previews/dorm-management-system-pro-v16-SOURCE-GATE-V13.zip -d /tmp/pro
+          test "$(find /tmp/pro/d1-migrations -maxdepth 1 -type f -printf '%f\n' | sort | tail -n1)" = '0007_add_license_state.sql'
+          grep -Fq "$EXPECTED_PUBLIC_KEY_B64" /tmp/pro/src/generated/licenseConfig.ts
+          grep -Fq 'if (e instanceof PlanAccessError || e instanceof LicenseOperationError) throw e;' /tmp/pro/functions/api/[[path]].ts
+          grep -Fq 'if (error instanceof PlanAccessError || error instanceof LicenseOperationError) {' /tmp/pro/functions/api/[[path]].ts
+          touch /tmp/v16-v14-artifact.ok
+
+      - name: Install exact candidate dependencies
+        working-directory: /tmp/pro
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci
+
+      - name: Allocate unique current-run names
+        shell: bash
+        run: |
+          set -euo pipefail
+          M="$(printf '%s' "$GITHUB_RUN_ID" | tr -cd '0-9' | tail -c 9)-${GITHUB_RUN_ATTEMPT}-$(python3 -c 'import secrets; print(secrets.token_hex(3))')"
+          echo "RUN_MARKER=$M" >> "$GITHUB_ENV"
+          echo "PRO_PAGES=v16-auth-${M}" >> "$GITHUB_ENV"
+          echo "PRO_D1=v16-auth-${M}-db" >> "$GITHUB_ENV"
+
+      - name: Create fresh D1 and record ownership
+        working-directory: /tmp/pro
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 120s npx wrangler d1 create "$PRO_D1" --location apac
+          timeout 60s npx wrangler d1 info "$PRO_D1" --json > /tmp/pro-d1.json
+          python3 - <<'PY'
+          import json,os,re
+          x=json.load(open('/tmp/pro-d1.json'))
+          def walk(v):
+            if isinstance(v,dict):
+              for k,val in v.items():
+                if k in ('uuid','id','database_id') and isinstance(val,str) and re.fullmatch(r'[0-9a-fA-F-]{36}',val): return val
+                r=walk(val)
+                if r:return r
+            if isinstance(v,list):
+              for val in v:
+                r=walk(val)
+                if r:return r
+          uid=walk(x); assert uid
+          owned={'run_id':os.environ['GITHUB_RUN_ID'],'attempt':os.environ['GITHUB_RUN_ATTEMPT'],'name':os.environ['PRO_D1'],'uuid':uid}
+          json.dump(owned,open('/tmp/owned-pro-d1.json','w'))
+          json.dump({'name':os.environ['PRO_PAGES'],'compatibility_date':'2026-08-05','compatibility_flags':['nodejs_compat'],'pages_build_output_dir':'./dist','upload_source_maps':True,'d1_databases':[{'binding':'DB','database_name':os.environ['PRO_D1'],'database_id':uid,'migrations_dir':'./d1-migrations'}]},open('/tmp/pro/wrangler.jsonc','w'),indent=2)
+          PY
+          touch /tmp/v16-v14-d1-owned.ok
+
+      - name: Create fresh Pages project and record ownership
+        working-directory: /tmp/pro
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 120s npx wrangler pages project create "$PRO_PAGES" --production-branch main
+          python3 - <<'PY'
+          import json,os
+          json.dump({'run_id':os.environ['GITHUB_RUN_ID'],'attempt':os.environ['GITHUB_RUN_ATTEMPT'],'name':os.environ['PRO_PAGES']},open('/tmp/owned-pages.json','w'))
+          PY
+          touch /tmp/v16-v14-pages-owned.ok
+
+      - name: Configure migrate and deploy fresh Pages
+        working-directory: /tmp/pro
+        shell: bash
+        run: |
+          set -euo pipefail
+          JWT="$(python3 -c 'import secrets; print(secrets.token_urlsafe(48))')"
+          printf '%s\n' "$JWT" | timeout 90s npx wrangler pages secret put JWT_SECRET --project-name "$PRO_PAGES"
+          printf '%s\n' "$CONTROL_PLANE_URL" | timeout 90s npx wrangler pages secret put LICENSE_CONTROL_PLANE_URL --project-name "$PRO_PAGES"
+          printf '%s\n' "$EXPECTED_PUBLIC_KEY_B64" | timeout 90s npx wrangler pages secret put LICENSE_SIGNING_PUBLIC_KEY --project-name "$PRO_PAGES"
+          unset JWT
+          timeout 180s npx wrangler d1 migrations apply DB --remote --config wrangler.jsonc
+          npm run build:pages
+          timeout 240s npx wrangler pages deploy dist --project-name "$PRO_PAGES" --branch main --commit-hash "$GITHUB_SHA" --commit-dirty=false | tee /tmp/pro-deploy.log
+          PRO_URL="$(grep -Eo 'https://[^[:space:]]+\.pages\.dev' /tmp/pro-deploy.log | tail -n1)"
+          test -n "$PRO_URL"
+          echo "PRO_URL=$PRO_URL" >> "$GITHUB_ENV"
+          ready=0
+          for i in $(seq 1 90); do
+            if curl --fail --silent --show-error --max-time 10 "$PRO_URL/" -o /dev/null; then ready=1; break; fi
+            sleep 2
+          done
+          test "$ready" = 1
+          touch /tmp/v16-v14-deploy.ok
+
+      - name: Prove auth and preactivation read-only contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json,os,secrets
+          email=f"v16-auth-{os.environ['RUN_MARKER']}@example.invalid"
+          pwd='V16!AuthAa'+secrets.token_hex(8)
+          json.dump({'email':email,'password':pwd,'displayName':'V16 Auth Smoke','dormName':'V16 Auth Dorm'},open('/tmp/setup.json','w'))
+          json.dump({'username':email,'password':pwd},open('/tmp/login.json','w'))
+          PY
+          curl --fail --silent --show-error --retry 5 --retry-all-errors -H 'content-type: application/json' --data @/tmp/setup.json "$PRO_URL/api/setup/init" > /tmp/setup-response.json
+          curl --fail --silent --show-error --retry 5 --retry-all-errors -H 'content-type: application/json' --data @/tmp/login.json "$PRO_URL/api/auth/login" > /tmp/login-response.json
+          python3 - <<'PY'
+          import json
+          x=json.load(open('/tmp/login-response.json')); d=x.get('data',x)
+          assert d.get('token') and d.get('user'),x
+          open('/tmp/auth-token','w').write(str(d['token']))
+          PY
+          T="$(cat /tmp/auth-token)"
+          code="$(curl --silent --show-error --output /tmp/pre-room.json --write-out '%{http_code}' -H "authorization: Bearer $T" -H 'content-type: application/json' --data '{}' "$PRO_URL/api/rooms")"
+          python3 - "$code" <<'PY'
+          import json,sys
+          x=json.load(open('/tmp/pre-room.json')); code=int(sys.argv[1]); e=x.get('error',{})
+          assert code==403,(code,x)
+          assert e.get('code')=='LICENSE_READ_ONLY',x
+          PY
+          touch /tmp/v16-v14-auth-license.ok
+
+      - name: Persist focused live evidence
+        if: always()
+        env: { JOB_STATUS: '${{ job.status }}' }
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p v16-production-evidence
+          val(){ if [ -f "/tmp/v16-v14-$1.ok" ]; then printf success; else printf failure; fi; }
+          D1_UUID=unavailable
+          [ -f /tmp/owned-pro-d1.json ] && D1_UUID="$(python3 -c "import json;print(json.load(open('/tmp/owned-pro-d1.json'))['uuid'])")"
+          cat > v16-production-evidence/live-auth-license-v14-latest.txt <<EOF
+          run_id=${GITHUB_RUN_ID}
+          run_attempt=${GITHUB_RUN_ATTEMPT}
+          source_sha=${GITHUB_SHA}
+          job_status=${JOB_STATUS}
+          source_artifact_id=${SOURCE_ARTIFACT_ID}
+          source_artifact_sha256=${SOURCE_ARTIFACT_SHA256}
+          pro_zip_sha256=${PRO_ZIP_SHA256}
+          prerequisites=$(val prereq)
+          exact_artifact=$(val artifact)
+          fresh_d1_owned=$(val d1-owned)
+          fresh_pages_owned=$(val pages-owned)
+          pages_deployed=$(val deploy)
+          auth_license_contract=$(val auth-license)
+          expected_contract=LICENSE_READ_ONLY:403
+          fresh_d1_uuid=${D1_UUID}
+          existing_d1_touched=false
+          customer_ready=false
+          EOF
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add v16-production-evidence/live-auth-license-v14-latest.txt
+          git commit -m 'ci(v16): record focused live auth license v14' || exit 0
+          git push origin HEAD:agent/v16-production-gate
+
+      - name: Cleanup only current-run owned resources
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          safe_pages=0; safe_d1=0
+          if [ -f /tmp/owned-pages.json ]; then
+            python3 - <<'PY' && safe_pages=1 || safe_pages=0
+          import json,os
+          x=json.load(open('/tmp/owned-pages.json'))
+          assert x['run_id']==os.environ['GITHUB_RUN_ID']
+          assert x['attempt']==os.environ['GITHUB_RUN_ATTEMPT']
+          assert x['name']==os.environ.get('PRO_PAGES')
+          assert x['name'].startswith('v16-auth-')
+          PY
+          fi
+          if [ -f /tmp/owned-pro-d1.json ]; then
+            python3 - <<'PY' && safe_d1=1 || safe_d1=0
+          import json,os,re
+          x=json.load(open('/tmp/owned-pro-d1.json'))
+          assert x['run_id']==os.environ['GITHUB_RUN_ID']
+          assert x['attempt']==os.environ['GITHUB_RUN_ATTEMPT']
+          assert x['name']==os.environ.get('PRO_D1')
+          assert x['name'].startswith('v16-auth-') and x['name'].endswith('-db')
+          assert re.fullmatch(r'[0-9a-fA-F-]{36}',x['uuid'])
+          PY
+          fi
+          if [ "$safe_pages" = 1 ]; then timeout 120s bash -lc 'cd /tmp/pro && npx wrangler pages project delete "$PRO_PAGES" --yes' || true; fi
+          if [ "$safe_d1" = 1 ]; then timeout 120s bash -lc 'cd /tmp/pro && npx wrangler d1 delete "$PRO_D1" --skip-confirmation' || true; fi
+          exit 0
