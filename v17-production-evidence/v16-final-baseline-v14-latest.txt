@@ -1,0 +1,15 @@
+run_id=32334913928
+source_sha=487ec74921f7127dc2e128e0c1624a52fa1a4e1a
+job_status=failure
+v16_final_artifact_id=9393238249
+v16_final_artifact_sha256=fe17d6426d66722068fd2d003590ca3d0ef188d19dca33c58ed6200ed2de85f1
+exact_final_artifact=failure
+pro_zip_name=unavailable
+pro_zip_sha256=unavailable
+pro_zip_size=unavailable
+app_version=1.1.0
+migration_ceiling=0007_add_license_state.sql
+v16_rebuilt=false
+v16_modified=false
+cloudflare_touched=false
+existing_d1_touched=false
