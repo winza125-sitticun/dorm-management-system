@@ -15,7 +15,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with: { ref: agent/v16-production-gate }
-      - name: Download exact V10 Pro package and inspect JWT implementation
+      - name: Download exact V10 Pro package and inspect preactivation error propagation
         env: { GH_TOKEN: '${{ github.token }}' }
         shell: bash
         run: |
@@ -28,24 +28,33 @@ jobs:
           unzip -q /tmp/source/customer-previews/dorm-management-system-pro-v16-SOURCE-GATE-PREVIEW.zip -d /tmp/pro
           python3 - <<'PY'
           from pathlib import Path
+          p=Path('/tmp/pro/functions/api/[[path]].ts')
+          lines=p.read_text(errors='ignore').splitlines()
+          needles=['class PlanAccessError','class LicenseOperationError','assertPlanAccessForRequest','LICENSE_REQUIRED','LICENSE_READ_ONLY','instanceof PlanAccessError','instanceof LicenseOperationError']
+          hits=[]
+          for i,line in enumerate(lines,1):
+            if any(n in line for n in needles):
+              hits.append(i)
           out=[]
-          targets=[
-            Path('/tmp/pro/src/server/services/jwt.service.ts'),
-            Path('/tmp/pro/functions/api/[[path]].ts'),
-          ]
-          for p in targets:
-            lines=p.read_text(errors='ignore').splitlines()
-            out.append(f'--- {p.relative_to("/tmp/pro")} ---')
-            if p.name == 'jwt.service.ts':
-              ranges=[(1,len(lines))]
-            else:
-              ranges=[(1388,1422),(1935,1955)]
-            for start,end in ranges:
-              for i in range(start,min(end,len(lines))+1):
-                s=lines[i-1]
-                if len(s)>420: s=s[:420]
-                out.append(f'{i}:{s}')
-          Path('/tmp/auth-contract-v4.txt').write_text('\n'.join(out)+'\n')
+          for i in sorted(set(hits)):
+            start=max(1,i-10); end=min(len(lines),i+18)
+            out.append(f'--- functions/api/[[path]].ts:{start}-{end} ---')
+            for n in range(start,end+1):
+              s=lines[n-1]
+              if len(s)>420: s=s[:420]
+              out.append(f'{n}:{s}')
+          lp=Path('/tmp/pro/src/server/services/license.service.ts')
+          if lp.exists():
+            ll=lp.read_text(errors='ignore').splitlines()
+            for i,line in enumerate(ll,1):
+              if 'class LicenseOperationError' in line or 'LICENSE_REQUIRED' in line or 'LICENSE_READ_ONLY' in line:
+                start=max(1,i-8); end=min(len(ll),i+16)
+                out.append(f'--- src/server/services/license.service.ts:{start}-{end} ---')
+                for n in range(start,end+1):
+                  s=ll[n-1]
+                  if len(s)>420: s=s[:420]
+                  out.append(f'{n}:{s}')
+          Path('/tmp/auth-contract-v5.txt').write_text('\n'.join(out)+'\n')
           PY
           mkdir -p v16-production-evidence
           {
@@ -54,10 +63,10 @@ jobs:
             echo "pro_zip_sha256=${PRO_ZIP_SHA256}"
             echo "cloudflare_touched=false"
             echo "existing_d1_touched=false"
-            cat /tmp/auth-contract-v4.txt
-          } > v16-production-evidence/auth-contract-diagnostic-v4-latest.txt
+            cat /tmp/auth-contract-v5.txt
+          } > v16-production-evidence/auth-contract-diagnostic-v5-latest.txt
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add v16-production-evidence/auth-contract-diagnostic-v4-latest.txt
-          git commit -m 'ci(v16): record exact JWT service implementation' || exit 0
+          git add v16-production-evidence/auth-contract-diagnostic-v5-latest.txt
+          git commit -m 'ci(v16): record preactivation error propagation' || exit 0
           git push origin HEAD:agent/v16-production-gate
