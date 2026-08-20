@@ -1,0 +1,39 @@
+name: V17 Release Test Reference V6A
+on:
+  push:
+    branches: [agent/v16-production-gate]
+    paths: ['.github/workflows/v17-release-test-reference-v6a.yml']
+permissions: { contents: write, actions: read }
+env:
+  V16_SOURCE_ARTIFACT_ID: '9392071166'
+  V16_SOURCE_ARTIFACT_SHA256: 'cb498eed4580589794480e4aa0a9d42fc2814fde0e64ad6620c16e6d220d2cf8'
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: agent/v16-production-gate }
+      - name: Snapshot exact legacy release tests
+        env: { GH_TOKEN: '${{ github.token }}' }
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/v16 /tmp/master; mkdir -p /tmp/v16 /tmp/master v17-production-reference/v16/tests
+          curl --fail --location -H "Authorization: Bearer ${GH_TOKEN}" "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${V16_SOURCE_ARTIFACT_ID}/zip" -o /tmp/v16.zip
+          echo "$V16_SOURCE_ARTIFACT_SHA256  /tmp/v16.zip" | sha256sum -c -
+          unzip -q /tmp/v16.zip -d /tmp/v16
+          unzip -q /tmp/v16/dorm-management-system-master-v16-PRODUCTION-SOURCE-GATED-V29.zip -d /tmp/master
+          cp /tmp/master/tests/package-release.test.mjs v17-production-reference/v16/tests/package-release.test.mjs
+          cp /tmp/master/tests/package-parity.test.mjs v17-production-reference/v16/tests/package-parity.test.mjs
+          sha256sum v17-production-reference/v16/tests/* > v17-production-reference/v16/tests/REFERENCE_SHA256SUMS.txt
+      - name: Commit reference tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'; git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- v17-production-reference/v16/tests
+          git commit -m 'ci(v17): snapshot V16 release tests' || exit 0
+          git fetch origin agent/v16-production-gate
+          git rebase origin/agent/v16-production-gate
+          git push origin HEAD:agent/v16-production-gate
