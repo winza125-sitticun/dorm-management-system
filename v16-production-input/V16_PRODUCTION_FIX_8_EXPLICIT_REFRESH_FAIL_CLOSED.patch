@@ -1,7 +1,7 @@
 diff --git a/src/server/services/license.service.ts b/src/server/services/license.service.ts
 --- a/src/server/services/license.service.ts
 +++ b/src/server/services/license.service.ts
-@@ -195,6 +195,14 @@ export async function refreshCustomerLicense(env: LicenseEnv, metadata: Install
+@@ -195,7 +195,15 @@ export async function refreshCustomerLicense(env: LicenseEnv, metadata: Install
      });
      if ('ok' in result) throw new LicenseOperationError('INVALID_CONTROL_PLANE_RESPONSE', 'Control Plane ส่งข้อมูล License ไม่ถูกต้อง', 502);
      await persistActiveToken(env, installationId, result, nowMs);
