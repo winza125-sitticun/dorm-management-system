@@ -1,0 +1,101 @@
+name: V17 Baseline Inventory V1
+on:
+  push:
+    branches: [agent/v16-production-gate]
+    paths: ['.github/workflows/v17-baseline-inventory-v1.yml']
+permissions: { contents: write, actions: read }
+concurrency: { group: v17-baseline-inventory-v1, cancel-in-progress: false }
+env:
+  V16_FINAL_ARTIFACT_ID: '9393238249'
+  V16_FINAL_ARTIFACT_SHA256: 'fe17d6426d66722068fd2d003590ca3d0ef188d19dca33c58ed6200ed2de85f1'
+  V16_SOURCE_ARTIFACT_ID: '9392071166'
+  V16_SOURCE_ARTIFACT_SHA256: 'cb498eed4580589794480e4aa0a9d42fc2814fde0e64ad6620c16e6d220d2cf8'
+  V16_MIGRATION_CEILING: '0007_add_license_state.sql'
+  V16_CONTROL_PLANE_URL: 'https://dorm-control-plane.winza125.workers.dev'
+jobs:
+  inventory:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: agent/v16-production-gate }
+      - name: Verify V16 CUSTOMER-READY evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -Fxq 'job_status=success' v16-production-evidence/customer-ready-v39-latest.txt
+          grep -Fxq 'customer_ready=true' v16-production-evidence/customer-ready-v39-latest.txt
+          grep -Fxq 'source_artifact_id=9392071166' v16-production-evidence/customer-ready-v39-latest.txt
+          grep -Fxq 'existing_d1_touched=false' v16-production-evidence/customer-ready-v39-latest.txt
+          touch /tmp/v17-v1-v16-ready.ok
+      - name: Verify exact immutable V16 final and source artifacts
+        env: { GH_TOKEN: '${{ github.token }}' }
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/v16-final /tmp/v16-source /tmp/v16-master /tmp/v16-cp
+          mkdir -p /tmp/v16-final /tmp/v16-source /tmp/v16-master /tmp/v16-cp
+          curl --fail --location --retry 8 --retry-all-errors --retry-delay 3 -H "Authorization: Bearer ${GH_TOKEN}" "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${V16_FINAL_ARTIFACT_ID}/zip" -o /tmp/v16-final.zip
+          echo "$V16_FINAL_ARTIFACT_SHA256  /tmp/v16-final.zip" | sha256sum -c -
+          unzip -q /tmp/v16-final.zip -d /tmp/v16-final
+          grep -RIl '^customer_ready=true$' /tmp/v16-final | head -n1 | tee /tmp/customer-ready-marker
+          curl --fail --location --retry 8 --retry-all-errors --retry-delay 3 -H "Authorization: Bearer ${GH_TOKEN}" "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${V16_SOURCE_ARTIFACT_ID}/zip" -o /tmp/v16-source.zip
+          echo "$V16_SOURCE_ARTIFACT_SHA256  /tmp/v16-source.zip" | sha256sum -c -
+          unzip -q /tmp/v16-source.zip -d /tmp/v16-source
+          (cd /tmp/v16-source && sha256sum -c SHA256SUMS.txt)
+          unzip -q /tmp/v16-source/dorm-management-system-master-v16-PRODUCTION-SOURCE-GATED-V29.zip -d /tmp/v16-master
+          unzip -q /tmp/v16-source/dorm-control-plane-v16-PRODUCTION-SOURCE-GATED.zip -d /tmp/v16-cp
+          test "$(find /tmp/v16-master/d1-migrations -maxdepth 1 -type f -printf '%f\n' | sort | tail -n1)" = "$V16_MIGRATION_CEILING"
+          grep -RFl "$V16_CONTROL_PLANE_URL" /tmp/v16-master/src/generated/licenseConfig.ts
+          touch /tmp/v17-v1-artifacts.ok
+      - name: Source integration inventory
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo '=== package.json ==='
+          cat /tmp/v16-master/package.json
+          echo '=== root update/upgrade/setup candidates ==='
+          find /tmp/v16-master -maxdepth 2 -type f \( -iname '*update*' -o -iname '*upgrade*' -o -iname '*setup*' -o -iname '*backup*' \) -printf '%P\n' | sort | head -n 250
+          echo '=== server/services ==='
+          find /tmp/v16-master/src/server/services -maxdepth 1 -type f -printf '%f\n' 2>/dev/null | sort
+          echo '=== SettingsView locations ==='
+          grep -RIl 'function SettingsView\|const SettingsView\|export.*SettingsView' /tmp/v16-master/src 2>/dev/null | sed 's#/tmp/v16-master/##'
+          echo '=== license/update related files ==='
+          grep -RIl 'license_state\|LICENSE_CONTROL_PLANE_URL\|backup/export\|upgrade' /tmp/v16-master/src /tmp/v16-master/functions 2>/dev/null | sed 's#/tmp/v16-master/##' | sort | head -n 200
+          echo '=== control plane tree ==='
+          find /tmp/v16-cp -maxdepth 3 -type f -printf '%P\n' | sort | head -n 250
+          echo '=== control plane routes ==='
+          grep -RIn '/v1/licenses\|activate\|refresh\|deactivate' /tmp/v16-cp/src 2>/dev/null | head -n 250
+          touch /tmp/v17-v1-inventory.ok
+      - name: Persist baseline evidence
+        if: always()
+        env: { JOB_STATUS: '${{ job.status }}' }
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p v17-production-evidence
+          val(){ [ -f "/tmp/v17-v1-$1.ok" ] && printf success || printf failure; }
+          cat > v17-production-evidence/baseline-v1-latest.txt <<EOF
+          run_id=${GITHUB_RUN_ID}
+          run_attempt=${GITHUB_RUN_ATTEMPT}
+          source_sha=${GITHUB_SHA}
+          job_status=${JOB_STATUS}
+          v16_customer_ready=$(val v16-ready)
+          v16_final_artifact_id=${V16_FINAL_ARTIFACT_ID}
+          v16_final_artifact_sha256=${V16_FINAL_ARTIFACT_SHA256}
+          v16_source_artifact_id=${V16_SOURCE_ARTIFACT_ID}
+          v16_source_artifact_sha256=${V16_SOURCE_ARTIFACT_SHA256}
+          v16_migration_ceiling=${V16_MIGRATION_CEILING}
+          v16_control_plane_url=${V16_CONTROL_PLANE_URL}
+          exact_artifacts=$(val artifacts)
+          source_inventory=$(val inventory)
+          v16_rebuilt=false
+          v16_modified=false
+          v17_customer_ready=false
+          EOF
+          git config user.name 'github-actions[bot]'; git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add v17-production-evidence/baseline-v1-latest.txt
+          git commit -m 'ci(v17): record immutable V16 baseline v1' || exit 0
+          git fetch origin agent/v16-production-gate
+          git rebase origin/agent/v16-production-gate
+          git push origin HEAD:agent/v16-production-gate
