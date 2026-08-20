@@ -1,0 +1,51 @@
+name: V16 Production Fix7 Byte Probe
+on:
+  push:
+    branches: [agent/v16-production-gate]
+    paths: ['.github/workflows/v16-production-fix7-byte-probe.yml']
+permissions: { contents: write, actions: read }
+env:
+  V10_ARTIFACT_ID: '9365183203'
+  V10_ARTIFACT_SHA256: '102f94d86cdde64819420afbe747ca1d8ef6764977562df846f2d823be71e47f'
+  EXPECTED_FIX7_SHA256: 'ae6043dd852dc85645763ae193a510bfe2cf4a64a840a138cb1bb76bf7246539'
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: agent/v16-production-gate }
+      - name: Measure Fix 7 bytes and dry-run against exact V10
+        env: { GH_TOKEN: '${{ github.token }}' }
+        shell: bash
+        run: |
+          set -euo pipefail
+          P='v16-production-input/V16_PRODUCTION_FIX_7_LICENSE_AUTH_PROPAGATION.patch'
+          ACTUAL="$(sha256sum "$P" | cut -d' ' -f1)"
+          BYTES="$(wc -c < "$P" | tr -d ' ')"
+          printf 'actual_fix7_sha256=%s\nfix7_bytes=%s\nexpected_fix7_sha256=%s\n' "$ACTUAL" "$BYTES" "$EXPECTED_FIX7_SHA256" > /tmp/fix7-probe.txt
+          rm -rf /tmp/v10 /tmp/work; mkdir -p /tmp/v10 /tmp/work
+          curl --fail --location --retry 8 --retry-all-errors --retry-delay 3 -H "Authorization: Bearer ${GH_TOKEN}" -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${V10_ARTIFACT_ID}/zip" -o /tmp/v10.zip
+          echo "$V10_ARTIFACT_SHA256  /tmp/v10.zip" | sha256sum -c -
+          unzip -q /tmp/v10.zip -d /tmp/v10
+          (cd /tmp/v10 && sha256sum -c SHA256SUMS.txt)
+          unzip -q /tmp/v10/dorm-management-system-master-v16-PRODUCTION-SOURCE-GATED.zip -d /tmp/work
+          (cd /tmp/work && patch --dry-run -p1 < "$GITHUB_WORKSPACE/$P")
+          echo 'patch_dry_run=success' >> /tmp/fix7-probe.txt
+          echo 'cloudflare_touched=false' >> /tmp/fix7-probe.txt
+          echo 'existing_d1_touched=false' >> /tmp/fix7-probe.txt
+      - name: Persist probe evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p v16-production-evidence
+          {
+            cat /tmp/fix7-probe.txt 2>/dev/null || true
+            echo "run_id=$GITHUB_RUN_ID"
+            echo "source_sha=$GITHUB_SHA"
+          } > v16-production-evidence/fix7-byte-probe-latest.txt
+          git config user.name 'github-actions[bot]'; git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add v16-production-evidence/fix7-byte-probe-latest.txt
+          git commit -m 'ci(v16): record Fix 7 byte probe' || exit 0
+          git push origin HEAD:agent/v16-production-gate
