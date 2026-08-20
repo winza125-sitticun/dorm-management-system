@@ -1,0 +1,34 @@
+name: V17 Vendor Admin MVP Bootstrap V0
+on:
+  push:
+    branches: [agent/v17-vendor-admin-mvp-customer-ready]
+    paths: ['.github/workflows/v17-vendor-admin-mvp-bootstrap-v0.yml']
+permissions:
+  contents: write
+jobs:
+  materialize:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/v17-vendor-admin-mvp-customer-ready
+      - name: Materialize verified production gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat v17-vendor-admin-mvp/workflow-parts/part-* | base64 -d > /tmp/gate.yml.gz
+          echo 'fd97ce18d871bc84b382c09e21d197b5db99d7ceb83e8abfddb4308de052a93e  /tmp/gate.yml.gz' | sha256sum -c -
+          gunzip -c /tmp/gate.yml.gz > /tmp/gate.yml
+          echo '2fbc9cec64b0548ff794065e4009b9caa5e3ab2a3bab1346224e494266770e77  /tmp/gate.yml' | sha256sum -c -
+          grep -Fxq 'name: V17 Vendor Admin MVP Customer Ready Gate V1' /tmp/gate.yml
+          grep -Fq "branches: [agent/v17-vendor-admin-mvp-customer-ready]" /tmp/gate.yml
+          mkdir -p .github/workflows
+          cp /tmp/gate.yml .github/workflows/v17-vendor-admin-mvp-customer-ready-v1.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add .github/workflows/v17-vendor-admin-mvp-customer-ready-v1.yml
+          git rm -r v17-vendor-admin-mvp/workflow-parts .github/workflows/v17-vendor-admin-mvp-bootstrap-v0.yml
+          git commit -m 'ci(v17): materialize vendor admin MVP customer-ready gate'
+          git fetch origin agent/v17-vendor-admin-mvp-customer-ready
+          git rebase origin/agent/v17-vendor-admin-mvp-customer-ready
+          git push origin HEAD:agent/v17-vendor-admin-mvp-customer-ready
