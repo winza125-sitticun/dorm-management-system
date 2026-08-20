@@ -1,0 +1,244 @@
+source_artifact_id=9365183203
+source_artifact_sha256=102f94d86cdde64819420afbe747ca1d8ef6764977562df846f2d823be71e47f
+pro_zip_sha256=c350d9ab87b1e379ec5fc37edb52ea4009d346d4f74ff62a62e164b7526c442b
+cloudflare_touched=false
+existing_d1_touched=false
+--- functions/api/[[path]].ts:1-90 ---
+1:import { hashPassword, verifyPassword, validatePasswordPolicy } from '../../src/server/services/crypto.service.ts';
+2:import { logAuditAction, logAuditActionStrict } from '../../src/server/services/audit.service.ts';
+3:import { sanitizeInput } from '../../src/server/services/sanitizer.service.ts';
+4:import { RateLimiterService } from '../../src/server/services/rateLimiter.service.ts';
+5:import { UploadValidationService } from '../../src/server/services/uploadValidation.service.ts';
+6:import {
+7:  NOTE_LIST_MAX_LIMIT,
+8:  NOTE_REQUEST_MAX_BYTES,
+9:  NoteCreateSchema,
+10:  NoteUpdateSchema,
+11:  SetupSchema,
+12:  LoginSchema,
+13:  RoomSchema,
+14:  BillSchema,
+15:  SettingsSchema,
+16:  getNoteValidationDetails,
+17:  validateZod,
+18:} from '../../src/server/validators/index.ts';
+19:import { generateToken, verifyToken } from '../../src/server/services/jwt.service.ts';
+20:import { APP_VERSION } from '../../src/generated/version.ts';
+21:import { PERMISSIONS, hasAppPermission, permissionsForRole } from '../../src/constants/permissions.ts';
+22:import { getPlanLimit, hasPlanFeature, isDemoPlan, type PlanFeature } from '../../src/constants/planEntitlements.ts';
+23:import { isDemoMutationRestricted, minimumPaidPlanForFeature, requiredPlanFeatureForApiRequest, requiredPlanFeaturesForSettingsUpdate } from '../../src/server/services/planAccess.service.ts';
+24:import { activateCustomerLicense, assertMutationAllowedByLicense, deactivateCustomerLicense, LicenseOperationError, maybeRefreshCustomerLicense, refreshCustomerLicense, resolveEffectivePlan, resolveLicenseState } from '../../src/server/services/license.service.ts';
+25:import { normalizeBillingMonths } from '../../src/utils/recurringCharges.ts';
+26:import { canTransitionHousekeeping } from '../../src/utils/housekeeping.ts';
+27:import { BACKUP_REQUEST_MAX_BYTES, type BackupDataV1, type BackupManifestV1 } from '../../src/utils/backupFormat.ts';
+28:import { exportBusinessBackup, validateBackupForRestore, verifyRestoreToken } from '../../src/server/services/backup.service.ts';
+29:import { loadRestoreCurrentState, prepareRestoreData, restoreBusinessBackup, verifyRestoredBackup, RestorePartialFailure } from '../../src/server/services/restore.service.ts';
+30:import { BackupValidationError } from '../../src/server/validators/backup.ts';
+31:import { changedWhiteLabelFields, normalizeWhiteLabelPatch } from '../../src/server/validators/settings.ts';
+32:import { LOGO_REQUEST_MAX_BYTES, safeStoredLogoDataUri, validateLogoDataUri } from '../../src/server/validators/logo.ts';
+33:import { buildPublicBranding } from '../../src/server/services/branding.service.ts';
+34:
+35:function getJwtSecret(env: Env): string {
+36:  if (!env.JWT_SECRET || env.JWT_SECRET.length < 32) {
+37:    throw new Error("Server misconfiguration: JWT_SECRET must be set to at least 32 characters");
+38:  }
+39:  return env.JWT_SECRET;
+40:}
+41:
+42:type LineSettingsRow = Record<string, unknown> & {
+43:  user_id: number;
+44:  dorm_name?: string | null;
+45:  line_channel_access_token: string | null;
+46:  line_channel_secret: string | null;
+47:  line_bot_enabled: number;
+48:};
+49:
+50:// The generated Env remains authoritative. These transitional query-result
+51:// defaults keep the existing dynamic D1 row mapping type-safe at the binding
+52:// boundary while individual API response schemas are migrated incrementally.
+53:interface AppD1PreparedStatement extends D1PreparedStatement {
+54:  bind(...values: unknown[]): AppD1PreparedStatement;
+55:  first<T = Record<string, any>>(): Promise<T | null>;
+56:  run<T = Record<string, any>>(): Promise<D1Result<T>>;
+57:  all<T = Record<string, any>>(): Promise<D1Result<T>>;
+58:}
+59:
+60:interface AppD1Database extends D1Database {
+61:  prepare(query: string): AppD1PreparedStatement;
+62:  batch<T = Record<string, any>>(statements: AppD1PreparedStatement[]): Promise<D1Result<T>[]>;
+63:}
+64:
+65:type BoundedJsonResult =
+66:  | { ok: true; data: Record<string, unknown> }
+67:  | { ok: false; status: 400 | 413 | 415; code: string; message: string };
+68:
+69:async function readBoundedJson(
+70:  request: Request,
+71:  maxBytes: number,
+72:  messages: { entityName: string; invalid: string; tooLarge: string },
+73:): Promise<BoundedJsonResult> {
+74:  const contentType = String(request.headers.get('Content-Type') || '').toLowerCase();
+75:  if (!contentType.includes('application/json')) {
+76:    return { ok: false, status: 415, code: 'UNSUPPORTED_MEDIA_TYPE', message: `${messages.entityName}ต้องส่งเป็น application/json` };
+77:  }
+78:
+79:  const declaredLength = Number(request.headers.get('Content-Length'));
+80:  if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
+81:    return { ok: false, status: 413, code: 'PAYLOAD_TOO_LARGE', message: messages.tooLarge };
+82:  }
+83:
+84:  const reader = request.body?.getReader();
+85:  if (!reader) return { ok: false, status: 400, code: 'INVALID_JSON', message: messages.invalid };
+86:
+87:  const decoder = new TextDecoder();
+88:  let bytesRead = 0;
+89:  let raw = '';
+90:  try {
+--- functions/api/[[path]].ts:1375-1445 ---
+1375:        }
+1376:        return successResponse({ success: true });
+1377:    }
+1378:    
+1379:    // ---------------------------------------------------------------------------
+1380:
+1381:
+1382:    // Helper: Auth Token & User Lookup
+1383:    // Function declaration is intentionally used here so it is hoisted. Several
+1384:    // LINE routes above this helper authenticate before execution reaches this
+1385:    // section; a `const` function expression caused a temporal-dead-zone
+1386:    // ReferenceError and prevented every send/unlink request from reaching LINE.
+1387:    const staffRoles = ['caretaker', 'accountant', 'technician', 'housekeeper', 'staff'];
+1388:    const isStaffRole = (role?: string | null) => staffRoles.includes(String(role || ''));
+1389:
+1390:    async function getAuthUser(options?: { skipPlanAccess?: boolean }): Promise<any> {
+1391:      const secret = getJwtSecret(env);
+1392:      const authHeader = request.headers.get("Authorization");
+1393:      if (authHeader && authHeader.startsWith("Bearer ")) {
+1394:        const token = authHeader.split(" ")[1];
+1395:        const payload = await verifyToken(token, secret);
+1396:        
+1397:        if (payload && payload.id) {
+1398:          if (env.DB) {
+1399:            try {
+1400:              const dbUser = await env.DB.prepare("SELECT * FROM users WHERE id = ? AND deleted_at IS NULL").bind(payload.id).first();
+1401:              if (dbUser) {
+1402:                const effectiveUserId = isStaffRole(String(dbUser.role)) && dbUser.parent_id ? Number(dbUser.parent_id) : Number(dbUser.id);
+1403:                if (!options?.skipPlanAccess) {
+1404:                  await assertPlanAccessForRequest(effectiveUserId);
+1405:                }
+1406:                return {
+1407:                  ...dbUser,
+1408:                  effectiveUserId
+1409:                };
+1410:              }
+1411:            } catch (e) {
+1412:              if (e instanceof PlanAccessError) throw e;
+1413:              console.warn("Auth user lookup error:", e);
+1414:            }
+1415:          } else {
+1416:            return { id: payload.id, effectiveUserId: payload.id, uid: payload.uid, email: payload.email, role: payload.role, parent_id: null, permissions: 'manage_rooms,manage_bills,edit_payments,manage_settings' };
+1417:          }
+1418:        }
+1419:      }
+1420:      return null;
+1421:    }
+1422:
+1423:    function hasCaretakerPermission(user: any, requiredPerm: string): boolean {
+1424:      return Boolean(user) && hasAppPermission(String(user.role), user.permissions, requiredPerm as any);
+1425:    };
+1426:
+1427:    const licenseRoles = ['owner', 'super_admin'];
+1428:    const requireLicenseOwner = async () => {
+1429:      const authUser = await getAuthUser({ skipPlanAccess: true });
+1430:      if (!authUser) return { response: errorResponse('UNAUTHORIZED', 'กรุณาล็อกอินเข้าสู่ระบบก่อนใช้งาน', 401), authUser: null };
+1431:      if (!licenseRoles.includes(String(authUser.role || ''))) return { response: errorResponse('FORBIDDEN', 'เฉพาะเจ้าของหอพักเท่านั้นที่จัดการ License ได้', 403), authUser: null };
+1432:      return { response: null, authUser };
+1433:    };
+1434:
+1435:    function publicLicenseState(state: Awaited<ReturnType<typeof resolveLicenseState>>) {
+1436:      const { signedToken, token, ...safe } = state;
+1437:      return { ...safe, signedToken: signedToken ? '[stored]' : null, activatedAt: token?.issuedAt ? new Date(token.issuedAt * 1000).toISOString() : null };
+1438:    }
+1439:
+1440:    if (path === '/api/license/status' && method === 'GET') {
+1441:      const gate = await requireLicenseOwner();
+1442:      if (gate.response) return gate.response;
+1443:      const ownerId = Number(gate.authUser.effectiveUserId || gate.authUser.id);
+1444:      try {
+1445:        const state = await maybeRefreshCustomerLicense(env, { projectName: new URL(request.url).hostname, hostname: new URL(request.url).hostname, appVersion: APP_VERSION });
+--- functions/api/[[path]].ts:1930-1970 ---
+1930:          ipAddress: clientIp,
+1931:          userAgent
+1932:        });
+1933:      } catch (e) {}
+1934:
+1935:      const secret = getJwtSecret(env);
+1936:
+1937:      const tokenPayload = {
+1938:        id: userObj.id,
+1939:        uid: userObj.uid,
+1940:        email: userObj.email,
+1941:        role: userObj.role
+1942:      };
+1943:      const token = await generateToken(tokenPayload, secret);
+1944:
+1945:      return successResponse({
+1946:        user: {
+1947:          id: userObj.id,
+1948:          uid: userObj.uid,
+1949:          email: userObj.email,
+1950:          role: userObj.role,
+1951:          displayName: userObj.role === 'super_admin' ? "Super Admin" : userObj.role === 'owner' ? "เจ้าของหอพัก" : "ผู้ดูแลหอพัก",
+1952:        },
+1953:        token
+1954:      }, "เข้าสู่ระบบสำเร็จ");
+1955:    }
+1956:
+1957:    if (path === "/api/auth/change-password" && method === "PUT") {
+1958:      const authUser = await getAuthUser();
+1959:      if (!authUser) {
+1960:        return errorResponse("UNAUTHORIZED", "กรุณาล็อกอินเข้าสู่ระบบก่อนดำเนินการ", 401);
+1961:      }
+1962:
+1963:      const body = await getJson();
+1964:      const { currentPassword, newPassword } = body;
+1965:      if (!currentPassword || !newPassword) {
+1966:        return errorResponse("VALIDATION_ERROR", "กรุณากรอกรหัสผ่านเดิมและรหัสผ่านใหม่", 400);
+1967:      }
+1968:
+1969:      const policyResult = validatePasswordPolicy(newPassword);
+1970:      if (!policyResult.isValid) {
+--- src/context/AuthContext.tsx:88-120 ---
+88:        throw new Error(errorMessage);
+89:      }
+90:
+91:      // 3. Success — persist session
+92:      const resJson = await res.json();
+93:      const payloadData = resJson.data || resJson;
+94:      const userObj = payloadData.user || resJson.user;
+95:      const tokenObj = payloadData.token || resJson.token;
+96:      if (!tokenObj) throw new Error('ไม่ได้รับโทเค็นการยืนยันตัวตนจากเซิร์ฟเวอร์');
+97:
+98:      if (!userObj) {
+99:        throw new Error('โครงสร้างข้อมูลผู้ใช้งานไม่ถูกต้อง');
+100:      }
+101:
+102:      localStorage.setItem('local_user', JSON.stringify(userObj));
+103:      localStorage.setItem('local_token', tokenObj);
+104:      
+105:      setUser(userObj);
+106:      setIdToken(tokenObj);
+107:    } catch (error) {
+108:      console.error('[AuthContext] loginWithCredentials error:', error);
+109:      // Always re-throw so the Login component can display the error
+110:      throw error;
+111:    } finally {
+112:      setLoginPending(false);
+113:    }
+114:  };
+115:
+116:  const logout = async () => {
+117:    setLoading(true);
+118:    try {
+119:      localStorage.removeItem('local_user');
+120:      localStorage.removeItem('local_token');
