@@ -1,0 +1,97 @@
+name: V16 Production Offline Grace V16
+on:
+  push:
+    branches: [agent/v16-production-gate]
+    paths: ['.github/workflows/v16-production-offline-grace-v16.yml']
+permissions: { contents: write, actions: read }
+env:
+  SOURCE_ARTIFACT_ID: '9391068149'
+  SOURCE_ARTIFACT_SHA256: '14e094a00c75bf0b538df4b0d396264c3af28f53b96a95d379e01390005e72ff'
+  PRO_ZIP_SHA256: '75945096ec0346dc31ab0b3c20ca25ee0828e2c0f4efd1fe0150ab6dd91a5182'
+jobs:
+  offline-grace:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: agent/v16-production-gate }
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+      - name: Download exact V13 Pro candidate
+        env: { GH_TOKEN: '${{ github.token }}' }
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 8 --retry-all-errors --retry-delay 3 \
+            -H "Authorization: Bearer ${GH_TOKEN}" -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${SOURCE_ARTIFACT_ID}/zip" -o /tmp/source.zip
+          echo "$SOURCE_ARTIFACT_SHA256  /tmp/source.zip" | sha256sum -c -
+          rm -rf /tmp/source /tmp/pro; mkdir -p /tmp/source /tmp/pro
+          unzip -q /tmp/source.zip -d /tmp/source
+          echo "$PRO_ZIP_SHA256  /tmp/source/customer-previews/dorm-management-system-pro-v16-SOURCE-GATE-V13.zip" | sha256sum -c -
+          unzip -q /tmp/source/customer-previews/dorm-management-system-pro-v16-SOURCE-GATE-V13.zip -d /tmp/pro
+          touch /tmp/v16-v16-artifact.ok
+      - name: Run exact candidate license tests and deterministic grace runtime proof
+        working-directory: /tmp/pro
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci
+          node --experimental-strip-types --test tests/license-customer-state.test.ts tests/license-lifecycle-readonly.test.mjs
+          cat > /tmp/pro/tests/offline-grace-runtime-v16.test.ts <<'TS'
+          import assert from 'node:assert/strict';
+          import test from 'node:test';
+          import { canonicalLicenseTokenJson, resolveLicenseState, assertMutationAllowedByLicense, LicenseOperationError, type LicenseTokenPayload } from '../src/server/services/license.service.ts';
+          const b64=(x:Uint8Array)=>Buffer.from(x).toString('base64');
+          const b64url=(x:Uint8Array)=>Buffer.from(x).toString('base64url');
+          test('offline grace allows mutations through day 7 then becomes read-only', async()=>{
+            const baseMs=2_000_000_000_000;
+            const graceMs=7*24*60*60*1000;
+            const pair=await crypto.subtle.generateKey({name:'Ed25519'},true,['sign','verify']) as CryptoKeyPair;
+            const pub=b64(new Uint8Array(await crypto.subtle.exportKey('raw',pair.publicKey)));
+            const payload:LicenseTokenPayload={v:1,licenseId:'lic-offline',installationId:'install-offline',plan:'pro',status:'active',issuedAt:Math.floor(baseMs/1000)-60,expiresAt:Math.floor((baseMs+30*24*60*60*1000)/1000),refreshAfter:Math.floor(baseMs/1000)-1};
+            const canonical=canonicalLicenseTokenJson(payload);
+            const sig=new Uint8Array(await crypto.subtle.sign('Ed25519',pair.privateKey,new TextEncoder().encode(canonical)));
+            const token=`${b64url(new TextEncoder().encode(canonical))}.${b64url(sig)}`;
+            const row={installation_id:'install-offline',signed_token:token,status:'offline',effective_plan:'basic',last_checked_at:new Date(baseMs).toISOString(),grace_until:new Date(baseMs+graceMs).toISOString(),expires_at:new Date(payload.expiresAt*1000).toISOString(),control_plane_url:'https://offline.invalid'};
+            const db={prepare(){return {first:async()=>row}}} as any;
+            const env={DB:db,LICENSE_SIGNING_PUBLIC_KEY:pub};
+            const inside=await resolveLicenseState(env,1,baseMs+graceMs-1000);
+            assert.equal(inside.status,'offline'); assert.equal(inside.effectivePlan,'pro');
+            assert.doesNotThrow(()=>assertMutationAllowedByLicense(inside));
+            const outside=await resolveLicenseState(env,1,baseMs+graceMs+1000);
+            assert.equal(outside.status,'expired'); assert.equal(outside.effectivePlan,null);
+            assert.throws(()=>assertMutationAllowedByLicense(outside),(e:any)=>e instanceof LicenseOperationError && e.code==='LICENSE_READ_ONLY' && e.status===403);
+          });
+          TS
+          node --experimental-strip-types --test tests/offline-grace-runtime-v16.test.ts
+          rm tests/offline-grace-runtime-v16.test.ts
+          touch /tmp/v16-v16-runtime.ok
+      - name: Persist evidence
+        if: always()
+        env: { JOB_STATUS: '${{ job.status }}' }
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p v16-production-evidence
+          val(){ [ -f "/tmp/v16-v16-$1.ok" ] && printf success || printf failure; }
+          cat > v16-production-evidence/offline-grace-v16-latest.txt <<EOF
+          run_id=${GITHUB_RUN_ID}
+          source_sha=${GITHUB_SHA}
+          job_status=${JOB_STATUS}
+          source_artifact_id=${SOURCE_ARTIFACT_ID}
+          source_artifact_sha256=${SOURCE_ARTIFACT_SHA256}
+          pro_zip_sha256=${PRO_ZIP_SHA256}
+          exact_artifact=$(val artifact)
+          offline_grace_runtime=$(val runtime)
+          grace_days=7
+          inside_grace=offline_mutation_allowed
+          after_grace=expired_LICENSE_READ_ONLY_403
+          cloudflare_touched=false
+          existing_d1_touched=false
+          customer_ready=false
+          EOF
+          git config user.name 'github-actions[bot]'; git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add v16-production-evidence/offline-grace-v16-latest.txt
+          git commit -m 'ci(v16): record offline grace runtime evidence' || exit 0
+          git push origin HEAD:agent/v16-production-gate
