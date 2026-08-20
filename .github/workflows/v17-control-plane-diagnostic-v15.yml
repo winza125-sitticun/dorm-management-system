@@ -1,10 +1,10 @@
-name: V17 Vendor Admin MVP Production Gate Bridge V2
+name: V17 Vendor Admin MVP Production Gate Bridge V3
 on:
   push:
     branches: [agent/v16-production-gate]
-    paths: ['.github/workflows/v17-control-plane-diagnostic-v15.yml']
-  pull_request:
-    branches: [agent/v16-production-gate]
+    paths:
+      - .github/workflows/v17-control-plane-diagnostic-v15.yml
+      - v17-vendor-admin-mvp/V17_VENDOR_ADMIN_MVP_CUSTOMER_READY_WORKFLOW.yml.gz.b64
 permissions:
   contents: write
 jobs:
@@ -15,7 +15,7 @@ jobs:
         with:
           ref: agent/v16-production-gate
           fetch-depth: 0
-      - name: Materialize verified gate on feature branch
+      - name: Materialize verified CUSTOMER-READY gate on feature branch
         shell: bash
         run: |
           set -euo pipefail
@@ -41,11 +41,20 @@ jobs:
           p.write_text(s.replace(old,new))
           PY
           grep -Fq "paths: ['.github/v17-vendor-admin-customer-ready-trigger.txt']" /tmp/gate.yml
-          cp /tmp/gate.yml .github/workflows/v17-control-plane-diagnostic-v15.yml
-          git add -- .github/workflows/v17-control-plane-diagnostic-v15.yml
-          git commit -m 'ci(v17): materialize vendor admin MVP customer-ready production gate'
+          mkdir -p .github/workflows
+          cp /tmp/gate.yml .github/workflows/v17-vendor-admin-mvp-customer-ready-v1.yml
+          git show 269b3801ca7fa94a6dddb0f12aa1e036e08407df:.github/workflows/v17-control-plane-diagnostic-v15.yml > .github/workflows/v17-control-plane-diagnostic-v15.yml
+          cat > v17-vendor-admin-mvp/GATE_MATERIALIZATION.txt <<'EOF'
+          original_gate_gzip_sha256=fd97ce18d871bc84b382c09e21d197b5db99d7ceb83e8abfddb4308de052a93e
+          original_gate_yaml_sha256=2fbc9cec64b0548ff794065e4009b9caa5e3ab2a3bab1346224e494266770e77
+          trigger_only_modification=workflow_paths_to_marker
+          trigger_marker=.github/v17-vendor-admin-customer-ready-trigger.txt
+          frozen_customer_packages_touched=false
+          EOF
+          git add -- .github/workflows/v17-vendor-admin-mvp-customer-ready-v1.yml .github/workflows/v17-control-plane-diagnostic-v15.yml v17-vendor-admin-mvp/GATE_MATERIALIZATION.txt
+          git commit -m 'ci(v17): materialize vendor admin MVP customer-ready gate' || true
           git push origin HEAD:agent/v17-vendor-admin-mvp-customer-ready
-      - name: Restore production diagnostic workflow
+      - name: Restore production branch tree
         if: always()
         shell: bash
         run: |
@@ -53,5 +62,9 @@ jobs:
           cd "$GITHUB_WORKSPACE"
           git show 269b3801ca7fa94a6dddb0f12aa1e036e08407df:.github/workflows/v17-control-plane-diagnostic-v15.yml > .github/workflows/v17-control-plane-diagnostic-v15.yml
           git add -- .github/workflows/v17-control-plane-diagnostic-v15.yml
-          git commit -m 'ci(v17): restore diagnostic workflow [skip ci]'
-          git push origin HEAD:agent/v16-production-gate
+          git rm -f --ignore-unmatch -- .github/workflows/v17-vendor-admin-mvp-bootstrap-v0.yml
+          git rm -r --ignore-unmatch -- v17-vendor-admin-mvp
+          if ! git diff --cached --quiet; then
+            git commit -m 'ci(v17): restore production branch tree [skip ci]'
+            git push origin HEAD:agent/v16-production-gate
+          fi
