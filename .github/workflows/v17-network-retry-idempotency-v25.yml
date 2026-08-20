@@ -57,7 +57,7 @@ jobs:
           JWT="$(python3 -c 'import secrets;print(secrets.token_urlsafe(48))')";printf '%s\n' "$JWT"|timeout 90s npx wrangler pages secret put JWT_SECRET --project-name "$PAGES";unset JWT
           timeout 180s npx wrangler d1 migrations apply DB --remote --config wrangler.jsonc
           npm run build:pages;timeout 240s npx wrangler pages deploy dist --project-name "$PAGES" --branch main --commit-hash "$GITHUB_SHA" --commit-dirty=false|tee /tmp/pages
-          URL="$(grep -Eo 'https://[^[:space:]]+\.pages\.dev' /tmp/pages|tail -n1)";test -n "$URL";printf 'URL=%q\n' "$URL">>/tmp/v25.env
+          URL="https://${PAGES}.pages.dev";printf 'URL=%q\n' "$URL">>/tmp/v25.env
           for i in $(seq 1 60);do curl --fail -s --max-time 10 "$URL/" -o /dev/null&&break;sleep 2;done;curl --fail -s "$URL/" -o /dev/null
           npx wrangler pages deployment list --project-name "$PAGES" --json >/tmp/deploy-before.json
           touch /tmp/v25-deploy.ok
@@ -70,6 +70,7 @@ jobs:
           import fs from 'node:fs';const real=globalThis.fetch;let n=0;globalThis.fetch=async(input,init)=>{const u=String(input?.url||input);if(u.includes('dorm-management-updates.pages.dev/')){n++;fs.writeFileSync('/tmp/v25-all-count',String(n));throw new TypeError('V25 simulated package network failure')}return real(input,init)};
           NODE
           set +e;NODE_OPTIONS='--import /tmp/v25-fail-all.mjs' timeout 600s node BOOTSTRAP-V16-TO-V17.mjs >/tmp/all.log 2>&1;RC=$?;set -e
+          cat /tmp/all.log
           test "$RC" -ne 0;test "$(cat /tmp/v25-all-count)" = 5
           test "$(node -p "require('./package.json').version")" = 1.1.0;test ! -f .dorm-update-state.json;test ! -d backups
           timeout 90s npx wrangler d1 execute DB --remote --config wrangler.jsonc --command "SELECT name FROM sqlite_master WHERE type='table' AND name='update_state';" >/tmp/state1;! grep -q update_state /tmp/state1
@@ -82,7 +83,7 @@ jobs:
           cat >/tmp/v25-transient.mjs <<'NODE'
           import fs from 'node:fs';const real=globalThis.fetch;let pkg=0,login=0;globalThis.fetch=async(input,init)=>{const u=String(input?.url||input);if(u.includes('dorm-management-updates.pages.dev/')){pkg++;fs.writeFileSync('/tmp/v25-pkg-count',String(pkg));if(pkg<5)throw new TypeError('V25 transient package failure');return real(input,init)}if(u.includes('.pages.dev/api/auth/login')){login++;fs.writeFileSync('/tmp/v25-login-count',String(login));throw new TypeError('V25 controlled login network failure')}return real(input,init)};
           NODE
-          for run in 1 2;do rm -f /tmp/v25-pkg-count /tmp/v25-login-count;set +e;NODE_OPTIONS='--import /tmp/v25-transient.mjs' timeout 900s node BOOTSTRAP-V16-TO-V17.mjs >"/tmp/transient-${run}.log" 2>&1;RC=$?;set -e;test "$RC" -ne 0;test "$(cat /tmp/v25-pkg-count)" = 5;test "$(cat /tmp/v25-login-count)" = 5;test "$(node -p "require('./package.json').version")" = 1.1.0;test ! -f .dorm-update-state.json;test ! -d backups;done
+          for run in 1 2;do rm -f /tmp/v25-pkg-count /tmp/v25-login-count;set +e;NODE_OPTIONS='--import /tmp/v25-transient.mjs' timeout 900s node BOOTSTRAP-V16-TO-V17.mjs >"/tmp/transient-${run}.log" 2>&1;RC=$?;set -e;cat "/tmp/transient-${run}.log";test "$RC" -ne 0;test "$(cat /tmp/v25-pkg-count)" = 5;test "$(cat /tmp/v25-login-count)" = 5;test "$(node -p "require('./package.json').version")" = 1.1.0;test ! -f .dorm-update-state.json;test ! -d backups;done
           npx wrangler pages deployment list --project-name "$PAGES" --json >/tmp/deploy-after.json
           python3 - <<'PY'
           import json
