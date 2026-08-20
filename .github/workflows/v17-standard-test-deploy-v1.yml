@@ -1,0 +1,274 @@
+name: V17 Deploy Frozen Standard Test V1
+on:
+  push:
+    branches: [agent/v16-production-gate]
+    paths: ['.github/workflows/v17-standard-test-deploy-v1.yml']
+permissions: { contents: read, actions: read }
+concurrency: { group: v17-standard-test-deploy-v1, cancel-in-progress: false }
+env:
+  V17_FINAL_ARTIFACT_ID: '9398295831'
+  V17_FINAL_ARTIFACT_SHA256: 'db97970252514639a4387a42aaf26d3a5513330c3cdcfba8fb339d86dda3151c'
+  STANDARD_ZIP_SHA256: '3b1b95a294b7b2f46eb029cd83e22e0281e39d27542bce97ed965aceea929072'
+  CANONICAL_CP_URL: 'https://dorm-control-plane.winza125.workers.dev'
+  STABLE_CP_D1: 'dorm-license-control-plane-v16-db'
+  STABLE_CP_D1_UUID: '68695864-48de-4d8a-932b-9d11cd4d6b4d'
+  PUBLIC_KEY_B64: 'fgdHGCi74MiMXHbI5+KVY6S9wnh/L369ekdI8NmrwdY='
+  TEST_LICENSE_PLAN: 'standard'
+  TEST_LICENSE_MAX_ACTIVATIONS: '1'
+  TEST_LICENSE_EXPIRES_AT: 'NULL'
+  CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+  CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+jobs:
+  deploy-standard-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    environment: "fulfilling-communication / production"
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: agent/v16-production-gate }
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+
+      - name: Verify exact frozen V17 Standard package
+        env: { GH_TOKEN: '${{ github.token }}' }
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${CLOUDFLARE_API_TOKEN:-}"
+          test -n "${CLOUDFLARE_ACCOUNT_ID:-}"
+          rm -rf /tmp/v17-final /tmp/std /tmp/v17-final.zip
+          mkdir -p /tmp/v17-final /tmp/std
+          curl --fail --location --retry 8 --retry-all-errors --retry-delay 3 \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${V17_FINAL_ARTIFACT_ID}/zip" \
+            -o /tmp/v17-final.zip
+          echo "${V17_FINAL_ARTIFACT_SHA256}  /tmp/v17-final.zip" | sha256sum -c -
+          unzip -q /tmp/v17-final.zip -d /tmp/v17-final
+          test -f /tmp/v17-final/CUSTOMER-READY-SHA256SUMS.txt
+          (cd /tmp/v17-final && sha256sum -c CUSTOMER-READY-SHA256SUMS.txt)
+          STD_ZIP=/tmp/v17-final/customer-packages/dorm-management-system-standard-v17-CUSTOMER-READY.zip
+          test -f "$STD_ZIP"
+          echo "${STANDARD_ZIP_SHA256}  ${STD_ZIP}" | sha256sum -c -
+          unzip -q "$STD_ZIP" -d /tmp/std
+          test "$(node -p "require('/tmp/std/package.json').version")" = '1.2.0'
+          grep -Fq "packagePlan: 'standard'" /tmp/std/src/generated/licenseConfig.ts
+          grep -Fq "controlPlaneUrl: \"${CANONICAL_CP_URL}\"" /tmp/std/src/generated/licenseConfig.ts
+          grep -Fq "publicKeyBase64: \"${PUBLIC_KEY_B64}\"" /tmp/std/src/generated/licenseConfig.ts
+          test "$(find /tmp/std/d1-migrations -maxdepth 1 -type f -printf '%f\n' | sort | tail -n1)" = '0008_add_update_state.sql'
+          touch /tmp/standard-artifact.ok
+
+      - name: Run frozen Standard release checks
+        working-directory: /tmp/std
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci
+          npm run release:check
+          touch /tmp/standard-release-check.ok
+
+      - name: Allocate fresh Standard test resources
+        shell: bash
+        run: |
+          set -euo pipefail
+          SUFFIX="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          echo "PAGES_PROJECT=dorm-standard-v17-test-${SUFFIX}" >> "$GITHUB_ENV"
+          echo "CUSTOMER_D1=dorm-standard-v17-test-${SUFFIX}-db" >> "$GITHUB_ENV"
+          echo "TEST_LICENSE_ID=stdtest-${SUFFIX}" >> "$GITHUB_ENV"
+
+      - name: Create fresh Standard D1 and apply migrations through 0008
+        working-directory: /tmp/std
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 120s npx wrangler d1 create "$CUSTOMER_D1" --location apac | tee /tmp/customer-d1-create.log
+          timeout 60s npx wrangler d1 info "$CUSTOMER_D1" --json > /tmp/customer-d1-info.json
+          python3 - <<'PY'
+          import json, os, re
+          raw=json.dumps(json.load(open('/tmp/customer-d1-info.json')))
+          m=re.search(r'[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}', raw)
+          assert m, raw
+          uid=m.group(0)
+          open('/tmp/customer-d1-uuid','w').write(uid)
+          json.dump({
+            'name': os.environ['PAGES_PROJECT'],
+            'compatibility_date': '2026-08-05',
+            'compatibility_flags': ['nodejs_compat'],
+            'pages_build_output_dir': './dist',
+            'upload_source_maps': True,
+            'd1_databases': [{
+              'binding':'DB',
+              'database_name':os.environ['CUSTOMER_D1'],
+              'database_id':uid,
+              'migrations_dir':'./d1-migrations'
+            }]
+          }, open('wrangler.test.jsonc','w'))
+          PY
+          timeout 240s npx wrangler d1 migrations apply DB --remote --config wrangler.test.jsonc
+          timeout 90s npx wrangler d1 execute DB --remote --config wrangler.test.jsonc --command "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name;" > /tmp/customer-schema.txt
+          grep -q 'license_state' /tmp/customer-schema.txt
+          grep -q 'update_history' /tmp/customer-schema.txt
+          touch /tmp/standard-d1.ok
+
+      - name: Seed one-seat Standard license with no expiration
+        working-directory: /tmp/std
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 60s npx wrangler d1 list --json > /tmp/control-plane-d1-list.json
+          python3 - <<'PY'
+          import json, os
+          x=json.load(open('/tmp/control-plane-d1-list.json'))
+          rows=x if isinstance(x,list) else x.get('result',x.get('databases',[]))
+          matches=[r for r in rows if r.get('name')==os.environ['STABLE_CP_D1']]
+          assert len(matches)==1, matches
+          uid=matches[0].get('uuid') or matches[0].get('id')
+          assert uid==os.environ['STABLE_CP_D1_UUID'], (uid,os.environ['STABLE_CP_D1_UUID'])
+          json.dump({
+            'name':'v17-standard-test-license-admin',
+            'compatibility_date':'2026-08-05',
+            'd1_databases':[{
+              'binding':'DB',
+              'database_name':os.environ['STABLE_CP_D1'],
+              'database_id':uid
+            }]
+          },open('wrangler.cp-test.jsonc','w'))
+          PY
+          LICENSE_KEY="V17-$(node -e "process.stdout.write(require('node:crypto').randomBytes(18).toString('hex').toUpperCase())")"
+          LICENSE_HASH="$(printf '%s' "$LICENSE_KEY" | sha256sum | awk '{print $1}')"
+          printf '%s\n' "$LICENSE_KEY" > /tmp/license-key.txt
+          printf '%s\n' "$LICENSE_HASH" > /tmp/license-key-sha256.txt
+          NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          timeout 90s npx wrangler d1 execute DB --remote --config wrangler.cp-test.jsonc --command "INSERT INTO licenses(id,key_hash,customer_label,plan,status,max_activations,expires_at,created_at,updated_at) VALUES('${TEST_LICENSE_ID}','${LICENSE_HASH}','V17 Standard manual test','standard','active',1,NULL,'${NOW}','${NOW}');"
+          unset LICENSE_KEY LICENSE_HASH
+          touch /tmp/standard-license.ok
+
+      - name: Build and deploy frozen Standard to Pages
+        working-directory: /tmp/std
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 120s npx wrangler pages project create "$PAGES_PROJECT" --production-branch main
+          JWT="$(node -e "process.stdout.write(require('node:crypto').randomBytes(48).toString('base64url'))")"
+          printf '%s\n' "$JWT" | timeout 90s npx wrangler pages secret put JWT_SECRET --project-name "$PAGES_PROJECT"
+          unset JWT
+          printf '%s\n' "$CANONICAL_CP_URL" | timeout 90s npx wrangler pages secret put LICENSE_CONTROL_PLANE_URL --project-name "$PAGES_PROJECT"
+          printf '%s\n' "$PUBLIC_KEY_B64" | timeout 90s npx wrangler pages secret put LICENSE_SIGNING_PUBLIC_KEY --project-name "$PAGES_PROJECT"
+          npm run build:pages
+          timeout 300s npx wrangler pages deploy dist --project-name "$PAGES_PROJECT" --branch main --commit-hash "$GITHUB_SHA" --commit-dirty=false | tee /tmp/pages-deploy.log
+          APP_URL="https://${PAGES_PROJECT}.pages.dev"
+          echo "APP_URL=$APP_URL" >> "$GITHUB_ENV"
+          printf '%s\n' "$APP_URL" > /tmp/app-url.txt
+          touch /tmp/standard-pages.ok
+
+      - name: Production health check with TLS propagation retry
+        shell: bash
+        run: |
+          set -euo pipefail
+          ok=0
+          for i in $(seq 1 90); do
+            code="$(curl --http1.1 --silent --show-error --output /tmp/health.html --write-out '%{http_code}' --connect-timeout 15 --max-time 30 "$APP_URL/" 2>/tmp/health.err || true)"
+            if [ "$code" = 200 ]; then ok=1; break; fi
+            sleep 3
+          done
+          if [ "$ok" != 1 ]; then
+            cat /tmp/health.err >&2 || true
+            exit 1
+          fi
+          touch /tmp/standard-health.ok
+
+      - name: Bootstrap, activate Standard, and verify plan authority
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, secrets
+          email=f"standard-{os.environ['GITHUB_RUN_ID']}-{os.environ['GITHUB_RUN_ATTEMPT']}@example.invalid"
+          password='StdV17!'+secrets.token_urlsafe(18)
+          json.dump({'email':email,'password':password,'displayName':'Standard Test','dormName':'Standard V17 Test'},open('/tmp/setup.json','w'))
+          json.dump({'username':email,'password':password},open('/tmp/login.json','w'))
+          open('/tmp/admin-email.txt','w').write(email+'\n')
+          open('/tmp/admin-password.txt','w').write(password+'\n')
+          PY
+          curl --http1.1 --fail --silent --show-error --retry 8 --retry-all-errors --retry-delay 3 \
+            -H 'content-type: application/json' --data @/tmp/setup.json "$APP_URL/api/setup/init" > /tmp/setup-response.json
+          curl --http1.1 --fail --silent --show-error --retry 8 --retry-all-errors --retry-delay 3 \
+            -H 'content-type: application/json' --data @/tmp/login.json "$APP_URL/api/auth/login" > /tmp/login-response.json
+          python3 - <<'PY'
+          import json
+          x=json.load(open('/tmp/login-response.json')); d=x.get('data',x)
+          assert d.get('token') and d.get('user'), x
+          open('/tmp/auth-token','w').write(d['token'])
+          PY
+          python3 - <<'PY'
+          import json
+          k=open('/tmp/license-key.txt').read().strip()
+          json.dump({'licenseKey':k},open('/tmp/activate.json','w'))
+          PY
+          TOKEN="$(cat /tmp/auth-token)"
+          curl --http1.1 --fail --silent --show-error --retry 8 --retry-all-errors --retry-delay 3 \
+            -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' --data @/tmp/activate.json \
+            "$APP_URL/api/license/activate" > /tmp/activate-response.json
+          curl --http1.1 --fail --silent --show-error --retry 8 --retry-all-errors --retry-delay 3 \
+            -H "authorization: Bearer $TOKEN" "$APP_URL/api/license/status" > /tmp/license-status.json
+          python3 - <<'PY'
+          import json
+          x=json.load(open('/tmp/license-status.json')); d=x.get('data',x)
+          assert d.get('effectivePlan')=='standard', d
+          assert d.get('status') in ('active','offline'), d
+          assert 'token' not in d, d
+          PY
+          unset TOKEN
+          touch /tmp/standard-activation.ok
+
+      - name: Prepare private test access bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          {
+            printf 'STANDARD_TEST_URL=%s\n' "$APP_URL"
+            printf 'ADMIN_EMAIL=%s' "$(cat /tmp/admin-email.txt)"
+            printf 'ADMIN_PASSWORD=%s' "$(cat /tmp/admin-password.txt)"
+            printf 'LICENSE_KEY=%s' "$(cat /tmp/license-key.txt)"
+            printf 'PLAN=standard\n'
+            printf 'MAX_ACTIVATIONS=1\n'
+            printf 'EXPIRES=never\n'
+            printf 'SOURCE_ARTIFACT_ID=%s\n' "$V17_FINAL_ARTIFACT_ID"
+            printf 'SOURCE_ARTIFACT_SHA256=%s\n' "$V17_FINAL_ARTIFACT_SHA256"
+            printf 'STANDARD_ZIP_SHA256=%s\n' "$STANDARD_ZIP_SHA256"
+            printf 'RUN_ID=%s\n' "$GITHUB_RUN_ID"
+          } > /tmp/standard-test-access.txt
+          {
+            printf 'job_contract=standard-v17-manual-test\n'
+            printf 'artifact_verified=%s\n' "$([ -f /tmp/standard-artifact.ok ] && printf success || printf failure)"
+            printf 'release_checks=%s\n' "$([ -f /tmp/standard-release-check.ok ] && printf success || printf failure)"
+            printf 'd1_migration_0008=%s\n' "$([ -f /tmp/standard-d1.ok ] && printf success || printf failure)"
+            printf 'standard_license_seed=%s\n' "$([ -f /tmp/standard-license.ok ] && printf success || printf failure)"
+            printf 'pages_deploy=%s\n' "$([ -f /tmp/standard-pages.ok ] && printf success || printf failure)"
+            printf 'health_check=%s\n' "$([ -f /tmp/standard-health.ok ] && printf success || printf failure)"
+            printf 'activation_standard=%s\n' "$([ -f /tmp/standard-activation.ok ] && printf success || printf failure)"
+            printf 'customer_business_data_preexisting=false\n'
+            printf 'license_expires_at=NULL\n'
+          } > /tmp/deployment-evidence.txt
+          echo "Standard test URL: $APP_URL"
+
+      - name: Upload Standard test access
+        uses: actions/upload-artifact@v4
+        with:
+          name: v17-standard-test-access-${{ github.run_id }}
+          path: |
+            /tmp/standard-test-access.txt
+            /tmp/deployment-evidence.txt
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Cleanup seeded license on failed deployment only
+        if: failure()
+        working-directory: /tmp/std
+        shell: bash
+        run: |
+          set +e
+          if [[ "${TEST_LICENSE_ID:-}" == "stdtest-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" ]] && [ -f wrangler.cp-test.jsonc ]; then
+            timeout 90s npx wrangler d1 execute DB --remote --config wrangler.cp-test.jsonc --command "DELETE FROM license_events WHERE license_id='${TEST_LICENSE_ID}'; DELETE FROM activations WHERE license_id='${TEST_LICENSE_ID}'; DELETE FROM licenses WHERE id='${TEST_LICENSE_ID}';" >/dev/null 2>&1 || true
+          fi
