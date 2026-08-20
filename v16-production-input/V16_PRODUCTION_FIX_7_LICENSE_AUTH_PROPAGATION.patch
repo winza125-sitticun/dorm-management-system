@@ -1,0 +1,21 @@
+diff --git a/functions/api/[[path]].ts b/functions/api/[[path]].ts
+--- a/functions/api/[[path]].ts
++++ b/functions/api/[[path]].ts
+@@ -1409,7 +1409,7 @@
+                 };
+               }
+             } catch (e) {
+-              if (e instanceof PlanAccessError) throw e;
++              if (e instanceof PlanAccessError || e instanceof LicenseOperationError) throw e;
+               console.warn("Auth user lookup error:", e);
+             }
+           } else {
+@@ -3556,7 +3556,7 @@
+ 
+     return errorResponse("NOT_FOUND", `ไม่พบเอนด์พอยต์ ${path} ในระบบ`, 404);
+   } catch (error: any) {
+-    if (error instanceof PlanAccessError) {
++    if (error instanceof PlanAccessError || error instanceof LicenseOperationError) {
+       return errorResponse(error.code, error.message, error.status);
+     }
+     console.error("Cloudflare Pages Function Exception:", error);
