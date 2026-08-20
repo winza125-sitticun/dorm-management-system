@@ -1,0 +1,2521 @@
+source_artifact_id=9391068149
+source_artifact_sha256=14e094a00c75bf0b538df4b0d396264c3af28f53b96a95d379e01390005e72ff
+pro_zip_sha256=75945096ec0346dc31ab0b3c20ca25ee0828e2c0f4efd1fe0150ab6dd91a5182
+cloudflare_touched=false
+existing_d1_touched=false
+=== [[path]].ts ===
+--- lines 16-39 ---
+16:   getNoteValidationDetails,
+17:   validateZod,
+18: } from '../../src/server/validators/index.ts';
+19: import { generateToken, verifyToken } from '../../src/server/services/jwt.service.ts';
+20: import { APP_VERSION } from '../../src/generated/version.ts';
+21: import { PERMISSIONS, hasAppPermission, permissionsForRole } from '../../src/constants/permissions.ts';
+22: import { getPlanLimit, hasPlanFeature, isDemoPlan, type PlanFeature } from '../../src/constants/planEntitlements.ts';
+23: import { isDemoMutationRestricted, minimumPaidPlanForFeature, requiredPlanFeatureForApiRequest, requiredPlanFeaturesForSettingsUpdate } from '../../src/server/services/planAccess.service.ts';
+24: import { activateCustomerLicense, assertMutationAllowedByLicense, deactivateCustomerLicense, LicenseOperationError, maybeRefreshCustomerLicense, refreshCustomerLicense, resolveEffectivePlan, resolveLicenseState } from '../../src/server/services/license.service.ts';
+25: import { normalizeBillingMonths } from '../../src/utils/recurringCharges.ts';
+26: import { canTransitionHousekeeping } from '../../src/utils/housekeeping.ts';
+27: import { BACKUP_REQUEST_MAX_BYTES, type BackupDataV1, type BackupManifestV1 } from '../../src/utils/backupFormat.ts';
+28: import { exportBusinessBackup, validateBackupForRestore, verifyRestoreToken } from '../../src/server/services/backup.service.ts';
+29: import { loadRestoreCurrentState, prepareRestoreData, restoreBusinessBackup, verifyRestoredBackup, RestorePartialFailure } from '../../src/server/services/restore.service.ts';
+30: import { BackupValidationError } from '../../src/server/validators/backup.ts';
+31: import { changedWhiteLabelFields, normalizeWhiteLabelPatch } from '../../src/server/validators/settings.ts';
+32: import { LOGO_REQUEST_MAX_BYTES, safeStoredLogoDataUri, validateLogoDataUri } from '../../src/server/validators/logo.ts';
+33: import { buildPublicBranding } from '../../src/server/services/branding.service.ts';
+34: 
+35: function getJwtSecret(env: Env): string {
+36:   if (!env.JWT_SECRET || env.JWT_SECRET.length < 32) {
+37:     throw new Error("Server misconfiguration: JWT_SECRET must be set to at least 32 characters");
+38:   }
+39:   return env.JWT_SECRET;
+--- lines 59-82 ---
+59: 
+60: interface AppD1Database extends D1Database {
+61:   prepare(query: string): AppD1PreparedStatement;
+62:   batch<T = Record<string, any>>(statements: AppD1PreparedStatement[]): Promise<D1Result<T>[]>;
+63: }
+64: 
+65: type BoundedJsonResult =
+66:   | { ok: true; data: Record<string, unknown> }
+67:   | { ok: false; status: 400 | 413 | 415; code: string; message: string };
+68: 
+69: async function readBoundedJson(
+70:   request: Request,
+71:   maxBytes: number,
+72:   messages: { entityName: string; invalid: string; tooLarge: string },
+73: ): Promise<BoundedJsonResult> {
+74:   const contentType = String(request.headers.get('Content-Type') || '').toLowerCase();
+75:   if (!contentType.includes('application/json')) {
+76:     return { ok: false, status: 415, code: 'UNSUPPORTED_MEDIA_TYPE', message: `${messages.entityName}ต้องส่งเป็น application/json` };
+77:   }
+78: 
+79:   const declaredLength = Number(request.headers.get('Content-Length'));
+80:   if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
+81:     return { ok: false, status: 413, code: 'PAYLOAD_TOO_LARGE', message: messages.tooLarge };
+82:   }
+--- lines 68-91 ---
+68: 
+69: async function readBoundedJson(
+70:   request: Request,
+71:   maxBytes: number,
+72:   messages: { entityName: string; invalid: string; tooLarge: string },
+73: ): Promise<BoundedJsonResult> {
+74:   const contentType = String(request.headers.get('Content-Type') || '').toLowerCase();
+75:   if (!contentType.includes('application/json')) {
+76:     return { ok: false, status: 415, code: 'UNSUPPORTED_MEDIA_TYPE', message: `${messages.entityName}ต้องส่งเป็น application/json` };
+77:   }
+78: 
+79:   const declaredLength = Number(request.headers.get('Content-Length'));
+80:   if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
+81:     return { ok: false, status: 413, code: 'PAYLOAD_TOO_LARGE', message: messages.tooLarge };
+82:   }
+83: 
+84:   const reader = request.body?.getReader();
+85:   if (!reader) return { ok: false, status: 400, code: 'INVALID_JSON', message: messages.invalid };
+86: 
+87:   const decoder = new TextDecoder();
+88:   let bytesRead = 0;
+89:   let raw = '';
+90:   try {
+91:     while (true) {
+--- lines 73-96 ---
+73: ): Promise<BoundedJsonResult> {
+74:   const contentType = String(request.headers.get('Content-Type') || '').toLowerCase();
+75:   if (!contentType.includes('application/json')) {
+76:     return { ok: false, status: 415, code: 'UNSUPPORTED_MEDIA_TYPE', message: `${messages.entityName}ต้องส่งเป็น application/json` };
+77:   }
+78: 
+79:   const declaredLength = Number(request.headers.get('Content-Length'));
+80:   if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
+81:     return { ok: false, status: 413, code: 'PAYLOAD_TOO_LARGE', message: messages.tooLarge };
+82:   }
+83: 
+84:   const reader = request.body?.getReader();
+85:   if (!reader) return { ok: false, status: 400, code: 'INVALID_JSON', message: messages.invalid };
+86: 
+87:   const decoder = new TextDecoder();
+88:   let bytesRead = 0;
+89:   let raw = '';
+90:   try {
+91:     while (true) {
+92:       const { done, value } = await reader.read();
+93:       if (done) break;
+94:       bytesRead += value.byteLength;
+95:       if (bytesRead > maxBytes) {
+96:         await reader.cancel();
+--- lines 77-100 ---
+77:   }
+78: 
+79:   const declaredLength = Number(request.headers.get('Content-Length'));
+80:   if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
+81:     return { ok: false, status: 413, code: 'PAYLOAD_TOO_LARGE', message: messages.tooLarge };
+82:   }
+83: 
+84:   const reader = request.body?.getReader();
+85:   if (!reader) return { ok: false, status: 400, code: 'INVALID_JSON', message: messages.invalid };
+86: 
+87:   const decoder = new TextDecoder();
+88:   let bytesRead = 0;
+89:   let raw = '';
+90:   try {
+91:     while (true) {
+92:       const { done, value } = await reader.read();
+93:       if (done) break;
+94:       bytesRead += value.byteLength;
+95:       if (bytesRead > maxBytes) {
+96:         await reader.cancel();
+97:         return { ok: false, status: 413, code: 'PAYLOAD_TOO_LARGE', message: messages.tooLarge };
+98:       }
+99:       raw += decoder.decode(value, { stream: true });
+100:     }
+--- lines 89-112 ---
+89:   let raw = '';
+90:   try {
+91:     while (true) {
+92:       const { done, value } = await reader.read();
+93:       if (done) break;
+94:       bytesRead += value.byteLength;
+95:       if (bytesRead > maxBytes) {
+96:         await reader.cancel();
+97:         return { ok: false, status: 413, code: 'PAYLOAD_TOO_LARGE', message: messages.tooLarge };
+98:       }
+99:       raw += decoder.decode(value, { stream: true });
+100:     }
+101:     raw += decoder.decode();
+102:     const parsed: unknown = JSON.parse(raw);
+103:     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+104:       return { ok: false, status: 400, code: 'INVALID_JSON', message: messages.invalid };
+105:     }
+106:     return { ok: true, data: parsed as Record<string, unknown> };
+107:   } catch {
+108:     return { ok: false, status: 400, code: 'INVALID_JSON', message: messages.invalid };
+109:   }
+110: }
+111: 
+112: function decodeBase64(value: string): Uint8Array | null {
+--- lines 96-119 ---
+96:         await reader.cancel();
+97:         return { ok: false, status: 413, code: 'PAYLOAD_TOO_LARGE', message: messages.tooLarge };
+98:       }
+99:       raw += decoder.decode(value, { stream: true });
+100:     }
+101:     raw += decoder.decode();
+102:     const parsed: unknown = JSON.parse(raw);
+103:     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+104:       return { ok: false, status: 400, code: 'INVALID_JSON', message: messages.invalid };
+105:     }
+106:     return { ok: true, data: parsed as Record<string, unknown> };
+107:   } catch {
+108:     return { ok: false, status: 400, code: 'INVALID_JSON', message: messages.invalid };
+109:   }
+110: }
+111: 
+112: function decodeBase64(value: string): Uint8Array | null {
+113:   try {
+114:     const binary = atob(value);
+115:     const bytes = new Uint8Array(binary.length);
+116:     for (let index = 0; index < binary.length; index++) {
+117:       bytes[index] = binary.charCodeAt(index);
+118:     }
+119:     return bytes;
+--- lines 100-123 ---
+100:     }
+101:     raw += decoder.decode();
+102:     const parsed: unknown = JSON.parse(raw);
+103:     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+104:       return { ok: false, status: 400, code: 'INVALID_JSON', message: messages.invalid };
+105:     }
+106:     return { ok: true, data: parsed as Record<string, unknown> };
+107:   } catch {
+108:     return { ok: false, status: 400, code: 'INVALID_JSON', message: messages.invalid };
+109:   }
+110: }
+111: 
+112: function decodeBase64(value: string): Uint8Array | null {
+113:   try {
+114:     const binary = atob(value);
+115:     const bytes = new Uint8Array(binary.length);
+116:     for (let index = 0; index < binary.length; index++) {
+117:       bytes[index] = binary.charCodeAt(index);
+118:     }
+119:     return bytes;
+120:   } catch {
+121:     return null;
+122:   }
+123: }
+--- lines 168-191 ---
+168:   "X-Content-Type-Options": "nosniff",
+169:   "X-XSS-Protection": "1; mode=block",
+170:   "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
+171:   "Referrer-Policy": "strict-origin-when-cross-origin",
+172:   "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+173:   "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Requested-With, X-CSRF-Token",
+174: };
+175: 
+176: const jsonResponse = (data: any, status = 200, requestOrigin?: string | null) => {
+177:   const origin = requestOrigin && ALLOWED_ORIGINS.includes(requestOrigin) ? requestOrigin : null;
+178: 
+179:   return new Response(JSON.stringify(data), {
+180:     status,
+181:     headers: {
+182:       ...SECURITY_HEADERS,
+183:       ...(origin ? { "Access-Control-Allow-Origin": origin, "Vary": "Origin" } : {}),
+184:     },
+185:   });
+186: };
+187: 
+188: const successResponse = (data: any, message?: string, status = 200, requestOrigin?: string | null) => {
+189:   return jsonResponse({
+190:     success: true,
+191:     data: sanitizeInput(data),
+--- lines 180-203 ---
+180:     status,
+181:     headers: {
+182:       ...SECURITY_HEADERS,
+183:       ...(origin ? { "Access-Control-Allow-Origin": origin, "Vary": "Origin" } : {}),
+184:     },
+185:   });
+186: };
+187: 
+188: const successResponse = (data: any, message?: string, status = 200, requestOrigin?: string | null) => {
+189:   return jsonResponse({
+190:     success: true,
+191:     data: sanitizeInput(data),
+192:     ...(message ? { message: sanitizeInput(message) } : {})
+193:   }, status, requestOrigin);
+194: };
+195: 
+196: const errorResponse = (code: string, message: string, status = 400, details?: any[]) => {
+197:   return jsonResponse({
+198:     success: false,
+199:     error: {
+200:       code,
+201:       message,
+202:       ...(details ? { details } : {})
+203:     }
+--- lines 188-211 ---
+188: const successResponse = (data: any, message?: string, status = 200, requestOrigin?: string | null) => {
+189:   return jsonResponse({
+190:     success: true,
+191:     data: sanitizeInput(data),
+192:     ...(message ? { message: sanitizeInput(message) } : {})
+193:   }, status, requestOrigin);
+194: };
+195: 
+196: const errorResponse = (code: string, message: string, status = 400, details?: any[]) => {
+197:   return jsonResponse({
+198:     success: false,
+199:     error: {
+200:       code,
+201:       message,
+202:       ...(details ? { details } : {})
+203:     }
+204:   }, status);
+205: };
+206: 
+207: class PlanAccessError extends Error {
+208:   constructor(public code: 'PLAN_REQUIRED' | 'PLAN_LIMIT_REACHED' | 'LICENSE_REQUIRED', message: string, public status = 403) {
+209:     super(message);
+210:     this.name = 'PlanAccessError';
+211:   }
+--- lines 200-223 ---
+200:       code,
+201:       message,
+202:       ...(details ? { details } : {})
+203:     }
+204:   }, status);
+205: };
+206: 
+207: class PlanAccessError extends Error {
+208:   constructor(public code: 'PLAN_REQUIRED' | 'PLAN_LIMIT_REACHED' | 'LICENSE_REQUIRED', message: string, public status = 403) {
+209:     super(message);
+210:     this.name = 'PlanAccessError';
+211:   }
+212: }
+213: 
+214: function normalizeRoomName(name: string): string {
+215:   if (!name) return "";
+216:   let clean = name.toString().trim().toLowerCase()
+217:     .replace(/^ห้อง\s*/, "")
+218:     .replace(/\s+/g, "");
+219:   
+220:   const thaiNumberMap: Record<string, string> = {
+221:     "แรก": "1", "หนึ่ง": "1", "สอง": "2", "สาม": "3", "สี่": "4", "ห้า": "5",
+222:     "หก": "6", "เจ็ด": "7", "แปด": "8", "เก้า": "9", "สิบ": "10"
+223:   };
+--- lines 578-601 ---
+578:       `คุณทำรายการถี่เกินไป กรุณารอ ${limitCheck.retryAfterSeconds} วินาทีก่อนลองใหม่อีกครั้ง`,
+579:       429
+580:     );
+581:   }
+582: 
+583:   try {
+584:     // 1. Health check
+585:     if (path === "/api/health") {
+586:       return successResponse({ status: "ok", mode: "cloudflare-pages", version: APP_VERSION });
+587:     }
+588: 
+589:     // Helper: Parse JSON Body
+590:     const getJson = async (): Promise<any> => {
+591:       try { return await request.json(); } catch { return {}; }
+592:     };
+593:     const getTenantSession = async () => {
+594:       const authHeader = request.headers.get("Authorization");
+595:       if (!authHeader?.startsWith("Bearer ")) return null;
+596:       const payload = await verifyToken(authHeader.slice(7), getJwtSecret(env));
+597:       if (!payload || payload.role !== "tenant" || !Number.isInteger(payload.roomId) || !Number.isInteger(payload.userId)) return null;
+598:       return { roomId: payload.roomId as number, userId: payload.userId as number };
+599:     };
+600: 
+601:     const mapTenantRoom = (room: any) => ({
+--- lines 597-620 ---
+597:       if (!payload || payload.role !== "tenant" || !Number.isInteger(payload.roomId) || !Number.isInteger(payload.userId)) return null;
+598:       return { roomId: payload.roomId as number, userId: payload.userId as number };
+599:     };
+600: 
+601:     const mapTenantRoom = (room: any) => ({
+602:       id: room.id,
+603:       roomNumber: room.room_number,
+604:       monthlyRent: room.monthly_rent || 0,
+605:       status: room.status,
+606:       tenantName: room.tenant_name,
+607:       tenantPhone: room.tenant_phone,
+608:       lineStatus: room.line_status,
+609:       lineDisplayName: room.line_display_name,
+610:       linePictureUrl: room.line_picture_url,
+611:     });
+612: 
+613:     const mapTenantBill = (bill: any) => ({
+614:       id: bill.id,
+615:       roomId: bill.room_id,
+616:       userId: bill.user_id,
+617:       billMonth: bill.bill_month,
+618:       priorElec: bill.prior_elec || 0,
+619:       currentElec: bill.current_elec || 0,
+620:       elecDeduct: bill.elec_deduct || 0,
+--- lines 625-648 ---
+625:       waterUnitCost: bill.water_unit_cost || 0,
+626:       waterCost: bill.water_cost || 0,
+627:       rentCost: bill.rent_cost || 0,
+628:       depositCost: bill.deposit_cost || 0,
+629:       otherCost: bill.other_cost || 0,
+630:       otherDescription: bill.other_description,
+631:       totalCost: bill.total_cost || 0,
+632:       dueDate: bill.due_date,
+633:       status: bill.status,
+634:       paidAt: bill.paid_at,
+635:       slipImage: bill.slip_image,
+636:       slipUploadedAt: bill.slip_uploaded_at,
+637:       slipStatus: bill.slip_status,
+638:     });
+639: 
+640:     const mapTenantSettings = (settings: any) => ({
+641:       id: settings.id,
+642:       userId: settings.user_id,
+643:       dormName: settings.dorm_name || 'หอพักของฉัน',
+644:       promptpayId: settings.promptpay_id,
+645:       promptpayName: settings.promptpay_name,
+646:     });
+647: 
+648:     const mapMaintenanceTicket = (ticket: any) => ({
+--- lines 651-674 ---
+651:       roomId: ticket.room_id,
+652:       roomNumber: ticket.room_number,
+653:       tenantName: ticket.tenant_name,
+654:       tenantPhone: ticket.tenant_phone,
+655:       title: ticket.title,
+656:       description: ticket.description,
+657:       category: ticket.category,
+658:       priority: ticket.priority,
+659:       status: ticket.status,
+660:       imageUrl: ticket.image_url,
+661:       repairCost: ticket.repair_cost || 0,
+662:       technicianNote: ticket.technician_note,
+663:       createdAt: ticket.created_at,
+664:       updatedAt: ticket.updated_at,
+665:     });
+666: 
+667:     const publicRoomMatch = path.match(/^\/api\/public\/rooms\/(\d+)$/);
+668:     if (publicRoomMatch && method === 'GET') {
+669:       const roomId = Number(publicRoomMatch[1]);
+670:       const tenant = await getTenantSession();
+671:       if (!tenant || tenant.roomId !== roomId) {
+672:         return errorResponse('UNAUTHORIZED', 'กรุณายืนยันตัวตนผู้เช่าก่อนดูข้อมูลห้องพัก', 401);
+673:       }
+674:       if (!await ownerHasPlanFeature(tenant.userId, 'tenantPortal')) {
+--- lines 687-710 ---
+687:       ).bind(roomId, tenant.userId).all();
+688:       const { results: rawChargeItems } = await env.DB.prepare('SELECT i.* FROM bill_charge_items i JOIN bills b ON b.id=i.bill_id WHERE b.user_id=? AND b.room_id=? AND b.deleted_at IS NULL ORDER BY i.sort_order,i.id').bind(tenant.userId, roomId).all();
+689:       const bills = (rawBills || []).map((row: any) => ({ ...mapTenantBill(row), chargeItems: (rawChargeItems || []).filter((item: any) => Number(item.bill_id) === Number(row.id)).map((item: any) => ({ id: item.id, billId: item.bill_id, assignmentId: item.assignment_id, label: item.label, amount: item.amount, kind: item.kind, sortOrder: item.sort_order })) }));
+690: 
+691:       return successResponse({
+692:         tenantToken: request.headers.get('Authorization')?.slice(7),
+693:         room: mapTenantRoom(room),
+694:         settings: mapTenantSettings(rawSettings),
+695:         unpaidBills: bills.filter((bill: any) => bill.status === 'unpaid' || bill.slipStatus === 'pending' || bill.slipStatus === 'rejected'),
+696:         paidBills: bills.filter((bill: any) => bill.status === 'paid' && bill.slipStatus !== 'pending').slice(0, 10),
+697:       });
+698:     }
+699: 
+700:     const uploadSlipMatch = path.match(/^\/api\/public\/bills\/(\d+)\/upload-slip$/);
+701:     if (uploadSlipMatch && method === 'POST') {
+702:       const tenant = await getTenantSession();
+703:       if (!tenant) return errorResponse('UNAUTHORIZED', 'กรุณายืนยันตัวตนผู้เช่าก่อนอัปโหลดสลิป', 401);
+704:       if (!await ownerHasPlanFeature(tenant.userId, 'tenantPortal')) {
+705:         return errorResponse('PLAN_REQUIRED', 'Tenant Portal อยู่ในแพ็กเกจ Pro', 403);
+706:       }
+707:       if (!env.DB) return errorResponse('DATABASE_ERROR', 'ไม่พบการเชื่อมต่อฐานข้อมูล D1', 500);
+708: 
+709:       const billId = Number(uploadSlipMatch[1]);
+710:       const body = await getJson();
+--- lines 688-711 ---
+688:       const { results: rawChargeItems } = await env.DB.prepare('SELECT i.* FROM bill_charge_items i JOIN bills b ON b.id=i.bill_id WHERE b.user_id=? AND b.room_id=? AND b.deleted_at IS NULL ORDER BY i.sort_order,i.id').bind(tenant.userId, roomId).all();
+689:       const bills = (rawBills || []).map((row: any) => ({ ...mapTenantBill(row), chargeItems: (rawChargeItems || []).filter((item: any) => Number(item.bill_id) === Number(row.id)).map((item: any) => ({ id: item.id, billId: item.bill_id, assignmentId: item.assignment_id, label: item.label, amount: item.amount, kind: item.kind, sortOrder: item.sort_order })) }));
+690: 
+691:       return successResponse({
+692:         tenantToken: request.headers.get('Authorization')?.slice(7),
+693:         room: mapTenantRoom(room),
+694:         settings: mapTenantSettings(rawSettings),
+695:         unpaidBills: bills.filter((bill: any) => bill.status === 'unpaid' || bill.slipStatus === 'pending' || bill.slipStatus === 'rejected'),
+696:         paidBills: bills.filter((bill: any) => bill.status === 'paid' && bill.slipStatus !== 'pending').slice(0, 10),
+697:       });
+698:     }
+699: 
+700:     const uploadSlipMatch = path.match(/^\/api\/public\/bills\/(\d+)\/upload-slip$/);
+701:     if (uploadSlipMatch && method === 'POST') {
+702:       const tenant = await getTenantSession();
+703:       if (!tenant) return errorResponse('UNAUTHORIZED', 'กรุณายืนยันตัวตนผู้เช่าก่อนอัปโหลดสลิป', 401);
+704:       if (!await ownerHasPlanFeature(tenant.userId, 'tenantPortal')) {
+705:         return errorResponse('PLAN_REQUIRED', 'Tenant Portal อยู่ในแพ็กเกจ Pro', 403);
+706:       }
+707:       if (!env.DB) return errorResponse('DATABASE_ERROR', 'ไม่พบการเชื่อมต่อฐานข้อมูล D1', 500);
+708: 
+709:       const billId = Number(uploadSlipMatch[1]);
+710:       const body = await getJson();
+711:       const slipImage = String(body.slipImage || '');
+--- lines 716-739 ---
+716:       if (!uploadValidation.valid) return errorResponse('VALIDATION_ERROR', uploadValidation.error || 'ไฟล์สลิปไม่ถูกต้อง', 400);
+717: 
+718:       const bill = await env.DB.prepare(
+719:         'SELECT id FROM bills WHERE id = ? AND room_id = ? AND user_id = ? AND deleted_at IS NULL'
+720:       ).bind(billId, tenant.roomId, tenant.userId).first();
+721:       if (!bill) return errorResponse('NOT_FOUND', 'ไม่พบบิลที่ระบุ', 404);
+722: 
+723:       await env.DB.prepare(
+724:         "UPDATE bills SET slip_image = ?, slip_uploaded_at = CURRENT_TIMESTAMP, slip_status = 'pending' WHERE id = ? AND room_id = ? AND user_id = ?"
+725:       ).bind(slipImage, billId, tenant.roomId, tenant.userId).run();
+726:       return successResponse({ success: true }, 'อัปโหลดสลิปเรียบร้อยแล้ว');
+727:     }
+728: 
+729:     if (path === '/api/tenant/maintenance' && method === 'GET') {
+730:       const tenant = await getTenantSession();
+731:       const requestedRoomId = Number(url.searchParams.get('roomId'));
+732:       if (!tenant || !requestedRoomId || tenant.roomId !== requestedRoomId) {
+733:         return errorResponse('UNAUTHORIZED', 'กรุณายืนยันตัวตนผู้เช่าก่อนดูรายการแจ้งซ่อม', 401);
+734:       }
+735:       if (!await ownerHasPlanFeature(tenant.userId, 'tenantPortal') || !await ownerHasPlanFeature(tenant.userId, 'maintenance')) {
+736:         return errorResponse('PLAN_REQUIRED', 'แจ้งซ่อมผ่าน Tenant Portal อยู่ในแพ็กเกจ Pro', 403);
+737:       }
+738:       if (!env.DB) return errorResponse('DATABASE_ERROR', 'ไม่พบการเชื่อมต่อฐานข้อมูล D1', 500);
+739:       const { results } = await env.DB.prepare(
+--- lines 814-837 ---
+814:           const userSettings = {
+815:             id: rawSettings.id,
+816:             userId: rawSettings.user_id,
+817:             dormName: rawSettings.dorm_name || "หอพักของฉัน",
+818:             promptpayId: rawSettings.promptpay_id,
+819:             promptpayName: rawSettings.promptpay_name
+820:           };
+821: 
+822:           const { results: rawUnpaid } = await env.DB.prepare("SELECT * FROM bills WHERE room_id = ? AND user_id = ? AND status = 'unpaid' AND deleted_at IS NULL ORDER BY bill_month DESC").bind(room.id, userId).all();
+823:           const { results: rawPaid } = await env.DB.prepare("SELECT * FROM bills WHERE room_id = ? AND user_id = ? AND status = 'paid' AND deleted_at IS NULL ORDER BY bill_month DESC LIMIT 5").bind(room.id, userId).all();
+824: 
+825:           const mapBill = (b: any) => ({
+826:             id: b.id,
+827:             roomId: b.room_id,
+828:             userId: b.user_id,
+829:             billMonth: b.bill_month,
+830:             totalCost: b.total_cost || 0,
+831:             rentCost: b.rent_cost || 0,
+832:             priorElec: b.prior_elec || 0,
+833:             currentElec: b.current_elec || 0,
+834:             elecDeduct: b.elec_deduct || 0,
+835:             elecUnitCost: b.elec_unit_cost || 0,
+836:             elecCost: b.elec_cost || 0,
+837:             priorWater: b.prior_water || 0,
+--- lines 815-838 ---
+815:             id: rawSettings.id,
+816:             userId: rawSettings.user_id,
+817:             dormName: rawSettings.dorm_name || "หอพักของฉัน",
+818:             promptpayId: rawSettings.promptpay_id,
+819:             promptpayName: rawSettings.promptpay_name
+820:           };
+821: 
+822:           const { results: rawUnpaid } = await env.DB.prepare("SELECT * FROM bills WHERE room_id = ? AND user_id = ? AND status = 'unpaid' AND deleted_at IS NULL ORDER BY bill_month DESC").bind(room.id, userId).all();
+823:           const { results: rawPaid } = await env.DB.prepare("SELECT * FROM bills WHERE room_id = ? AND user_id = ? AND status = 'paid' AND deleted_at IS NULL ORDER BY bill_month DESC LIMIT 5").bind(room.id, userId).all();
+824: 
+825:           const mapBill = (b: any) => ({
+826:             id: b.id,
+827:             roomId: b.room_id,
+828:             userId: b.user_id,
+829:             billMonth: b.bill_month,
+830:             totalCost: b.total_cost || 0,
+831:             rentCost: b.rent_cost || 0,
+832:             priorElec: b.prior_elec || 0,
+833:             currentElec: b.current_elec || 0,
+834:             elecDeduct: b.elec_deduct || 0,
+835:             elecUnitCost: b.elec_unit_cost || 0,
+836:             elecCost: b.elec_cost || 0,
+837:             priorWater: b.prior_water || 0,
+838:             currentWater: b.current_water || 0,
+--- lines 835-858 ---
+835:             elecUnitCost: b.elec_unit_cost || 0,
+836:             elecCost: b.elec_cost || 0,
+837:             priorWater: b.prior_water || 0,
+838:             currentWater: b.current_water || 0,
+839:             waterUnitCost: b.water_unit_cost || 0,
+840:             waterCost: b.water_cost || 0,
+841:             depositCost: b.deposit_cost || 0,
+842:             otherCost: b.other_cost || 0,
+843:             status: b.status,
+844:             dueDate: b.due_date,
+845:             slipStatus: b.slip_status,
+846:             slipUrl: b.slip_url,
+847:             slipTimestamp: b.slip_timestamp
+848:           });
+849: 
+850:           const unpaidBillsList = rawUnpaid.map(mapBill);
+851:           const paidBillsList = rawPaid.map(mapBill);
+852: 
+853:           return successResponse({
+854:             success: true,
+855:             tenantToken: await generateToken({ role: 'tenant', roomId: room.id, userId }, getJwtSecret(env), 1),
+856:             room: {
+857:               id: room.id,
+858:               roomNumber: room.room_number,
+--- lines 893-916 ---
+893:       }
+894: 
+895:       if (env.DB) {
+896:         try {
+897:           const roomObj = await env.DB.prepare("SELECT * FROM rooms WHERE id = ? AND user_id = ? AND deleted_at IS NULL").bind(parseInt(roomId), payload.userId).first();
+898:           if (!roomObj) return errorResponse("NOT_FOUND", "Room not found.", 404);
+899: 
+900:           await env.DB.prepare(
+901:             "UPDATE rooms SET line_user_id = ?, line_display_name = ?, line_picture_url = ?, line_status = 'linked' WHERE id = ? AND user_id = ?"
+902:           ).bind(lineUserId, lineDisplayName || "LINE User", linePictureUrl || "", roomObj.id, roomObj.user_id).run();
+903: 
+904:           const updated = await env.DB.prepare("SELECT * FROM rooms WHERE id = ? AND user_id = ?").bind(roomObj.id, roomObj.user_id).first();
+905: 
+906:           // Send welcome push message
+907:           const userSettings = await env.DB.prepare("SELECT * FROM settings WHERE user_id = ?").bind(updated.user_id).first();
+908:           if (userSettings) {
+909:              const welcomeMsg = `🎉 ยินดีต้อนรับเข้าสู่ระบบแจ้งเตือนบิลหอพัก ${userSettings.dorm_name || 'หอพัก'}!
+910: คุณได้ทำการเชื่อมต่อ LINE สำเร็จสำหรับห้อง ${updated.room_number} เรียบร้อยแล้วค่ะ`;
+911:              await pushLineMessage(userSettings, lineUserId, welcomeMsg);
+912:           }
+913: 
+914:           return successResponse({ success: true, room: updated }, "ลงทะเบียนเชื่อมต่อ LINE สำเร็จเรียบร้อยแล้ว");
+915:         } catch (e: any) {
+916:           console.error("Public register error:", e);
+--- lines 977-1000 ---
+977:           let lineMessage = rawError;
+978:           try {
+979:             const parsed = JSON.parse(rawError) as { message?: string };
+980:             if (parsed.message) lineMessage = parsed.message;
+981:           } catch {
+982:             // LINE can return a non-JSON response during an upstream incident.
+983:           }
+984:           lineMessage = lineMessage.trim().slice(0, 240) || "LINE API ปฏิเสธคำขอ";
+985:           console.error("LINE push rejected", { status: response.status, message: lineMessage });
+986:           await logLineEvent(userSettings.user_id, 'error', `ส่ง LINE ไม่สำเร็จ (${response.status}): ${lineMessage}`);
+987: 
+988:           if (response.status === 401) {
+989:             return { success: false, message: "LINE Channel Access Token ไม่ถูกต้องหรือหมดอายุ" };
+990:           }
+991:           return { success: false, message: `LINE API ปฏิเสธการส่ง (${response.status}): ${lineMessage}` };
+992:         }
+993:         await logLineEvent(userSettings.user_id, 'outgoing', text);
+994:         return { success: true, message: "ส่งข้อความสำเร็จ" };
+995:       } catch (err) {
+996:         console.error("Error in pushLineMessage:", err);
+997:         if (userSettings?.user_id) {
+998:           await logLineEvent(userSettings.user_id, 'error', 'เชื่อมต่อ LINE API ไม่สำเร็จ');
+999:         }
+1000:         return { success: false, message: "เชื่อมต่อ LINE API ไม่สำเร็จ กรุณาลองใหม่" };
+--- lines 980-1003 ---
+980:             if (parsed.message) lineMessage = parsed.message;
+981:           } catch {
+982:             // LINE can return a non-JSON response during an upstream incident.
+983:           }
+984:           lineMessage = lineMessage.trim().slice(0, 240) || "LINE API ปฏิเสธคำขอ";
+985:           console.error("LINE push rejected", { status: response.status, message: lineMessage });
+986:           await logLineEvent(userSettings.user_id, 'error', `ส่ง LINE ไม่สำเร็จ (${response.status}): ${lineMessage}`);
+987: 
+988:           if (response.status === 401) {
+989:             return { success: false, message: "LINE Channel Access Token ไม่ถูกต้องหรือหมดอายุ" };
+990:           }
+991:           return { success: false, message: `LINE API ปฏิเสธการส่ง (${response.status}): ${lineMessage}` };
+992:         }
+993:         await logLineEvent(userSettings.user_id, 'outgoing', text);
+994:         return { success: true, message: "ส่งข้อความสำเร็จ" };
+995:       } catch (err) {
+996:         console.error("Error in pushLineMessage:", err);
+997:         if (userSettings?.user_id) {
+998:           await logLineEvent(userSettings.user_id, 'error', 'เชื่อมต่อ LINE API ไม่สำเร็จ');
+999:         }
+1000:         return { success: false, message: "เชื่อมต่อ LINE API ไม่สำเร็จ กรุณาลองใหม่" };
+1001:       }
+1002:     }
+1003: 
+--- lines 1025-1048 ---
+1025:         const { results } = await env.DB.prepare(
+1026:           'SELECT id, type, message, room_number, created_at AS timestamp FROM line_event_logs WHERE user_id = ? ORDER BY created_at DESC, id DESC LIMIT ?'
+1027:         ).bind(ownerId, limit).all();
+1028:         return successResponse(results || []);
+1029:     }
+1030: 
+1031:     if (path === "/api/line/webhook" && method === "POST") {
+1032:         try {
+1033:             if (!env.DB) return new Response("LINE integration is not configured", { status: 503 });
+1034: 
+1035:             const signature = request.headers.get('x-line-signature');
+1036:             if (!signature) return new Response("Missing LINE signature", { status: 401 });
+1037: 
+1038:             const rawBody = await request.text();
+1039:             let body: any;
+1040:             try {
+1041:                 body = JSON.parse(rawBody);
+1042:             } catch {
+1043:                 return new Response("Invalid JSON", { status: 400 });
+1044:             }
+1045: 
+1046:             const { results: configuredSettings } = await env.DB.prepare(
+1047:                 `SELECT * FROM settings
+1048:                  WHERE line_bot_enabled = 1
+--- lines 1028-1051 ---
+1028:         return successResponse(results || []);
+1029:     }
+1030: 
+1031:     if (path === "/api/line/webhook" && method === "POST") {
+1032:         try {
+1033:             if (!env.DB) return new Response("LINE integration is not configured", { status: 503 });
+1034: 
+1035:             const signature = request.headers.get('x-line-signature');
+1036:             if (!signature) return new Response("Missing LINE signature", { status: 401 });
+1037: 
+1038:             const rawBody = await request.text();
+1039:             let body: any;
+1040:             try {
+1041:                 body = JSON.parse(rawBody);
+1042:             } catch {
+1043:                 return new Response("Invalid JSON", { status: 400 });
+1044:             }
+1045: 
+1046:             const { results: configuredSettings } = await env.DB.prepare(
+1047:                 `SELECT * FROM settings
+1048:                  WHERE line_bot_enabled = 1
+1049:                    AND line_channel_secret IS NOT NULL
+1050:                    AND length(trim(line_channel_secret)) > 0`
+1051:             ).all<LineSettingsRow>();
+--- lines 1035-1058 ---
+1035:             const signature = request.headers.get('x-line-signature');
+1036:             if (!signature) return new Response("Missing LINE signature", { status: 401 });
+1037: 
+1038:             const rawBody = await request.text();
+1039:             let body: any;
+1040:             try {
+1041:                 body = JSON.parse(rawBody);
+1042:             } catch {
+1043:                 return new Response("Invalid JSON", { status: 400 });
+1044:             }
+1045: 
+1046:             const { results: configuredSettings } = await env.DB.prepare(
+1047:                 `SELECT * FROM settings
+1048:                  WHERE line_bot_enabled = 1
+1049:                    AND line_channel_secret IS NOT NULL
+1050:                    AND length(trim(line_channel_secret)) > 0`
+1051:             ).all<LineSettingsRow>();
+1052: 
+1053:             let userSettings: LineSettingsRow | null = null;
+1054:             for (const candidate of configuredSettings || []) {
+1055:                 if (candidate.line_channel_secret && await verifyLineWebhookSignature(rawBody, signature, candidate.line_channel_secret)) {
+1056:                     userSettings = candidate;
+1057:                     break;
+1058:                 }
+--- lines 1053-1076 ---
+1053:             let userSettings: LineSettingsRow | null = null;
+1054:             for (const candidate of configuredSettings || []) {
+1055:                 if (candidate.line_channel_secret && await verifyLineWebhookSignature(rawBody, signature, candidate.line_channel_secret)) {
+1056:                     userSettings = candidate;
+1057:                     break;
+1058:                 }
+1059:             }
+1060: 
+1061:             if (!userSettings) return new Response("Invalid LINE signature", { status: 401 });
+1062: 
+1063:             const events = body.events;
+1064:             if (!events || !Array.isArray(events)) {
+1065:                 return new Response("OK", { status: 200 });
+1066:             }
+1067: 
+1068:             const userId = userSettings.user_id;
+1069: 
+1070:             for (const event of events) {
+1071:                 if (event.type === "message" && event.message.type === "text") {
+1072:                     const lineUserId = event.source.userId;
+1073:                     if (!lineUserId) continue;
+1074:                     const text = event.message.text.trim();
+1075:                     const replyToken = event.replyToken;
+1076:                     await logLineEvent(userId, 'incoming', text);
+--- lines 1057-1080 ---
+1057:                     break;
+1058:                 }
+1059:             }
+1060: 
+1061:             if (!userSettings) return new Response("Invalid LINE signature", { status: 401 });
+1062: 
+1063:             const events = body.events;
+1064:             if (!events || !Array.isArray(events)) {
+1065:                 return new Response("OK", { status: 200 });
+1066:             }
+1067: 
+1068:             const userId = userSettings.user_id;
+1069: 
+1070:             for (const event of events) {
+1071:                 if (event.type === "message" && event.message.type === "text") {
+1072:                     const lineUserId = event.source.userId;
+1073:                     if (!lineUserId) continue;
+1074:                     const text = event.message.text.trim();
+1075:                     const replyToken = event.replyToken;
+1076:                     await logLineEvent(userId, 'incoming', text);
+1077: 
+1078:                     // 1. Handle registration keyword: "ลงทะเบียน [เลขห้อง] [เบอร์โทร]"
+1079:                     const regRegex = /^(ลงทะเบียน|register)\s+(\S+)\s+(\S+)$/i;
+1080:                     const match = text.match(regRegex);
+--- lines 1094-1117 ---
+1094:                         if (roomMatch.length === 0 && cleanPhoneInput) {
+1095:                             roomMatch = allRooms.filter((r: any) => {
+1096:                                 const cleanRoomPhone = (r.tenant_phone || "").replace(/[- ]/g, "");
+1097:                                 return cleanRoomPhone && cleanRoomPhone === cleanPhoneInput;
+1098:                             });
+1099:                         }
+1100: 
+1101:                         if (roomMatch.length === 0) {
+1102:                             const occupiedRooms = allRooms.filter((r: any) => r.status === "occupied");
+1103:                             const roomList = occupiedRooms.map((r: any) => (r.room_number || '').trim()).join(", ");
+1104:                             await replyLineMessage(
+1105:                                 userSettings, 
+1106:                                 replyToken, 
+1107:                                 `❌ ไม่พบห้องหมายเลข "${roomNum}" ในระบบค่ะ\n\nหมายเลขห้องที่เปิดใช้งานในขณะนี้ เช่น: ${roomList || "ยังไม่มีข้อมูลห้องพัก"}`
+1108:                             );
+1109:                         } else {
+1110:                             const room = roomMatch[0];
+1111:                             const cleanRoomPhone = (room.tenant_phone || "").replace(/[- ]/g, "");
+1112: 
+1113:                             if (cleanRoomPhone && cleanPhoneInput !== cleanRoomPhone) {
+1114:                                 await replyLineMessage(userSettings, replyToken, `❌ เบอร์โทรศัพท์ไม่ถูกต้อง สำหรับห้อง ${room.room_number}`);
+1115:                             } else {
+1116:                                 let displayName = `LINE User`;
+1117:                                 let pictureUrl = "";
+--- lines 1124-1147 ---
+1124:                                             const profile = await profileRes.json<{ displayName?: string; pictureUrl?: string }>();
+1125:                                             displayName = profile.displayName || displayName;
+1126:                                             pictureUrl = profile.pictureUrl || pictureUrl;
+1127:                                         }
+1128:                                     } catch (err) {}
+1129:                                 }
+1130: 
+1131:                                 await env.DB.prepare(
+1132:                                     "UPDATE rooms SET line_user_id = ?, line_display_name = ?, line_picture_url = ?, line_status = 'linked' WHERE id = ?"
+1133:                                 ).bind(lineUserId, displayName, pictureUrl, room.id).run();
+1134: 
+1135:                                 await replyLineMessage(userSettings, replyToken, `🎉 ลงทะเบียนสำเร็จ!\nห้อง: ${room.room_number}\nผู้เช่า: ${room.tenant_name || 'ไม่ระบุ'}\nตอนนี้คุณจะได้รับบิลแจ้งเตือนผ่านช่องทางนี้แล้วค่ะ`);
+1136:                             }
+1137:                         }
+1138:                         continue;
+1139:                     }
+1140: 
+1141:                     // 2. Query bills: "บิล" or "ยอดค้างชำระ"
+1142:                     const isQueryBill = ["บิล", "ค่าเช่า", "ยอดค้างชำระ", "ยอดค้าง", "bill", "check"].some(k => text.toLowerCase().includes(k));
+1143:                     if (isQueryBill) {
+1144:                         const { results: linkedRooms } = await env.DB.prepare("SELECT * FROM rooms WHERE user_id = ? AND line_user_id = ? AND deleted_at IS NULL").bind(userId, lineUserId).all<any>();
+1145: 
+1146:                         if (linkedRooms.length === 0) {
+1147:                             await replyLineMessage(userSettings, replyToken, `⚠️ คุณยังไม่ได้ลงทะเบียนในระบบค่ะ\nกรุณาลงทะเบียนโดยพิมพ์:\nลงทะเบียน [เลขห้อง] [เบอร์โทร]\nเช่น: ลงทะเบียน 101 0812345678`);
+--- lines 1143-1166 ---
+1143:                     if (isQueryBill) {
+1144:                         const { results: linkedRooms } = await env.DB.prepare("SELECT * FROM rooms WHERE user_id = ? AND line_user_id = ? AND deleted_at IS NULL").bind(userId, lineUserId).all<any>();
+1145: 
+1146:                         if (linkedRooms.length === 0) {
+1147:                             await replyLineMessage(userSettings, replyToken, `⚠️ คุณยังไม่ได้ลงทะเบียนในระบบค่ะ\nกรุณาลงทะเบียนโดยพิมพ์:\nลงทะเบียน [เลขห้อง] [เบอร์โทร]\nเช่น: ลงทะเบียน 101 0812345678`);
+1148:                         } else {
+1149:                             const room = linkedRooms[0];
+1150:                             const { results: unpaid } = await env.DB.prepare(
+1151:                                 "SELECT * FROM bills WHERE user_id = ? AND room_id = ? AND status = 'unpaid' AND deleted_at IS NULL ORDER BY bill_month DESC"
+1152:                             ).bind(userId, room.id).all<any>();
+1153: 
+1154:                             if (unpaid.length === 0) {
+1155:                                 await replyLineMessage(userSettings, replyToken, `✅ ห้อง ${room.room_number} ไม่มียอดค้างชำระในระบบค่ะ ขอบคุณค่ะ!`);
+1156:                             } else {
+1157:                                 const latestBill = unpaid[0];
+1158:                                 const currentElec = latestBill.current_elec || 0;
+1159:                                 const priorElec = latestBill.prior_elec || 0;
+1160:                                 const elecDeduct = latestBill.elec_deduct || 0;
+1161:                                 const elecUnitCost = latestBill.elec_unit_cost || 0;
+1162:                                 const elecCost = latestBill.elec_cost ?? Math.round(Math.max(0, currentElec - priorElec - elecDeduct) * elecUnitCost);
+1163:                                 
+1164:                                 const currentWater = latestBill.current_water || 0;
+1165:                                 const priorWater = latestBill.prior_water || 0;
+1166:                                 const waterUnitCost = latestBill.water_unit_cost || 0;
+--- lines 1187-1210 ---
+1187:                         userSettings, 
+1188:                         replyToken, 
+1189:                         `ยินดีต้อนรับสู่บริการแจ้งบิลอัตโนมัติค่ะ 😊\n\n` +
+1190:                         `• หากต้องการลงทะเบียน พิมพ์:\nลงทะเบียน [เลขห้อง] [เบอร์โทร]\n` +
+1191:                         `• หากต้องการตรวจสอบบิลล่าสุด พิมพ์:\n"บิล" หรือ "ยอดค้างชำระ"`
+1192:                     );
+1193:                 }
+1194:             }
+1195:             return new Response("OK", { status: 200 });
+1196:         } catch (error) {
+1197:             console.error("LINE Webhook error:", error);
+1198:             return new Response("Internal Server Error", { status: 500 });
+1199:         }
+1200:     }
+1201: 
+1202:     if (path.match(/^\/api\/line\/send-test\/\d+$/) && method === "POST") {
+1203:         const user = await getAuthUser();
+1204:         if (!user) return errorResponse("UNAUTHORIZED", "Unauthorized", 401);
+1205:         if (!hasCaretakerPermission(user, PERMISSIONS.MANAGE_BILLS)) return errorResponse('FORBIDDEN', 'ไม่มีสิทธิ์จัดการบิล', 403);
+1206:         const roomId = parseInt(path.split("/").pop() || "0");
+1207:         
+1208:         if (env.DB) {
+1209:             try {
+1210:                 const room = await env.DB.prepare("SELECT * FROM rooms WHERE id = ? AND user_id = ?").bind(roomId, user.effectiveUserId).first();
+--- lines 1190-1213 ---
+1190:                         `• หากต้องการลงทะเบียน พิมพ์:\nลงทะเบียน [เลขห้อง] [เบอร์โทร]\n` +
+1191:                         `• หากต้องการตรวจสอบบิลล่าสุด พิมพ์:\n"บิล" หรือ "ยอดค้างชำระ"`
+1192:                     );
+1193:                 }
+1194:             }
+1195:             return new Response("OK", { status: 200 });
+1196:         } catch (error) {
+1197:             console.error("LINE Webhook error:", error);
+1198:             return new Response("Internal Server Error", { status: 500 });
+1199:         }
+1200:     }
+1201: 
+1202:     if (path.match(/^\/api\/line\/send-test\/\d+$/) && method === "POST") {
+1203:         const user = await getAuthUser();
+1204:         if (!user) return errorResponse("UNAUTHORIZED", "Unauthorized", 401);
+1205:         if (!hasCaretakerPermission(user, PERMISSIONS.MANAGE_BILLS)) return errorResponse('FORBIDDEN', 'ไม่มีสิทธิ์จัดการบิล', 403);
+1206:         const roomId = parseInt(path.split("/").pop() || "0");
+1207:         
+1208:         if (env.DB) {
+1209:             try {
+1210:                 const room = await env.DB.prepare("SELECT * FROM rooms WHERE id = ? AND user_id = ?").bind(roomId, user.effectiveUserId).first();
+1211:                 if (!room) return errorResponse("NOT_FOUND", "ไม่พบห้องพัก", 404);
+1212: 
+1213:                 const hasMessaging = !!room.line_user_id;
+--- lines 1235-1258 ---
+1235:     if (path.match(/^\/api\/line\/unlink\/\d+$/) && method === "POST") {
+1236:         const user = await getAuthUser();
+1237:         if (!user) return errorResponse("UNAUTHORIZED", "Unauthorized", 401);
+1238:         const roomId = parseInt(path.split("/").pop() || "0");
+1239:         
+1240:         if (env.DB) {
+1241:             try {
+1242:                 await env.DB.prepare(
+1243:                     "UPDATE rooms SET line_user_id = NULL, line_display_name = NULL, line_picture_url = NULL, line_status = 'unlinked' WHERE id = ? AND user_id = ?"
+1244:                 ).bind(roomId, user.effectiveUserId).run();
+1245: 
+1246:                 const updated = await env.DB.prepare("SELECT * FROM rooms WHERE id = ?").bind(roomId).first();
+1247:                 return successResponse({ success: true, room: updated });
+1248:             } catch (err: any) {
+1249:                 return errorResponse("SERVER_ERROR", "เกิดข้อผิดพลาด", 500);
+1250:             }
+1251:         }
+1252:         return successResponse({ success: true });
+1253:     }
+1254: 
+1255:     if (path.match(/^\/api\/line\/send-bill\/\d+$/) && method === "POST") {
+1256:         const user = await getAuthUser();
+1257:         if (!user) return errorResponse("UNAUTHORIZED", "Unauthorized", 401);
+1258:         if (!hasCaretakerPermission(user, PERMISSIONS.MANAGE_BILLS)) return errorResponse('FORBIDDEN', 'ไม่มีสิทธิ์จัดการบิล', 403);
+--- lines 1261-1284 ---
+1261:         if (env.DB) {
+1262:             try {
+1263:                 const billResult = await env.DB.prepare("SELECT * FROM bills WHERE id = ? AND user_id = ?").bind(billId, user.effectiveUserId).first();
+1264:                 if (!billResult) return errorResponse("NOT_FOUND", "ไม่พบบิลเรียกเก็บเงิน", 404);
+1265: 
+1266:                 const roomResult = await env.DB.prepare("SELECT * FROM rooms WHERE id = ?").bind(billResult.room_id).first();
+1267:                 if (!roomResult) return errorResponse("NOT_FOUND", "ไม่พบห้องพัก", 404);
+1268: 
+1269:                 const hasMessaging = !!(roomResult.line_user_id && roomResult.line_status === 'linked');
+1270:                 if (!hasMessaging) return errorResponse("BAD_REQUEST", "ห้องนี้ยังไม่ได้ลงทะเบียน LINE ผู้เช่า", 400);
+1271: 
+1272:                 const userSettings = await env.DB.prepare("SELECT * FROM settings WHERE user_id = ?").bind(user.effectiveUserId).first() || {};
+1273: 
+1274:                 const currentElec = billResult.current_elec || 0;
+1275:                 const priorElec = billResult.prior_elec || 0;
+1276:                 const elecDeduct = billResult.elec_deduct || 0;
+1277:                 const elecUnitCost = billResult.elec_unit_cost || 0;
+1278:                 const elecCost = billResult.elec_cost ?? Math.round(Math.max(0, currentElec - priorElec - elecDeduct) * elecUnitCost);
+1279:                 
+1280:                 const currentWater = billResult.current_water || 0;
+1281:                 const priorWater = billResult.prior_water || 0;
+1282:                 const waterUnitCost = billResult.water_unit_cost || 0;
+1283:                 const waterCost = billResult.water_cost ?? (currentWater - priorWater > 0 ? Math.round((currentWater - priorWater) * waterUnitCost) : 0);
+1284:                 const { results: lineChargeItems } = await env.DB.prepare('SELECT label,amount FROM bill_charge_items WHERE bill_id=? ORDER BY sort_order,id').bind(billId).all();
+--- lines 1319-1342 ---
+1319:         const user = await getAuthUser();
+1320:         if (!user) return errorResponse("UNAUTHORIZED", "Unauthorized", 401);
+1321:         if (!hasCaretakerPermission(user, PERMISSIONS.MANAGE_BILLS)) return errorResponse('FORBIDDEN', 'ไม่มีสิทธิ์จัดการบิล', 403);
+1322:         
+1323:         if (env.DB) {
+1324:             try {
+1325:                 // Get unpaid bills
+1326:                 const { results: overdueBillsList } = await env.DB.prepare(`
+1327:                     SELECT * FROM bills WHERE user_id = ? AND status = 'unpaid'
+1328:                 `).bind(user.effectiveUserId).all();
+1329: 
+1330:                 const todayStr = new Date().toISOString().substring(0, 10);
+1331:                 const overdueBills = (overdueBillsList || []).filter((b: any) => b.due_date <= todayStr);
+1332: 
+1333:                 if (overdueBills.length === 0) {
+1334:                     return successResponse({ count: 0, message: "ไม่มีห้องค้างชำระที่เกินกำหนดเวลาส่งแจ้งเตือน" });
+1335:                 }
+1336: 
+1337:                 const userSettings = await env.DB.prepare("SELECT * FROM settings WHERE user_id = ?").bind(user.effectiveUserId).first() || {};
+1338:                 let sentCount = 0;
+1339:                 let failedCount = 0;
+1340:                 let firstFailure = "";
+1341: 
+1342:                 for (const bill of overdueBills) {
+--- lines 1338-1361 ---
+1338:                 let sentCount = 0;
+1339:                 let failedCount = 0;
+1340:                 let firstFailure = "";
+1341: 
+1342:                 for (const bill of overdueBills) {
+1343:                     const roomResult = await env.DB.prepare("SELECT * FROM rooms WHERE id = ?").bind(bill.room_id).first();
+1344:                     if (!roomResult) continue;
+1345: 
+1346:                     const hasMessaging = !!(roomResult.line_user_id && roomResult.line_status === 'linked');
+1347:                     if (!hasMessaging) continue;
+1348: 
+1349:                     const msg = `⚠️ แจ้งเตือนยอดค้างชำระหอพัก ${userSettings.dorm_name || 'หอพัก'}\n` +
+1350:                                 `⚠️ เกินกำหนดชำระเงินเรียบร้อยแล้วค่ะ\n` +
+1351:                                 `ห้อง: ${roomResult.room_number}\n` +
+1352:                                 `รอบบิลประจำเดือน: ${bill.bill_month}\n` +
+1353:                                 `💰 ยอดคงค้างทั้งหมด: ${(bill.total_cost || 0).toLocaleString()} บาท\n` +
+1354:                                 `📅 ครบกำหนดตั้งแต่วันที่: ${bill.due_date}\n\n` +
+1355:                                 `🔗 รบกวนสแกนจ่ายหรือแนบสลิปชำระเงินที่ลิงก์นี้:\n` +
+1356:                                 `${new URL(request.url).origin}/line-register?room=${roomResult.room_number}&phone=${roomResult.tenant_phone || ''}\n\n` +
+1357:                                 `หากชำระเงินเรียบร้อยแล้ว ขออภัยในความไม่สะดวกนะคะ 🙏`;
+1358: 
+1359:                     const pushResult = await pushLineMessage(userSettings, roomResult.line_user_id, msg);
+1360:                     if (pushResult.success) {
+1361:                         sentCount++;
+--- lines 1404-1427 ---
+1404:                   await assertPlanAccessForRequest(effectiveUserId);
+1405:                 }
+1406:                 return {
+1407:                   ...dbUser,
+1408:                   effectiveUserId
+1409:                 };
+1410:               }
+1411:             } catch (e) {
+1412:               if (e instanceof PlanAccessError || e instanceof LicenseOperationError) throw e;
+1413:               console.warn("Auth user lookup error:", e);
+1414:             }
+1415:           } else {
+1416:             return { id: payload.id, effectiveUserId: payload.id, uid: payload.uid, email: payload.email, role: payload.role, parent_id: null, permissions: 'manage_rooms,manage_bills,edit_payments,manage_settings' };
+1417:           }
+1418:         }
+1419:       }
+1420:       return null;
+1421:     }
+1422: 
+1423:     function hasCaretakerPermission(user: any, requiredPerm: string): boolean {
+1424:       return Boolean(user) && hasAppPermission(String(user.role), user.permissions, requiredPerm as any);
+1425:     };
+1426: 
+1427:     const licenseRoles = ['owner', 'super_admin'];
+--- lines 1454-1477 ---
+1454:       const gate = await requireLicenseOwner();
+1455:       if (gate.response) return gate.response;
+1456:       try {
+1457:         const bodyResult = await readBoundedJson(request, 4096, { entityName: 'คำขอ License', invalid: 'รูปแบบคำขอ License ไม่ถูกต้อง', tooLarge: 'คำขอ License มีขนาดใหญ่เกินกำหนด' });
+1458:         if (bodyResult.ok === false) return errorResponse(bodyResult.code, bodyResult.message, bodyResult.status);
+1459:         const state = await activateCustomerLicense(env, String(bodyResult.data.licenseKey || ''), { projectName: new URL(request.url).hostname, hostname: new URL(request.url).hostname, appVersion: APP_VERSION });
+1460:         return successResponse(publicLicenseState(state), 'Activate License สำเร็จ');
+1461:       } catch (error: any) {
+1462:         if (error instanceof LicenseOperationError) return errorResponse(error.code, error.message, error.status);
+1463:         return errorResponse('LICENSE_ACTIVATION_FAILED', 'ไม่สามารถ Activate License ได้', 500);
+1464:       }
+1465:     }
+1466: 
+1467:     if (path === '/api/license/refresh' && method === 'POST') {
+1468:       const gate = await requireLicenseOwner();
+1469:       if (gate.response) return gate.response;
+1470:       try {
+1471:         const state = await refreshCustomerLicense(env, { projectName: new URL(request.url).hostname, hostname: new URL(request.url).hostname, appVersion: APP_VERSION });
+1472:         return successResponse(publicLicenseState(state), 'Refresh License สำเร็จ');
+1473:       } catch (error: any) {
+1474:         if (error instanceof LicenseOperationError) return errorResponse(error.code, error.message, error.status);
+1475:         return errorResponse('LICENSE_REFRESH_FAILED', 'ไม่สามารถ Refresh License ได้', 500);
+1476:       }
+1477:     }
+--- lines 1459-1482 ---
+1459:         const state = await activateCustomerLicense(env, String(bodyResult.data.licenseKey || ''), { projectName: new URL(request.url).hostname, hostname: new URL(request.url).hostname, appVersion: APP_VERSION });
+1460:         return successResponse(publicLicenseState(state), 'Activate License สำเร็จ');
+1461:       } catch (error: any) {
+1462:         if (error instanceof LicenseOperationError) return errorResponse(error.code, error.message, error.status);
+1463:         return errorResponse('LICENSE_ACTIVATION_FAILED', 'ไม่สามารถ Activate License ได้', 500);
+1464:       }
+1465:     }
+1466: 
+1467:     if (path === '/api/license/refresh' && method === 'POST') {
+1468:       const gate = await requireLicenseOwner();
+1469:       if (gate.response) return gate.response;
+1470:       try {
+1471:         const state = await refreshCustomerLicense(env, { projectName: new URL(request.url).hostname, hostname: new URL(request.url).hostname, appVersion: APP_VERSION });
+1472:         return successResponse(publicLicenseState(state), 'Refresh License สำเร็จ');
+1473:       } catch (error: any) {
+1474:         if (error instanceof LicenseOperationError) return errorResponse(error.code, error.message, error.status);
+1475:         return errorResponse('LICENSE_REFRESH_FAILED', 'ไม่สามารถ Refresh License ได้', 500);
+1476:       }
+1477:     }
+1478: 
+1479:     if (path === '/api/license/deactivate' && method === 'POST') {
+1480:       const gate = await requireLicenseOwner();
+1481:       if (gate.response) return gate.response;
+1482:       try {
+--- lines 1466-1489 ---
+1466: 
+1467:     if (path === '/api/license/refresh' && method === 'POST') {
+1468:       const gate = await requireLicenseOwner();
+1469:       if (gate.response) return gate.response;
+1470:       try {
+1471:         const state = await refreshCustomerLicense(env, { projectName: new URL(request.url).hostname, hostname: new URL(request.url).hostname, appVersion: APP_VERSION });
+1472:         return successResponse(publicLicenseState(state), 'Refresh License สำเร็จ');
+1473:       } catch (error: any) {
+1474:         if (error instanceof LicenseOperationError) return errorResponse(error.code, error.message, error.status);
+1475:         return errorResponse('LICENSE_REFRESH_FAILED', 'ไม่สามารถ Refresh License ได้', 500);
+1476:       }
+1477:     }
+1478: 
+1479:     if (path === '/api/license/deactivate' && method === 'POST') {
+1480:       const gate = await requireLicenseOwner();
+1481:       if (gate.response) return gate.response;
+1482:       try {
+1483:         const state = await deactivateCustomerLicense(env);
+1484:         return successResponse(publicLicenseState(state), 'ยกเลิก Activation สำเร็จ');
+1485:       } catch (error: any) {
+1486:         if (error instanceof LicenseOperationError) return errorResponse(error.code, error.message, error.status);
+1487:         return errorResponse('LICENSE_DEACTIVATION_FAILED', 'ไม่สามารถยกเลิก Activation ได้', 500);
+1488:       }
+1489:     }
+--- lines 1478-1501 ---
+1478: 
+1479:     if (path === '/api/license/deactivate' && method === 'POST') {
+1480:       const gate = await requireLicenseOwner();
+1481:       if (gate.response) return gate.response;
+1482:       try {
+1483:         const state = await deactivateCustomerLicense(env);
+1484:         return successResponse(publicLicenseState(state), 'ยกเลิก Activation สำเร็จ');
+1485:       } catch (error: any) {
+1486:         if (error instanceof LicenseOperationError) return errorResponse(error.code, error.message, error.status);
+1487:         return errorResponse('LICENSE_DEACTIVATION_FAILED', 'ไม่สามารถยกเลิก Activation ได้', 500);
+1488:       }
+1489:     }
+1490: 
+1491:     async function getSubscriptionMetadata(ownerId: number) {
+1492:       const license = await resolveLicenseState(env, ownerId);
+1493:       let compatibilityStatus = 'active';
+1494:       let compatibilityExpiresAt: string | null = null;
+1495:       if (env.DB) {
+1496:         try {
+1497:           const row = await env.DB.prepare('SELECT subscription_status, subscription_expires_at FROM settings WHERE user_id = ? LIMIT 1').bind(ownerId).first();
+1498:           compatibilityStatus = String(row?.subscription_status || 'active');
+1499:           compatibilityExpiresAt = row?.subscription_expires_at ? String(row.subscription_expires_at) : null;
+1500:         } catch (error) {
+1501:           console.warn('Compatibility subscription metadata lookup warning:', error);
+--- lines 1514-1537 ---
+1514:     }
+1515: 
+1516: 
+1517:     async function assertPlanAccessForRequest(ownerId: number): Promise<void> {
+1518:       let licenseState = await resolveLicenseState(env, ownerId);
+1519:       if (licenseState.token && licenseState.token.refreshAfter * 1000 <= Date.now()) {
+1520:         try { licenseState = await maybeRefreshCustomerLicense(env, { projectName: new URL(request.url).hostname, hostname: new URL(request.url).hostname, appVersion: APP_VERSION }); }
+1521:         catch (error) {
+1522:           if (!(error instanceof LicenseOperationError)) throw error;
+1523:           licenseState = await resolveLicenseState(env, ownerId);
+1524:         }
+1525:       }
+1526:       const licenseApi = path === '/api/license/status' || path === '/api/license/activate' || path === '/api/license/refresh' || path === '/api/license/deactivate';
+1527:       const mutating = ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method) && !licenseApi;
+1528:       if (mutating) assertMutationAllowedByLicense(licenseState);
+1529:       const subscriptionPlan = licenseState.effectivePlan;
+1530:       const requiredFeature = requiredPlanFeatureForApiRequest(path, method);
+1531: 
+1532:       if (!subscriptionPlan) {
+1533:         if (path === '/api/admin/backup/export' && method === 'GET') return;
+1534:         if (requiredFeature || (method === 'POST' && (path === '/api/rooms' || path === '/api/caretakers'))) {
+1535:           throw new PlanAccessError('LICENSE_REQUIRED', 'แพ็กเกจแบบชำระเงินต้อง Activate License ก่อนใช้งานฟีเจอร์นี้');
+1536:         }
+1537:         return;
+--- lines 1518-1541 ---
+1518:       let licenseState = await resolveLicenseState(env, ownerId);
+1519:       if (licenseState.token && licenseState.token.refreshAfter * 1000 <= Date.now()) {
+1520:         try { licenseState = await maybeRefreshCustomerLicense(env, { projectName: new URL(request.url).hostname, hostname: new URL(request.url).hostname, appVersion: APP_VERSION }); }
+1521:         catch (error) {
+1522:           if (!(error instanceof LicenseOperationError)) throw error;
+1523:           licenseState = await resolveLicenseState(env, ownerId);
+1524:         }
+1525:       }
+1526:       const licenseApi = path === '/api/license/status' || path === '/api/license/activate' || path === '/api/license/refresh' || path === '/api/license/deactivate';
+1527:       const mutating = ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method) && !licenseApi;
+1528:       if (mutating) assertMutationAllowedByLicense(licenseState);
+1529:       const subscriptionPlan = licenseState.effectivePlan;
+1530:       const requiredFeature = requiredPlanFeatureForApiRequest(path, method);
+1531: 
+1532:       if (!subscriptionPlan) {
+1533:         if (path === '/api/admin/backup/export' && method === 'GET') return;
+1534:         if (requiredFeature || (method === 'POST' && (path === '/api/rooms' || path === '/api/caretakers'))) {
+1535:           throw new PlanAccessError('LICENSE_REQUIRED', 'แพ็กเกจแบบชำระเงินต้อง Activate License ก่อนใช้งานฟีเจอร์นี้');
+1536:         }
+1537:         return;
+1538:       }
+1539: 
+1540:       if (isDemoPlan(subscriptionPlan) && isDemoMutationRestricted(path, method)) {
+1541:         throw new PlanAccessError('PLAN_REQUIRED', 'บัญชี Demo ไม่อนุญาตให้แก้ไขการตั้งค่า ลบข้อมูล หรือจัดการ Integration');
+--- lines 1741-1764 ---
+1741:         return jsonResponse({ success: true, data: { authorizationUrl: url.toString() } });
+1742:       } catch (e: any) { return errorResponse('GOOGLE_OAUTH_CONFIG', e.message, 500); }
+1743:     }
+1744: 
+1745:     if (path === '/api/google-sheets/callback' && method === 'GET') {
+1746:       try {
+1747:         requireGoogleConfig();
+1748:         const state = url.searchParams.get('state'); const code = url.searchParams.get('code');
+1749:         if (!state || !code || !env.DB) return new Response('Invalid Google authorization response', { status: 400 });
+1750:         const record = await env.DB.prepare('SELECT * FROM google_oauth_states WHERE state = ? AND expires_at > ?').bind(state, Date.now()).first();
+1751:         await env.DB.prepare('DELETE FROM google_oauth_states WHERE state = ?').bind(state).run();
+1752:         if (!record) return new Response('Google authorization has expired. Please try again.', { status: 400 });
+1753:         const redirectUri = new URL('/api/google-sheets/callback', request.url).toString();
+1754:         const tokenRes = await fetch('https://oauth2.googleapis.com/token', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ code, client_id: env.GOOGLE_CLIENT_ID, client_secret: env.GOOGLE_CLIENT_SECRET, redirect_uri: redirectUri, grant_type: 'authorization_code' }) });
+1755:         const tokens: any = await tokenRes.json();
+1756:         if (!tokenRes.ok || !tokens.refresh_token) return new Response('Google did not return a refresh token. Reconnect and approve access again.', { status: 400 });
+1757:         await env.DB.prepare('INSERT INTO google_oauth_tokens (user_id, refresh_token) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET refresh_token = excluded.refresh_token, updated_at = CURRENT_TIMESTAMP').bind(record.user_id, tokens.refresh_token).run();
+1758:         return Response.redirect(new URL('/?googleSheets=connected', request.url), 302);
+1759:       } catch (e: any) { return new Response(`Google connection failed: ${e.message}`, { status: 500 }); }
+1760:     }
+1761: 
+1762:     if (path === '/api/google-sheets/token' && method === 'GET') {
+1763:       const authUser = await getAuthUser();
+1764:       if (!authUser || !env.DB) return errorResponse('UNAUTHORIZED', 'กรุณาเข้าสู่ระบบก่อนใช้งาน Google Sheets', 401);
+--- lines 1744-1767 ---
+1744: 
+1745:     if (path === '/api/google-sheets/callback' && method === 'GET') {
+1746:       try {
+1747:         requireGoogleConfig();
+1748:         const state = url.searchParams.get('state'); const code = url.searchParams.get('code');
+1749:         if (!state || !code || !env.DB) return new Response('Invalid Google authorization response', { status: 400 });
+1750:         const record = await env.DB.prepare('SELECT * FROM google_oauth_states WHERE state = ? AND expires_at > ?').bind(state, Date.now()).first();
+1751:         await env.DB.prepare('DELETE FROM google_oauth_states WHERE state = ?').bind(state).run();
+1752:         if (!record) return new Response('Google authorization has expired. Please try again.', { status: 400 });
+1753:         const redirectUri = new URL('/api/google-sheets/callback', request.url).toString();
+1754:         const tokenRes = await fetch('https://oauth2.googleapis.com/token', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ code, client_id: env.GOOGLE_CLIENT_ID, client_secret: env.GOOGLE_CLIENT_SECRET, redirect_uri: redirectUri, grant_type: 'authorization_code' }) });
+1755:         const tokens: any = await tokenRes.json();
+1756:         if (!tokenRes.ok || !tokens.refresh_token) return new Response('Google did not return a refresh token. Reconnect and approve access again.', { status: 400 });
+1757:         await env.DB.prepare('INSERT INTO google_oauth_tokens (user_id, refresh_token) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET refresh_token = excluded.refresh_token, updated_at = CURRENT_TIMESTAMP').bind(record.user_id, tokens.refresh_token).run();
+1758:         return Response.redirect(new URL('/?googleSheets=connected', request.url), 302);
+1759:       } catch (e: any) { return new Response(`Google connection failed: ${e.message}`, { status: 500 }); }
+1760:     }
+1761: 
+1762:     if (path === '/api/google-sheets/token' && method === 'GET') {
+1763:       const authUser = await getAuthUser();
+1764:       if (!authUser || !env.DB) return errorResponse('UNAUTHORIZED', 'กรุณาเข้าสู่ระบบก่อนใช้งาน Google Sheets', 401);
+1765:       try {
+1766:         requireGoogleConfig(); const ownerId = authUser.effectiveUserId || authUser.id;
+1767:         const saved = await env.DB.prepare('SELECT refresh_token FROM google_oauth_tokens WHERE user_id = ?').bind(ownerId).first();
+--- lines 1748-1771 ---
+1748:         const state = url.searchParams.get('state'); const code = url.searchParams.get('code');
+1749:         if (!state || !code || !env.DB) return new Response('Invalid Google authorization response', { status: 400 });
+1750:         const record = await env.DB.prepare('SELECT * FROM google_oauth_states WHERE state = ? AND expires_at > ?').bind(state, Date.now()).first();
+1751:         await env.DB.prepare('DELETE FROM google_oauth_states WHERE state = ?').bind(state).run();
+1752:         if (!record) return new Response('Google authorization has expired. Please try again.', { status: 400 });
+1753:         const redirectUri = new URL('/api/google-sheets/callback', request.url).toString();
+1754:         const tokenRes = await fetch('https://oauth2.googleapis.com/token', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ code, client_id: env.GOOGLE_CLIENT_ID, client_secret: env.GOOGLE_CLIENT_SECRET, redirect_uri: redirectUri, grant_type: 'authorization_code' }) });
+1755:         const tokens: any = await tokenRes.json();
+1756:         if (!tokenRes.ok || !tokens.refresh_token) return new Response('Google did not return a refresh token. Reconnect and approve access again.', { status: 400 });
+1757:         await env.DB.prepare('INSERT INTO google_oauth_tokens (user_id, refresh_token) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET refresh_token = excluded.refresh_token, updated_at = CURRENT_TIMESTAMP').bind(record.user_id, tokens.refresh_token).run();
+1758:         return Response.redirect(new URL('/?googleSheets=connected', request.url), 302);
+1759:       } catch (e: any) { return new Response(`Google connection failed: ${e.message}`, { status: 500 }); }
+1760:     }
+1761: 
+1762:     if (path === '/api/google-sheets/token' && method === 'GET') {
+1763:       const authUser = await getAuthUser();
+1764:       if (!authUser || !env.DB) return errorResponse('UNAUTHORIZED', 'กรุณาเข้าสู่ระบบก่อนใช้งาน Google Sheets', 401);
+1765:       try {
+1766:         requireGoogleConfig(); const ownerId = authUser.effectiveUserId || authUser.id;
+1767:         const saved = await env.DB.prepare('SELECT refresh_token FROM google_oauth_tokens WHERE user_id = ?').bind(ownerId).first();
+1768:         if (!saved) return errorResponse('GOOGLE_NOT_CONNECTED', 'กรุณาเชื่อมต่อ Google Sheets ในหน้าตั้งค่าระบบก่อน', 400);
+1769:         const tokenRes = await fetch('https://oauth2.googleapis.com/token', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ client_id: env.GOOGLE_CLIENT_ID, client_secret: env.GOOGLE_CLIENT_SECRET, refresh_token: saved.refresh_token, grant_type: 'refresh_token' }) });
+1770:         const token: any = await tokenRes.json(); if (!tokenRes.ok) return errorResponse('GOOGLE_TOKEN_ERROR', token.error_description || 'ไม่สามารถเชื่อมต่อ Google ได้', 400);
+1771:         return jsonResponse({ success: true, data: { accessToken: token.access_token } });
+--- lines 1751-1774 ---
+1751:         await env.DB.prepare('DELETE FROM google_oauth_states WHERE state = ?').bind(state).run();
+1752:         if (!record) return new Response('Google authorization has expired. Please try again.', { status: 400 });
+1753:         const redirectUri = new URL('/api/google-sheets/callback', request.url).toString();
+1754:         const tokenRes = await fetch('https://oauth2.googleapis.com/token', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ code, client_id: env.GOOGLE_CLIENT_ID, client_secret: env.GOOGLE_CLIENT_SECRET, redirect_uri: redirectUri, grant_type: 'authorization_code' }) });
+1755:         const tokens: any = await tokenRes.json();
+1756:         if (!tokenRes.ok || !tokens.refresh_token) return new Response('Google did not return a refresh token. Reconnect and approve access again.', { status: 400 });
+1757:         await env.DB.prepare('INSERT INTO google_oauth_tokens (user_id, refresh_token) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET refresh_token = excluded.refresh_token, updated_at = CURRENT_TIMESTAMP').bind(record.user_id, tokens.refresh_token).run();
+1758:         return Response.redirect(new URL('/?googleSheets=connected', request.url), 302);
+1759:       } catch (e: any) { return new Response(`Google connection failed: ${e.message}`, { status: 500 }); }
+1760:     }
+1761: 
+1762:     if (path === '/api/google-sheets/token' && method === 'GET') {
+1763:       const authUser = await getAuthUser();
+1764:       if (!authUser || !env.DB) return errorResponse('UNAUTHORIZED', 'กรุณาเข้าสู่ระบบก่อนใช้งาน Google Sheets', 401);
+1765:       try {
+1766:         requireGoogleConfig(); const ownerId = authUser.effectiveUserId || authUser.id;
+1767:         const saved = await env.DB.prepare('SELECT refresh_token FROM google_oauth_tokens WHERE user_id = ?').bind(ownerId).first();
+1768:         if (!saved) return errorResponse('GOOGLE_NOT_CONNECTED', 'กรุณาเชื่อมต่อ Google Sheets ในหน้าตั้งค่าระบบก่อน', 400);
+1769:         const tokenRes = await fetch('https://oauth2.googleapis.com/token', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ client_id: env.GOOGLE_CLIENT_ID, client_secret: env.GOOGLE_CLIENT_SECRET, refresh_token: saved.refresh_token, grant_type: 'refresh_token' }) });
+1770:         const token: any = await tokenRes.json(); if (!tokenRes.ok) return errorResponse('GOOGLE_TOKEN_ERROR', token.error_description || 'ไม่สามารถเชื่อมต่อ Google ได้', 400);
+1771:         return jsonResponse({ success: true, data: { accessToken: token.access_token } });
+1772:       } catch (e: any) { return errorResponse('GOOGLE_TOKEN_ERROR', e.message, 500); }
+1773:     }
+1774: 
+--- lines 2060-2083 ---
+2060:               query += ` LIMIT ${limit} OFFSET ${offset}`;
+2061:             }
+2062: 
+2063:             const { results } = await env.DB.prepare(query).bind(userId).all();
+2064:             const mapped = (results || []).map((r: any) => ({
+2065:               id: r.id,
+2066:               roomNumber: r.room_number,
+2067:               monthlyRent: r.monthly_rent,
+2068:               status: r.status,
+2069:               tenantName: r.tenant_name,
+2070:               tenantPhone: r.tenant_phone,
+2071:               lineUserId: r.line_user_id,
+2072:               lineDisplayName: r.line_display_name,
+2073:               linePictureUrl: r.line_picture_url,
+2074:               lineStatus: r.line_status,
+2075:               lineNotifyToken: r.line_notify_token
+2076:             }));
+2077:             return successResponse(mapped);
+2078:           } catch (e) {
+2079:             console.warn("D1 fetch rooms error:", e);
+2080:           }
+2081:         }
+2082:         return successResponse([]);
+2083:       }
+--- lines 2141-2164 ---
+2141:             ).bind(authUser.effectiveUserId || authUser.id, roomNumber, id).first();
+2142:             if (existing) {
+2143:               return errorResponse("DUPLICATE_ROOM", "มีเลขห้องนี้อยู่ในระบบแล้ว", 409);
+2144:             }
+2145: 
+2146:             const oldRoom = await env.DB.prepare("SELECT * FROM rooms WHERE id = ? AND user_id = ? AND deleted_at IS NULL").bind(id, authUser.effectiveUserId || authUser.id).first();
+2147:             if (!oldRoom) return errorResponse("NOT_FOUND", "ไม่พบห้องพักที่ระบุ", 404);
+2148:             await env.DB.prepare(
+2149:               "UPDATE rooms SET room_number = ?, monthly_rent = ?, status = ?, tenant_name = ?, tenant_phone = ? WHERE id = ? AND user_id = ?"
+2150:             ).bind(
+2151:               roomNumber, validated.monthlyRent, validated.status, validated.tenantName || null, validated.tenantPhone || null, id, authUser.effectiveUserId || authUser.id
+2152:             ).run();
+2153: 
+2154:             await logAuditAction(env.DB, {
+2155:               userId: authUser.id,
+2156:               userEmail: authUser?.email || 'system',
+2157:               userRole: authUser?.role || 'owner',
+2158:               action: 'EDIT_ROOM',
+2159:               targetType: 'room',
+2160:               targetId: id,
+2161:               oldValue: oldRoom,
+2162:               newValue: validated,
+2163:               ipAddress: clientIp,
+2164:               userAgent
+--- lines 2340-2363 ---
+2340:               waterUnitCost: b.water_unit_cost,
+2341:               waterCost: b.water_cost,
+2342:               rentCost: b.rent_cost,
+2343:               depositCost: b.deposit_cost,
+2344:               otherCost: b.other_cost,
+2345:               otherDescription: b.other_description,
+2346:               totalCost: b.total_cost,
+2347:               dueDate: b.due_date,
+2348:               status: b.status,
+2349:               paidAt: b.paid_at,
+2350:               slipImage: b.slip_image,
+2351:               slipUploadedAt: b.slip_uploaded_at,
+2352:               slipStatus: b.slip_status,
+2353:               tenantName: b.tenant_name,
+2354:               tenantPhone: b.tenant_phone,
+2355:               chargeItems: chargeMap.get(b.id) || []
+2356:             }));
+2357:             return successResponse(mapped);
+2358:           } catch (e) {
+2359:             console.warn("D1 fetch bills error:", e);
+2360:           }
+2361:         }
+2362:         return successResponse([]);
+2363:       }
+--- lines 2479-2502 ---
+2479:               currentWater: billCheck.current_water,
+2480:               waterUnitCost: billCheck.water_unit_cost,
+2481:               waterCost: billCheck.water_cost,
+2482:               rentCost: billCheck.rent_cost,
+2483:               depositCost: billCheck.deposit_cost,
+2484:               otherCost: billCheck.other_cost,
+2485:               otherDescription: billCheck.other_description,
+2486:               dueDate: billCheck.due_date,
+2487:               status: billCheck.status,
+2488:               ...body
+2489:             };
+2490:             const validated = validateZod(BillSchema, mergedBody);
+2491:             const elecUnits = Math.max(0, validated.currentElec - validated.priorElec - validated.elecDeduct);
+2492:             const elecCost = validated.elecCost !== undefined ? validated.elecCost : Math.round(elecUnits * validated.elecUnitCost);
+2493:             const waterUnits = Math.max(0, validated.currentWater - validated.priorWater);
+2494:             const waterCost = validated.waterCost !== undefined ? validated.waterCost : (waterUnits > 0 ? Math.round(waterUnits * validated.waterUnitCost) : 0);
+2495:             const finalOtherCost = normalizedChargeItems ? normalizedChargeItems.reduce((sum: number, item: any) => sum + item.amount, 0) : validated.otherCost;
+2496:             const finalOtherDescription = normalizedChargeItems ? normalizedChargeItems.map((item: any) => item.label).join(', ') : validated.otherDescription;
+2497:             const totalCost = validated.rentCost + elecCost + waterCost + validated.depositCost + finalOtherCost;
+2498: 
+2499:             const updatedPaidAt = validated.status === "paid" ? (body.paidAt || billCheck.paid_at || new Date().toISOString()) : null;
+2500: 
+2501:             await env.DB.prepare(
+2502:               `UPDATE bills SET bill_month = ?, prior_elec = ?, current_elec = ?, elec_deduct = ?, elec_unit_cost = ?, elec_cost = ?,
+--- lines 2491-2514 ---
+2491:             const elecUnits = Math.max(0, validated.currentElec - validated.priorElec - validated.elecDeduct);
+2492:             const elecCost = validated.elecCost !== undefined ? validated.elecCost : Math.round(elecUnits * validated.elecUnitCost);
+2493:             const waterUnits = Math.max(0, validated.currentWater - validated.priorWater);
+2494:             const waterCost = validated.waterCost !== undefined ? validated.waterCost : (waterUnits > 0 ? Math.round(waterUnits * validated.waterUnitCost) : 0);
+2495:             const finalOtherCost = normalizedChargeItems ? normalizedChargeItems.reduce((sum: number, item: any) => sum + item.amount, 0) : validated.otherCost;
+2496:             const finalOtherDescription = normalizedChargeItems ? normalizedChargeItems.map((item: any) => item.label).join(', ') : validated.otherDescription;
+2497:             const totalCost = validated.rentCost + elecCost + waterCost + validated.depositCost + finalOtherCost;
+2498: 
+2499:             const updatedPaidAt = validated.status === "paid" ? (body.paidAt || billCheck.paid_at || new Date().toISOString()) : null;
+2500: 
+2501:             await env.DB.prepare(
+2502:               `UPDATE bills SET bill_month = ?, prior_elec = ?, current_elec = ?, elec_deduct = ?, elec_unit_cost = ?, elec_cost = ?,
+2503:                prior_water = ?, current_water = ?, water_unit_cost = ?, water_cost = ?, rent_cost = ?, deposit_cost = ?, other_cost = ?,
+2504:                other_description = ?, total_cost = ?, due_date = ?, status = ?, paid_at = ? WHERE id = ? AND user_id = ?`
+2505:             ).bind(
+2506:               validated.billMonth, validated.priorElec, validated.currentElec, validated.elecDeduct, validated.elecUnitCost, elecCost,
+2507:               validated.priorWater, validated.currentWater, validated.waterUnitCost, waterCost, validated.rentCost, validated.depositCost, finalOtherCost,
+2508:               finalOtherDescription || null, totalCost, validated.dueDate, validated.status, updatedPaidAt, id, userId
+2509:             ).run();
+2510: 
+2511:             if (normalizedChargeItems) {
+2512:               await env.DB.prepare('DELETE FROM bill_charge_items WHERE bill_id=?').bind(id).run();
+2513:               if (normalizedChargeItems.length) await env.DB.batch(normalizedChargeItems.map((item: any) => env.DB!.prepare('INSERT INTO bill_charge_items (bill_id,assignment_id,label,amount,kind,sort_order) VALUES (?,?,?,?,?,?)').bind(id, item.assignmentId, item.label, item.amount, item.kind, item.sortOrder)));
+2514:             }
+--- lines 2496-2519 ---
+2496:             const finalOtherDescription = normalizedChargeItems ? normalizedChargeItems.map((item: any) => item.label).join(', ') : validated.otherDescription;
+2497:             const totalCost = validated.rentCost + elecCost + waterCost + validated.depositCost + finalOtherCost;
+2498: 
+2499:             const updatedPaidAt = validated.status === "paid" ? (body.paidAt || billCheck.paid_at || new Date().toISOString()) : null;
+2500: 
+2501:             await env.DB.prepare(
+2502:               `UPDATE bills SET bill_month = ?, prior_elec = ?, current_elec = ?, elec_deduct = ?, elec_unit_cost = ?, elec_cost = ?,
+2503:                prior_water = ?, current_water = ?, water_unit_cost = ?, water_cost = ?, rent_cost = ?, deposit_cost = ?, other_cost = ?,
+2504:                other_description = ?, total_cost = ?, due_date = ?, status = ?, paid_at = ? WHERE id = ? AND user_id = ?`
+2505:             ).bind(
+2506:               validated.billMonth, validated.priorElec, validated.currentElec, validated.elecDeduct, validated.elecUnitCost, elecCost,
+2507:               validated.priorWater, validated.currentWater, validated.waterUnitCost, waterCost, validated.rentCost, validated.depositCost, finalOtherCost,
+2508:               finalOtherDescription || null, totalCost, validated.dueDate, validated.status, updatedPaidAt, id, userId
+2509:             ).run();
+2510: 
+2511:             if (normalizedChargeItems) {
+2512:               await env.DB.prepare('DELETE FROM bill_charge_items WHERE bill_id=?').bind(id).run();
+2513:               if (normalizedChargeItems.length) await env.DB.batch(normalizedChargeItems.map((item: any) => env.DB!.prepare('INSERT INTO bill_charge_items (bill_id,assignment_id,label,amount,kind,sort_order) VALUES (?,?,?,?,?,?)').bind(id, item.assignmentId, item.label, item.amount, item.kind, item.sortOrder)));
+2514:             }
+2515: 
+2516:             return successResponse({ success: true, id }, "แก้ไขข้อมูลบิลค่าเช่าเรียบร้อยแล้วค่ะ");
+2517:           } catch (e: any) {
+2518:             if (e.name === 'ValidationError') {
+2519:               return errorResponse("VALIDATION_ERROR", e.message || "ข้อมูลไม่ถูกต้อง", 400, e.details);
+--- lines 2872-2895 ---
+2872:       const [roomRows, billRows] = await env.DB.batch([
+2873:         env.DB.prepare("SELECT id, room_number, status FROM rooms WHERE user_id = ? AND deleted_at IS NULL").bind(userId),
+2874:         env.DB.prepare(`SELECT b.id, b.room_id, b.bill_month, b.total_cost, b.status, r.room_number, r.tenant_name
+2875:                         FROM bills b JOIN rooms r ON r.id = b.room_id
+2876:                         WHERE b.user_id = ? AND b.deleted_at IS NULL AND r.deleted_at IS NULL`).bind(userId)
+2877:       ]);
+2878:       const rooms = roomRows.results || [];
+2879:       const bills = billRows.results || [];
+2880:       const occupied = rooms.filter((room: any) => room.status === 'occupied').length;
+2881:       let total = 0, paid = 0, unpaid = 0;
+2882:       const unpaidRooms: any[] = [];
+2883:       for (const bill of bills as any[]) {
+2884:         const amount = Number(bill.total_cost) || 0;
+2885:         if (bill.bill_month === currentMonth) {
+2886:           total += amount;
+2887:           if (bill.status === 'paid') paid += amount;
+2888:           else unpaid += amount;
+2889:         }
+2890:         if (bill.status === 'unpaid') {
+2891:           unpaidRooms.push({ billId: bill.id, roomId: bill.room_id, roomNumber: bill.room_number, tenantName: bill.tenant_name || 'ไม่ระบุชื่อ', amount, month: bill.bill_month });
+2892:         }
+2893:         const bucket = history[bill.bill_month];
+2894:         if (bucket) {
+2895:           bucket.total += amount;
+--- lines 2879-2902 ---
+2879:       const bills = billRows.results || [];
+2880:       const occupied = rooms.filter((room: any) => room.status === 'occupied').length;
+2881:       let total = 0, paid = 0, unpaid = 0;
+2882:       const unpaidRooms: any[] = [];
+2883:       for (const bill of bills as any[]) {
+2884:         const amount = Number(bill.total_cost) || 0;
+2885:         if (bill.bill_month === currentMonth) {
+2886:           total += amount;
+2887:           if (bill.status === 'paid') paid += amount;
+2888:           else unpaid += amount;
+2889:         }
+2890:         if (bill.status === 'unpaid') {
+2891:           unpaidRooms.push({ billId: bill.id, roomId: bill.room_id, roomNumber: bill.room_number, tenantName: bill.tenant_name || 'ไม่ระบุชื่อ', amount, month: bill.bill_month });
+2892:         }
+2893:         const bucket = history[bill.bill_month];
+2894:         if (bucket) {
+2895:           bucket.total += amount;
+2896:           if (bill.status === 'paid') bucket.paid += amount;
+2897:           else bucket.unpaid += amount;
+2898:         }
+2899:       }
+2900:       return successResponse({
+2901:         rooms: { total: rooms.length, occupied, vacant: rooms.length - occupied },
+2902:         revenueThisMonth: { total, paid, unpaid },
+--- lines 2882-2905 ---
+2882:       const unpaidRooms: any[] = [];
+2883:       for (const bill of bills as any[]) {
+2884:         const amount = Number(bill.total_cost) || 0;
+2885:         if (bill.bill_month === currentMonth) {
+2886:           total += amount;
+2887:           if (bill.status === 'paid') paid += amount;
+2888:           else unpaid += amount;
+2889:         }
+2890:         if (bill.status === 'unpaid') {
+2891:           unpaidRooms.push({ billId: bill.id, roomId: bill.room_id, roomNumber: bill.room_number, tenantName: bill.tenant_name || 'ไม่ระบุชื่อ', amount, month: bill.bill_month });
+2892:         }
+2893:         const bucket = history[bill.bill_month];
+2894:         if (bucket) {
+2895:           bucket.total += amount;
+2896:           if (bill.status === 'paid') bucket.paid += amount;
+2897:           else bucket.unpaid += amount;
+2898:         }
+2899:       }
+2900:       return successResponse({
+2901:         rooms: { total: rooms.length, occupied, vacant: rooms.length - occupied },
+2902:         revenueThisMonth: { total, paid, unpaid },
+2903:         unpaidRooms,
+2904:         revenueHistory: Object.values(history).sort((a, b) => a.month.localeCompare(b.month))
+2905:       });
+--- lines 2888-2911 ---
+2888:           else unpaid += amount;
+2889:         }
+2890:         if (bill.status === 'unpaid') {
+2891:           unpaidRooms.push({ billId: bill.id, roomId: bill.room_id, roomNumber: bill.room_number, tenantName: bill.tenant_name || 'ไม่ระบุชื่อ', amount, month: bill.bill_month });
+2892:         }
+2893:         const bucket = history[bill.bill_month];
+2894:         if (bucket) {
+2895:           bucket.total += amount;
+2896:           if (bill.status === 'paid') bucket.paid += amount;
+2897:           else bucket.unpaid += amount;
+2898:         }
+2899:       }
+2900:       return successResponse({
+2901:         rooms: { total: rooms.length, occupied, vacant: rooms.length - occupied },
+2902:         revenueThisMonth: { total, paid, unpaid },
+2903:         unpaidRooms,
+2904:         revenueHistory: Object.values(history).sort((a, b) => a.month.localeCompare(b.month))
+2905:       });
+2906:     }
+2907: 
+2908:     // 7. Lease Contracts API
+2909:     if (path === '/api/maintenance' || path.startsWith('/api/maintenance/')) {
+2910:       if (path === '/api/maintenance' && method === 'POST') {
+2911:         const body = await getJson();
+--- lines 2972-2995 ---
+2972:       ).bind(ticketId, effectiveUserId).first();
+2973:       if (!existing) return errorResponse('NOT_FOUND', 'ไม่พบรายการแจ้งซ่อม', 404);
+2974: 
+2975:       if (method === 'PUT') {
+2976:         if (!hasCaretakerPermission(authUser, PERMISSIONS.MANAGE_MAINTENANCE)) return errorResponse('FORBIDDEN', 'ไม่มีสิทธิ์จัดการงานแจ้งซ่อม', 403);
+2977:         const body = await getJson();
+2978:         const allowedStatuses = ['pending', 'in_progress', 'completed', 'cancelled'];
+2979:         const allowedPriorities = ['low', 'medium', 'high', 'urgent'];
+2980:         const status = allowedStatuses.includes(body.status) ? body.status : existing.status;
+2981:         const priority = allowedPriorities.includes(body.priority) ? body.priority : existing.priority;
+2982:         const repairCost = body.repairCost === undefined ? existing.repair_cost : Math.max(0, Number(body.repairCost) || 0);
+2983:         const technicianNote = body.technicianNote === undefined
+2984:           ? existing.technician_note
+2985:           : String(body.technicianNote || '').trim().slice(0, 5000) || null;
+2986:         const updated = await env.DB.prepare(
+2987:           `UPDATE maintenance_tickets
+2988:            SET status = ?, priority = ?, repair_cost = ?, technician_note = ?, updated_at = CURRENT_TIMESTAMP
+2989:            WHERE id = ? AND user_id = ? RETURNING *`
+2990:         ).bind(status, priority, repairCost, technicianNote, ticketId, effectiveUserId).first();
+2991:         return successResponse(mapMaintenanceTicket(updated), 'อัปเดตรายการแจ้งซ่อมเรียบร้อยแล้ว');
+2992:       }
+2993: 
+2994:       if (method === 'DELETE') {
+2995:         if (!hasCaretakerPermission(authUser, PERMISSIONS.MANAGE_MAINTENANCE)) return errorResponse('FORBIDDEN', 'ไม่มีสิทธิ์จัดการงานแจ้งซ่อม', 403);
+--- lines 2980-3003 ---
+2980:         const status = allowedStatuses.includes(body.status) ? body.status : existing.status;
+2981:         const priority = allowedPriorities.includes(body.priority) ? body.priority : existing.priority;
+2982:         const repairCost = body.repairCost === undefined ? existing.repair_cost : Math.max(0, Number(body.repairCost) || 0);
+2983:         const technicianNote = body.technicianNote === undefined
+2984:           ? existing.technician_note
+2985:           : String(body.technicianNote || '').trim().slice(0, 5000) || null;
+2986:         const updated = await env.DB.prepare(
+2987:           `UPDATE maintenance_tickets
+2988:            SET status = ?, priority = ?, repair_cost = ?, technician_note = ?, updated_at = CURRENT_TIMESTAMP
+2989:            WHERE id = ? AND user_id = ? RETURNING *`
+2990:         ).bind(status, priority, repairCost, technicianNote, ticketId, effectiveUserId).first();
+2991:         return successResponse(mapMaintenanceTicket(updated), 'อัปเดตรายการแจ้งซ่อมเรียบร้อยแล้ว');
+2992:       }
+2993: 
+2994:       if (method === 'DELETE') {
+2995:         if (!hasCaretakerPermission(authUser, PERMISSIONS.MANAGE_MAINTENANCE)) return errorResponse('FORBIDDEN', 'ไม่มีสิทธิ์จัดการงานแจ้งซ่อม', 403);
+2996:         await env.DB.prepare(
+2997:           'UPDATE maintenance_tickets SET deleted_at = CURRENT_TIMESTAMP, deleted_by = ? WHERE id = ? AND user_id = ?'
+2998:         ).bind(authUser.id, ticketId, effectiveUserId).run();
+2999:         return successResponse({ success: true }, 'ลบรายการแจ้งซ่อมเรียบร้อยแล้ว');
+3000:       }
+3001: 
+3002:       return errorResponse('METHOD_NOT_ALLOWED', 'ไม่รองรับวิธีการเรียกใช้งานนี้', 405);
+3003:     }
+--- lines 3007-3030 ---
+3007:       if (!authUser) return errorResponse('UNAUTHORIZED', 'กรุณาล็อกอินเข้าสู่ระบบก่อนใช้งาน', 401);
+3008:       if (!env.DB) return errorResponse("DATABASE_ERROR", "ไม่พบการเชื่อมต่อฐานข้อมูล D1", 500);
+3009: 
+3010:       const mapContract = (c: any) => ({
+3011:         id: c.id, userId: c.user_id, roomId: c.room_id, roomNumber: c.room_number,
+3012:         tenantName: c.tenant_name, tenantPhone: c.tenant_phone, idCardNumber: c.id_card_number,
+3013:         startDate: c.start_date, endDate: c.end_date, monthlyRent: c.monthly_rent,
+3014:         depositAmount: c.deposit_amount, advanceRentAmount: c.advance_rent_amount,
+3015:         contractDocumentUrl: c.contract_document_url, status: c.status, note: c.note,
+3016:         createdAt: c.created_at, updatedAt: c.updated_at
+3017:       });
+3018: 
+3019:       if (path === "/api/contracts" && method === "GET") {
+3020:         if (!hasCaretakerPermission(authUser, PERMISSIONS.VIEW_CONTRACTS)) return errorResponse('FORBIDDEN', 'ไม่มีสิทธิ์ดูสัญญา', 403);
+3021:         const { results } = await env.DB.prepare(
+3022:           "SELECT * FROM lease_contracts WHERE user_id = ? AND deleted_at IS NULL ORDER BY created_at DESC"
+3023:         ).bind(authUser.effectiveUserId || authUser.id).all();
+3024:         return successResponse((results || []).map(mapContract));
+3025:       }
+3026: 
+3027:       if (path === "/api/contracts" && method === "POST") {
+3028:         if (!hasCaretakerPermission(authUser, PERMISSIONS.MANAGE_CONTRACTS)) return errorResponse('FORBIDDEN', 'ไม่มีสิทธิ์จัดการสัญญา', 403);
+3029:         const body = await getJson();
+3030:         const roomId = Number(body.roomId);
+--- lines 3039-3062 ---
+3039:         }
+3040:         const room = await env.DB.prepare(
+3041:           "SELECT * FROM rooms WHERE id = ? AND user_id = ? AND deleted_at IS NULL"
+3042:         ).bind(roomId, authUser.effectiveUserId || authUser.id).first();
+3043:         if (!room) return errorResponse("NOT_FOUND", "ไม่พบห้องพักที่เลือก", 404);
+3044: 
+3045:         const today = new Date().toISOString().slice(0, 10);
+3046:         const in60Days = new Date(Date.now() + 60 * 86400000).toISOString().slice(0, 10);
+3047:         const status = endDate < today ? 'expired' : endDate <= in60Days ? 'expiring_soon' : 'active';
+3048:         const result = await env.DB.prepare(
+3049:           `INSERT INTO lease_contracts (user_id, room_id, room_number, tenant_name, tenant_phone, id_card_number, start_date, end_date, monthly_rent, deposit_amount, advance_rent_amount, contract_document_url, status, note)
+3050:            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`
+3051:         ).bind(
+3052:           authUser.effectiveUserId || authUser.id, roomId, room.room_number, tenantName, body.tenantPhone?.trim() || null,
+3053:           body.idCardNumber?.trim() || null, startDate, endDate, Number(body.monthlyRent) || room.monthly_rent,
+3054:           Number(body.depositAmount) || 0, Number(body.advanceRentAmount) || 0,
+3055:           body.contractDocumentUrl || null, status, body.note?.trim() || null
+3056:         ).first();
+3057:         await env.DB.prepare(
+3058:           "UPDATE rooms SET status = 'occupied', tenant_name = ?, tenant_phone = ? WHERE id = ? AND user_id = ?"
+3059:         ).bind(tenantName, body.tenantPhone?.trim() || null, roomId, authUser.effectiveUserId || authUser.id).run();
+3060:         return successResponse(mapContract(result), "ทำสัญญาเช่าเรียบร้อยแล้ว", 201);
+3061:       }
+3062: 
+--- lines 3050-3073 ---
+3050:            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`
+3051:         ).bind(
+3052:           authUser.effectiveUserId || authUser.id, roomId, room.room_number, tenantName, body.tenantPhone?.trim() || null,
+3053:           body.idCardNumber?.trim() || null, startDate, endDate, Number(body.monthlyRent) || room.monthly_rent,
+3054:           Number(body.depositAmount) || 0, Number(body.advanceRentAmount) || 0,
+3055:           body.contractDocumentUrl || null, status, body.note?.trim() || null
+3056:         ).first();
+3057:         await env.DB.prepare(
+3058:           "UPDATE rooms SET status = 'occupied', tenant_name = ?, tenant_phone = ? WHERE id = ? AND user_id = ?"
+3059:         ).bind(tenantName, body.tenantPhone?.trim() || null, roomId, authUser.effectiveUserId || authUser.id).run();
+3060:         return successResponse(mapContract(result), "ทำสัญญาเช่าเรียบร้อยแล้ว", 201);
+3061:       }
+3062: 
+3063:       const id = Number(path.split("/")[3]);
+3064:       if (!id) return errorResponse("VALIDATION_ERROR", "รหัสสัญญาไม่ถูกต้อง", 400);
+3065:       const existing = await env.DB.prepare(
+3066:         "SELECT * FROM lease_contracts WHERE id = ? AND user_id = ?"
+3067:       ).bind(id, authUser.effectiveUserId || authUser.id).first();
+3068:       if (!existing) return errorResponse("NOT_FOUND", "ไม่พบสัญญาเช่าที่ระบุ", 404);
+3069: 
+3070:       if (path.endsWith("/checkout") && method === "POST") {
+3071:         if (!hasCaretakerPermission(authUser, PERMISSIONS.PROCESS_CHECKOUT)) return errorResponse('FORBIDDEN', 'ไม่มีสิทธิ์ดำเนินการย้ายออก', 403);
+3072:         await env.DB.batch([
+3073:           env.DB.prepare("UPDATE lease_contracts SET status = 'terminated', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?").bind(id, authUser.effectiveUserId || authUser.id),
+--- lines 3065-3088 ---
+3065:       const existing = await env.DB.prepare(
+3066:         "SELECT * FROM lease_contracts WHERE id = ? AND user_id = ?"
+3067:       ).bind(id, authUser.effectiveUserId || authUser.id).first();
+3068:       if (!existing) return errorResponse("NOT_FOUND", "ไม่พบสัญญาเช่าที่ระบุ", 404);
+3069: 
+3070:       if (path.endsWith("/checkout") && method === "POST") {
+3071:         if (!hasCaretakerPermission(authUser, PERMISSIONS.PROCESS_CHECKOUT)) return errorResponse('FORBIDDEN', 'ไม่มีสิทธิ์ดำเนินการย้ายออก', 403);
+3072:         await env.DB.batch([
+3073:           env.DB.prepare("UPDATE lease_contracts SET status = 'terminated', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?").bind(id, authUser.effectiveUserId || authUser.id),
+3074:           env.DB.prepare("UPDATE rooms SET status = 'vacant', tenant_name = NULL, tenant_phone = NULL, line_user_id = NULL, line_display_name = NULL, line_picture_url = NULL, line_status = 'unlinked', line_notify_token = NULL WHERE id = ? AND user_id = ?").bind(existing.room_id, authUser.effectiveUserId || authUser.id),
+3075:           env.DB.prepare("INSERT OR IGNORE INTO housekeeping_tasks (user_id, room_id, contract_id, source, status, note, created_by) VALUES (?, ?, ?, 'checkout', 'pending', ?, ?)").bind(authUser.effectiveUserId || authUser.id, existing.room_id, id, `ทำความสะอาดหลังย้ายออก: ${existing.tenant_name}`, authUser.id)
+3076:         ]);
+3077:         return successResponse({ success: true }, "ทำรายการย้ายออกเรียบร้อยแล้ว");
+3078:       }
+3079: 
+3080:       if (method === "PUT") {
+3081:         if (!hasCaretakerPermission(authUser, PERMISSIONS.MANAGE_CONTRACTS)) return errorResponse('FORBIDDEN', 'ไม่มีสิทธิ์จัดการสัญญา', 403);
+3082:         const body = await getJson();
+3083:         const tenantName = String(body.tenantName ?? existing.tenant_name).trim();
+3084:         if (!tenantName) return errorResponse("VALIDATION_ERROR", "กรุณาระบุชื่อผู้เช่า", 400);
+3085:         const updated = await env.DB.prepare(
+3086:           `UPDATE lease_contracts SET tenant_name = ?, tenant_phone = ?, id_card_number = ?, start_date = ?, end_date = ?, monthly_rent = ?, deposit_amount = ?, advance_rent_amount = ?, contract_document_url = ?, note = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ? RETURNING *`
+3087:         ).bind(tenantName, body.tenantPhone?.trim() || null, body.idCardNumber?.trim() || null,
+3088:           body.startDate || existing.start_date, body.endDate || existing.end_date,
+--- lines 3066-3089 ---
+3066:         "SELECT * FROM lease_contracts WHERE id = ? AND user_id = ?"
+3067:       ).bind(id, authUser.effectiveUserId || authUser.id).first();
+3068:       if (!existing) return errorResponse("NOT_FOUND", "ไม่พบสัญญาเช่าที่ระบุ", 404);
+3069: 
+3070:       if (path.endsWith("/checkout") && method === "POST") {
+3071:         if (!hasCaretakerPermission(authUser, PERMISSIONS.PROCESS_CHECKOUT)) return errorResponse('FORBIDDEN', 'ไม่มีสิทธิ์ดำเนินการย้ายออก', 403);
+3072:         await env.DB.batch([
+3073:           env.DB.prepare("UPDATE lease_contracts SET status = 'terminated', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?").bind(id, authUser.effectiveUserId || authUser.id),
+3074:           env.DB.prepare("UPDATE rooms SET status = 'vacant', tenant_name = NULL, tenant_phone = NULL, line_user_id = NULL, line_display_name = NULL, line_picture_url = NULL, line_status = 'unlinked', line_notify_token = NULL WHERE id = ? AND user_id = ?").bind(existing.room_id, authUser.effectiveUserId || authUser.id),
+3075:           env.DB.prepare("INSERT OR IGNORE INTO housekeeping_tasks (user_id, room_id, contract_id, source, status, note, created_by) VALUES (?, ?, ?, 'checkout', 'pending', ?, ?)").bind(authUser.effectiveUserId || authUser.id, existing.room_id, id, `ทำความสะอาดหลังย้ายออก: ${existing.tenant_name}`, authUser.id)
+3076:         ]);
+3077:         return successResponse({ success: true }, "ทำรายการย้ายออกเรียบร้อยแล้ว");
+3078:       }
+3079: 
+3080:       if (method === "PUT") {
+3081:         if (!hasCaretakerPermission(authUser, PERMISSIONS.MANAGE_CONTRACTS)) return errorResponse('FORBIDDEN', 'ไม่มีสิทธิ์จัดการสัญญา', 403);
+3082:         const body = await getJson();
+3083:         const tenantName = String(body.tenantName ?? existing.tenant_name).trim();
+3084:         if (!tenantName) return errorResponse("VALIDATION_ERROR", "กรุณาระบุชื่อผู้เช่า", 400);
+3085:         const updated = await env.DB.prepare(
+3086:           `UPDATE lease_contracts SET tenant_name = ?, tenant_phone = ?, id_card_number = ?, start_date = ?, end_date = ?, monthly_rent = ?, deposit_amount = ?, advance_rent_amount = ?, contract_document_url = ?, note = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ? RETURNING *`
+3087:         ).bind(tenantName, body.tenantPhone?.trim() || null, body.idCardNumber?.trim() || null,
+3088:           body.startDate || existing.start_date, body.endDate || existing.end_date,
+3089:           Number(body.monthlyRent) || 0, Number(body.depositAmount) || 0, Number(body.advanceRentAmount) || 0,
+--- lines 3355-3378 ---
+3355:     if (roomRecurringMatch) {
+3356:       const authUser = await getAuthUser(); if (!authUser || !env.DB) return errorResponse('UNAUTHORIZED', 'กรุณาเข้าสู่ระบบ', 401); const ownerId = Number(authUser.effectiveUserId || authUser.id); const roomId = Number(roomRecurringMatch[1]);
+3357:       if (method === 'GET') { if (!hasCaretakerPermission(authUser, PERMISSIONS.VIEW_ROOMS)) return errorResponse('FORBIDDEN', 'ไม่มีสิทธิ์ดูข้อมูลห้องพัก', 403); const { results } = await env.DB.prepare(`SELECT a.*,t.name,t.description,t.default_amount,t.frequency,t.billing_months,t.is_active FROM room_recurring_charges a JOIN recurring_charge_templates t ON t.id=a.template_id WHERE a.user_id=? AND a.room_id=? AND t.deleted_at IS NULL ORDER BY t.name`).bind(ownerId, roomId).all(); return successResponse((results || []).map((row: any) => ({ id: row.id, userId: row.user_id, roomId: row.room_id, templateId: row.template_id, amountOverride: row.amount_override, isEnabled: row.is_enabled === 1, template: { id: row.template_id, userId: ownerId, name: row.name, description: row.description, defaultAmount: row.default_amount, frequency: row.frequency, billingMonths: JSON.parse(row.billing_months || '[]'), isActive: row.is_active === 1 } }))); }
+3358:       if (method === 'PUT') { if (!hasCaretakerPermission(authUser, PERMISSIONS.MANAGE_RECURRING_CHARGES) && !hasCaretakerPermission(authUser, PERMISSIONS.MANAGE_ROOMS)) return errorResponse('FORBIDDEN', 'ไม่มีสิทธิ์ผูกค่าบริการ', 403); const body = await getJson(); const assignments = Array.isArray(body.assignments) ? body.assignments : []; const room = await env.DB.prepare('SELECT id FROM rooms WHERE id=? AND user_id=? AND deleted_at IS NULL').bind(roomId, ownerId).first(); if (!room) return errorResponse('NOT_FOUND', 'ไม่พบห้องพัก', 404); for (const item of assignments) { const template = await env.DB.prepare('SELECT id FROM recurring_charge_templates WHERE id=? AND user_id=? AND deleted_at IS NULL').bind(Number(item.templateId), ownerId).first(); if (!template) return errorResponse('VALIDATION_ERROR', 'มีแม่แบบที่ไม่อยู่ในหอพักนี้', 400); } const statements = [env.DB.prepare('DELETE FROM room_recurring_charges WHERE user_id=? AND room_id=?').bind(ownerId, roomId), ...assignments.map((item: any) => env.DB!.prepare('INSERT INTO room_recurring_charges (user_id,room_id,template_id,amount_override,is_enabled) VALUES (?,?,?,?,?)').bind(ownerId, roomId, Number(item.templateId), item.amountOverride === null || item.amountOverride === '' ? null : Math.max(0, Math.round(Number(item.amountOverride) || 0)), item.isEnabled === false ? 0 : 1))]; await env.DB.batch(statements); await logAuditAction(env.DB, { userId: authUser.id, userEmail: authUser.email, userRole: authUser.role, action: 'UPDATE_ROOM_RECURRING_CHARGES', targetType: 'room', targetId: roomId, newValue: { assignments: assignments.length }, ipAddress: clientIp, userAgent }); return successResponse({ roomId }); }
+3359:     }
+3360: 
+3361:     if (path === '/api/housekeeping' || path.startsWith('/api/housekeeping/')) {
+3362:       const authUser = await getAuthUser(); if (!authUser || !env.DB) return errorResponse('UNAUTHORIZED', 'กรุณาเข้าสู่ระบบ', 401); const ownerId = Number(authUser.effectiveUserId || authUser.id);
+3363:       if (method === 'GET' && path === '/api/housekeeping') { if (!hasCaretakerPermission(authUser, PERMISSIONS.VIEW_HOUSEKEEPING)) return errorResponse('FORBIDDEN', 'ไม่มีสิทธิ์ดูงานแม่บ้าน', 403); const { results } = await env.DB.prepare(`SELECT h.*,r.room_number,u.email assigned_user_email FROM housekeeping_tasks h JOIN rooms r ON r.id=h.room_id LEFT JOIN users u ON u.id=h.assigned_user_id WHERE h.user_id=? ORDER BY h.id DESC`).bind(ownerId).all(); return successResponse((results || []).map((row: any) => ({ id: row.id, userId: row.user_id, roomId: row.room_id, roomNumber: row.room_number, assignedUserId: row.assigned_user_id, assignedUserEmail: row.assigned_user_email, contractId: row.contract_id, source: row.source, status: row.status, note: row.note, inspectionNote: row.inspection_note, createdBy: row.created_by, createdAt: row.created_at, updatedAt: row.updated_at, completedAt: row.completed_at }))); }
+3364:       if (!hasCaretakerPermission(authUser, PERMISSIONS.MANAGE_HOUSEKEEPING)) return errorResponse('FORBIDDEN', 'ไม่มีสิทธิ์จัดการงานแม่บ้าน', 403);
+3365:       if (method === 'POST' && path === '/api/housekeeping') { const body = await getJson(); const roomId = Number(body.roomId); const room = await env.DB.prepare('SELECT id FROM rooms WHERE id=? AND user_id=? AND deleted_at IS NULL').bind(roomId, ownerId).first(); if (!room) return errorResponse('NOT_FOUND', 'ไม่พบห้องพัก', 404); const assignedUserId = body.assignedUserId ? Number(body.assignedUserId) : null; if (assignedUserId && !await env.DB.prepare("SELECT id FROM users WHERE id=? AND parent_id=? AND role='housekeeper' AND deleted_at IS NULL").bind(assignedUserId, ownerId).first()) return errorResponse('VALIDATION_ERROR', 'ผู้รับผิดชอบต้องเป็นแม่บ้านในหอพักนี้', 400); const created = await env.DB.prepare(`INSERT INTO housekeeping_tasks (user_id,room_id,assigned_user_id,source,status,note,created_by) VALUES (?,?,?,'manual','pending',?,?) RETURNING *`).bind(ownerId, roomId, assignedUserId, String(body.note || '').trim().slice(0,2000) || null, authUser.id).first(); await logAuditAction(env.DB, { userId: authUser.id, userEmail: authUser.email, userRole: authUser.role, action: 'CREATE_HOUSEKEEPING_TASK', targetType: 'housekeeping', targetId: created?.id, newValue: { roomId }, ipAddress: clientIp, userAgent }); return successResponse(created, 'สร้างงานแม่บ้านแล้ว', 201); }
+3366:       if (method === 'PUT') { const id = Number(path.split('/')[3]); const body = await getJson(); const status = String(body.status || ''); if (!['pending','in_progress','ready_for_inspection','completed','cancelled'].includes(status)) return errorResponse('VALIDATION_ERROR', 'สถานะไม่ถูกต้อง', 400); const existing = await env.DB.prepare('SELECT * FROM housekeeping_tasks WHERE id=? AND user_id=?').bind(id, ownerId).first(); if (!existing) return errorResponse('NOT_FOUND', 'ไม่พบงานแม่บ้าน', 404); if (!canTransitionHousekeeping(String(existing.status), status)) return errorResponse('CONFLICT', 'ไม่สามารถเปลี่ยนสถานะงานตามลำดับนี้ได้', 409); const assignedUserId = body.assignedUserId ? Number(body.assignedUserId) : null; if (assignedUserId && !await env.DB.prepare("SELECT id FROM users WHERE id=? AND parent_id=? AND role='housekeeper' AND deleted_at IS NULL").bind(assignedUserId, ownerId).first()) return errorResponse('VALIDATION_ERROR', 'ผู้รับผิดชอบต้องเป็นแม่บ้านในหอพักนี้', 400); const updated = await env.DB.prepare(`UPDATE housekeeping_tasks SET status=?,assigned_user_id=?,note=?,inspection_note=?,updated_at=CURRENT_TIMESTAMP,completed_at=? WHERE id=? AND user_id=? RETURNING *`).bind(status, assignedUserId, String(body.note || '').trim().slice(0,2000) || null, String(body.inspectionNote || '').trim().slice(0,2000) || null, status === 'completed' ? new Date().toISOString() : null, id, ownerId).first(); await logAuditAction(env.DB, { userId: authUser.id, userEmail: authUser.email, userRole: authUser.role, action: 'UPDATE_HOUSEKEEPING_TASK', targetType: 'housekeeping', targetId: id, oldValue: { status: existing.status }, newValue: { status }, ipAddress: clientIp, userAgent }); return successResponse(updated); }
+3367:     }
+3368: 
+3369:     if (path === "/api/caretakers" || path.startsWith("/api/caretakers/")) {
+3370:       const authUser = await getAuthUser();
+3371:       if (!authUser || (authUser.role !== 'owner' && authUser.role !== 'super_admin' && !isStaffRole(authUser.role))) {
+3372:         return errorResponse("FORBIDDEN", "เฉพาะผู้ดูแลระบบ เจ้าของหอพัก และผู้ดูแลร่วมเท่านั้นที่สามารถเข้าถึงได้ค่ะ", 403);
+3373:       }
+3374: 
+3375:       const ownerId = (isStaffRole(authUser.role) && (authUser.parent_id || authUser.parentId))
+3376:         ? (authUser.parent_id || authUser.parentId)
+3377:         : authUser.id;
+3378: 
+--- lines 3358-3381 ---
+3358:       if (method === 'PUT') { if (!hasCaretakerPermission(authUser, PERMISSIONS.MANAGE_RECURRING_CHARGES) && !hasCaretakerPermission(authUser, PERMISSIONS.MANAGE_ROOMS)) return errorResponse('FORBIDDEN', 'ไม่มีสิทธิ์ผูกค่าบริการ', 403); const body = await getJson(); const assignments = Array.isArray(body.assignments) ? body.assignments : []; const room = await env.DB.prepare('SELECT id FROM rooms WHERE id=? AND user_id=? AND deleted_at IS NULL').bind(roomId, ownerId).first(); if (!room) return errorResponse('NOT_FOUND', 'ไม่พบห้องพัก', 404); for (const item of assignments) { const template = await env.DB.prepare('SELECT id FROM recurring_charge_templates WHERE id=? AND user_id=? AND deleted_at IS NULL').bind(Number(item.templateId), ownerId).first(); if (!template) return errorResponse('VALIDATION_ERROR', 'มีแม่แบบที่ไม่อยู่ในหอพักนี้', 400); } const statements = [env.DB.prepare('DELETE FROM room_recurring_charges WHERE user_id=? AND room_id=?').bind(ownerId, roomId), ...assignments.map((item: any) => env.DB!.prepare('INSERT INTO room_recurring_charges (user_id,room_id,template_id,amount_override,is_enabled) VALUES (?,?,?,?,?)').bind(ownerId, roomId, Number(item.templateId), item.amountOverride === null || item.amountOverride === '' ? null : Math.max(0, Math.round(Number(item.amountOverride) || 0)), item.isEnabled === false ? 0 : 1))]; await env.DB.batch(statements); await logAuditAction(env.DB, { userId: authUser.id, userEmail: authUser.email, userRole: authUser.role, action: 'UPDATE_ROOM_RECURRING_CHARGES', targetType: 'room', targetId: roomId, newValue: { assignments: assignments.length }, ipAddress: clientIp, userAgent }); return successResponse({ roomId }); }
+3359:     }
+3360: 
+3361:     if (path === '/api/housekeeping' || path.startsWith('/api/housekeeping/')) {
+3362:       const authUser = await getAuthUser(); if (!authUser || !env.DB) return errorResponse('UNAUTHORIZED', 'กรุณาเข้าสู่ระบบ', 401); const ownerId = Number(authUser.effectiveUserId || authUser.id);
+3363:       if (method === 'GET' && path === '/api/housekeeping') { if (!hasCaretakerPermission(authUser, PERMISSIONS.VIEW_HOUSEKEEPING)) return errorResponse('FORBIDDEN', 'ไม่มีสิทธิ์ดูงานแม่บ้าน', 403); const { results } = await env.DB.prepare(`SELECT h.*,r.room_number,u.email assigned_user_email FROM housekeeping_tasks h JOIN rooms r ON r.id=h.room_id LEFT JOIN users u ON u.id=h.assigned_user_id WHERE h.user_id=? ORDER BY h.id DESC`).bind(ownerId).all(); return successResponse((results || []).map((row: any) => ({ id: row.id, userId: row.user_id, roomId: row.room_id, roomNumber: row.room_number, assignedUserId: row.assigned_user_id, assignedUserEmail: row.assigned_user_email, contractId: row.contract_id, source: row.source, status: row.status, note: row.note, inspectionNote: row.inspection_note, createdBy: row.created_by, createdAt: row.created_at, updatedAt: row.updated_at, completedAt: row.completed_at }))); }
+3364:       if (!hasCaretakerPermission(authUser, PERMISSIONS.MANAGE_HOUSEKEEPING)) return errorResponse('FORBIDDEN', 'ไม่มีสิทธิ์จัดการงานแม่บ้าน', 403);
+3365:       if (method === 'POST' && path === '/api/housekeeping') { const body = await getJson(); const roomId = Number(body.roomId); const room = await env.DB.prepare('SELECT id FROM rooms WHERE id=? AND user_id=? AND deleted_at IS NULL').bind(roomId, ownerId).first(); if (!room) return errorResponse('NOT_FOUND', 'ไม่พบห้องพัก', 404); const assignedUserId = body.assignedUserId ? Number(body.assignedUserId) : null; if (assignedUserId && !await env.DB.prepare("SELECT id FROM users WHERE id=? AND parent_id=? AND role='housekeeper' AND deleted_at IS NULL").bind(assignedUserId, ownerId).first()) return errorResponse('VALIDATION_ERROR', 'ผู้รับผิดชอบต้องเป็นแม่บ้านในหอพักนี้', 400); const created = await env.DB.prepare(`INSERT INTO housekeeping_tasks (user_id,room_id,assigned_user_id,source,status,note,created_by) VALUES (?,?,?,'manual','pending',?,?) RETURNING *`).bind(ownerId, roomId, assignedUserId, String(body.note || '').trim().slice(0,2000) || null, authUser.id).first(); await logAuditAction(env.DB, { userId: authUser.id, userEmail: authUser.email, userRole: authUser.role, action: 'CREATE_HOUSEKEEPING_TASK', targetType: 'housekeeping', targetId: created?.id, newValue: { roomId }, ipAddress: clientIp, userAgent }); return successResponse(created, 'สร้างงานแม่บ้านแล้ว', 201); }
+3366:       if (method === 'PUT') { const id = Number(path.split('/')[3]); const body = await getJson(); const status = String(body.status || ''); if (!['pending','in_progress','ready_for_inspection','completed','cancelled'].includes(status)) return errorResponse('VALIDATION_ERROR', 'สถานะไม่ถูกต้อง', 400); const existing = await env.DB.prepare('SELECT * FROM housekeeping_tasks WHERE id=? AND user_id=?').bind(id, ownerId).first(); if (!existing) return errorResponse('NOT_FOUND', 'ไม่พบงานแม่บ้าน', 404); if (!canTransitionHousekeeping(String(existing.status), status)) return errorResponse('CONFLICT', 'ไม่สามารถเปลี่ยนสถานะงานตามลำดับนี้ได้', 409); const assignedUserId = body.assignedUserId ? Number(body.assignedUserId) : null; if (assignedUserId && !await env.DB.prepare("SELECT id FROM users WHERE id=? AND parent_id=? AND role='housekeeper' AND deleted_at IS NULL").bind(assignedUserId, ownerId).first()) return errorResponse('VALIDATION_ERROR', 'ผู้รับผิดชอบต้องเป็นแม่บ้านในหอพักนี้', 400); const updated = await env.DB.prepare(`UPDATE housekeeping_tasks SET status=?,assigned_user_id=?,note=?,inspection_note=?,updated_at=CURRENT_TIMESTAMP,completed_at=? WHERE id=? AND user_id=? RETURNING *`).bind(status, assignedUserId, String(body.note || '').trim().slice(0,2000) || null, String(body.inspectionNote || '').trim().slice(0,2000) || null, status === 'completed' ? new Date().toISOString() : null, id, ownerId).first(); await logAuditAction(env.DB, { userId: authUser.id, userEmail: authUser.email, userRole: authUser.role, action: 'UPDATE_HOUSEKEEPING_TASK', targetType: 'housekeeping', targetId: id, oldValue: { status: existing.status }, newValue: { status }, ipAddress: clientIp, userAgent }); return successResponse(updated); }
+3367:     }
+3368: 
+3369:     if (path === "/api/caretakers" || path.startsWith("/api/caretakers/")) {
+3370:       const authUser = await getAuthUser();
+3371:       if (!authUser || (authUser.role !== 'owner' && authUser.role !== 'super_admin' && !isStaffRole(authUser.role))) {
+3372:         return errorResponse("FORBIDDEN", "เฉพาะผู้ดูแลระบบ เจ้าของหอพัก และผู้ดูแลร่วมเท่านั้นที่สามารถเข้าถึงได้ค่ะ", 403);
+3373:       }
+3374: 
+3375:       const ownerId = (isStaffRole(authUser.role) && (authUser.parent_id || authUser.parentId))
+3376:         ? (authUser.parent_id || authUser.parentId)
+3377:         : authUser.id;
+3378: 
+3379:       if (path === "/api/caretakers" && method === "GET") {
+3380:         if (env.DB) {
+3381:           try {
+--- lines 3551-3565 ---
+3551:       } catch (e) {
+3552:         console.warn("Audit logs fetch error:", e);
+3553:       }
+3554:       return successResponse([]);
+3555:     }
+3556: 
+3557:     return errorResponse("NOT_FOUND", `ไม่พบเอนด์พอยต์ ${path} ในระบบ`, 404);
+3558:   } catch (error: any) {
+3559:     if (error instanceof PlanAccessError || error instanceof LicenseOperationError) {
+3560:       return errorResponse(error.code, error.message, error.status);
+3561:     }
+3562:     console.error("Cloudflare Pages Function Exception:", error);
+3563:     return errorResponse("SERVER_ERROR", error.message || "เกิดข้อผิดพลาดภายในเซิร์ฟเวอร์", 500);
+3564:   }
+3565: };
+=== license.service.ts ===
+--- lines 5-28 ---
+5: const decoder = new TextDecoder();
+6: const GRACE_MS = 7 * 24 * 60 * 60 * 1000;
+7: 
+8: export type LicenseTokenPayload = {
+9:   v: 1;
+10:   licenseId: string;
+11:   installationId: string;
+12:   plan: 'basic' | 'standard' | 'pro';
+13:   status: 'active';
+14:   issuedAt: number;
+15:   expiresAt: number;
+16:   refreshAfter: number;
+17: };
+18: 
+19: export type ResolvedLicenseState = {
+20:   installationId: string | null;
+21:   signedToken: string | null;
+22:   status: string;
+23:   effectivePlan: SubscriptionPlan | null;
+24:   lastCheckedAt: string | null;
+25:   graceUntil: string | null;
+26:   expiresAt: string | null;
+27:   controlPlaneUrl: string;
+28:   token: LicenseTokenPayload | null;
+--- lines 14-37 ---
+14:   issuedAt: number;
+15:   expiresAt: number;
+16:   refreshAfter: number;
+17: };
+18: 
+19: export type ResolvedLicenseState = {
+20:   installationId: string | null;
+21:   signedToken: string | null;
+22:   status: string;
+23:   effectivePlan: SubscriptionPlan | null;
+24:   lastCheckedAt: string | null;
+25:   graceUntil: string | null;
+26:   expiresAt: string | null;
+27:   controlPlaneUrl: string;
+28:   token: LicenseTokenPayload | null;
+29: };
+30: 
+31: type LicenseD1Statement = {
+32:   bind(...values: unknown[]): LicenseD1Statement;
+33:   first<T = Record<string, unknown>>(): Promise<T | null>;
+34:   run(): Promise<unknown>;
+35: };
+36: 
+37: type LicenseD1Database = {
+--- lines 43-66 ---
+43:   LICENSE_SIGNING_PUBLIC_KEY?: string;
+44:   LICENSE_CONTROL_PLANE_URL?: string;
+45: };
+46: 
+47: type InstallationMetadata = { projectName?: string | null; hostname?: string | null; appVersion?: string | null };
+48: 
+49: type ControlPlaneResult = { token: string; license: LicenseTokenPayload };
+50: 
+51: export class LicenseOperationError extends Error {
+52:   constructor(public code: string, message: string, public status = 400) { super(message); }
+53: }
+54: 
+55: function base64UrlToBytes(value: string): Uint8Array {
+56:   const padded = value.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - (value.length % 4)) % 4);
+57:   const binary = atob(padded);
+58:   return Uint8Array.from(binary, (c) => c.charCodeAt(0));
+59: }
+60: 
+61: function base64ToBytes(value: string): Uint8Array {
+62:   const normalized = value.trim().replace(/-/g, '+').replace(/_/g, '/');
+63:   return base64UrlToBytes(normalized.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, ''));
+64: }
+65: 
+66: export function canonicalLicenseTokenJson(payload: LicenseTokenPayload): string {
+--- lines 44-67 ---
+44:   LICENSE_CONTROL_PLANE_URL?: string;
+45: };
+46: 
+47: type InstallationMetadata = { projectName?: string | null; hostname?: string | null; appVersion?: string | null };
+48: 
+49: type ControlPlaneResult = { token: string; license: LicenseTokenPayload };
+50: 
+51: export class LicenseOperationError extends Error {
+52:   constructor(public code: string, message: string, public status = 400) { super(message); }
+53: }
+54: 
+55: function base64UrlToBytes(value: string): Uint8Array {
+56:   const padded = value.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - (value.length % 4)) % 4);
+57:   const binary = atob(padded);
+58:   return Uint8Array.from(binary, (c) => c.charCodeAt(0));
+59: }
+60: 
+61: function base64ToBytes(value: string): Uint8Array {
+62:   const normalized = value.trim().replace(/-/g, '+').replace(/_/g, '/');
+63:   return base64UrlToBytes(normalized.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, ''));
+64: }
+65: 
+66: export function canonicalLicenseTokenJson(payload: LicenseTokenPayload): string {
+67:   return JSON.stringify({
+--- lines 64-87 ---
+64: }
+65: 
+66: export function canonicalLicenseTokenJson(payload: LicenseTokenPayload): string {
+67:   return JSON.stringify({
+68:     v: payload.v,
+69:     licenseId: payload.licenseId,
+70:     installationId: payload.installationId,
+71:     plan: payload.plan,
+72:     status: payload.status,
+73:     issuedAt: payload.issuedAt,
+74:     expiresAt: payload.expiresAt,
+75:     refreshAfter: payload.refreshAfter,
+76:   });
+77: }
+78: 
+79: export async function verifySignedLicenseToken(
+80:   token: string,
+81:   publicKeyBase64: string,
+82:   installationId: string,
+83:   nowSeconds = Math.floor(Date.now() / 1000),
+84: ): Promise<LicenseTokenPayload> {
+85:   const [payloadPart, signaturePart, extra] = token.split('.');
+86:   if (!payloadPart || !signaturePart || extra || !publicKeyBase64) throw new Error('invalid license token');
+87:   let payloadText = '';
+--- lines 110-133 ---
+110:   return String(env.LICENSE_CONTROL_PLANE_URL || PACKAGE_LICENSE_CONFIG.controlPlaneUrl || '').replace(/\/+$/, '');
+111: }
+112: 
+113: function publicKey(env: LicenseEnv): string {
+114:   return String(env.LICENSE_SIGNING_PUBLIC_KEY || PACKAGE_LICENSE_CONFIG.publicKeyBase64 || '');
+115: }
+116: 
+117: export async function ensureInstallationState(env: LicenseEnv, nowMs = Date.now()): Promise<string> {
+118:   if (!env.DB) throw new LicenseOperationError('DATABASE_ERROR', 'ไม่พบการเชื่อมต่อฐานข้อมูล D1', 500);
+119:   const current = await env.DB.prepare('SELECT installation_id FROM license_state WHERE id = 1 LIMIT 1').first<Record<string, unknown>>();
+120:   const existing = String(current?.installation_id || '');
+121:   if (existing) return existing;
+122:   const installationId = crypto.randomUUID();
+123:   const now = new Date(nowMs).toISOString();
+124:   await env.DB.prepare(`INSERT INTO license_state (id, installation_id, status, effective_plan, control_plane_url, updated_at)
+125:     VALUES (1, ?, 'unlicensed', NULL, ?, ?)
+126:     ON CONFLICT(id) DO UPDATE SET installation_id = CASE WHEN license_state.installation_id = '' THEN excluded.installation_id ELSE license_state.installation_id END,
+127:       control_plane_url = CASE WHEN license_state.control_plane_url = '' THEN excluded.control_plane_url ELSE license_state.control_plane_url END,
+128:       updated_at = excluded.updated_at`).bind(installationId, controlPlaneUrl(env), now).run();
+129:   const persisted = await env.DB.prepare('SELECT installation_id FROM license_state WHERE id = 1 LIMIT 1').first<Record<string, unknown>>();
+130:   return String(persisted?.installation_id || installationId);
+131: }
+132: 
+133: async function readControlPlaneResponse(response: Response): Promise<ControlPlaneResult> {
+--- lines 131-154 ---
+131: }
+132: 
+133: async function readControlPlaneResponse(response: Response): Promise<ControlPlaneResult> {
+134:   let body: any = null;
+135:   try { body = await response.json(); } catch { /* generic below */ }
+136:   if (!response.ok) {
+137:     const code = String(body?.error?.code || 'LICENSE_REQUEST_FAILED');
+138:     const message = String(body?.error?.message || 'ไม่สามารถตรวจสอบ License ได้');
+139:     throw new LicenseOperationError(code, message, response.status);
+140:   }
+141:   if (!body?.token || !body?.license) throw new LicenseOperationError('INVALID_CONTROL_PLANE_RESPONSE', 'Control Plane ส่งข้อมูล License ไม่ถูกต้อง', 502);
+142:   return { token: String(body.token), license: body.license as LicenseTokenPayload };
+143: }
+144: 
+145: async function postControlPlane(env: LicenseEnv, endpoint: string, body: Record<string, unknown>): Promise<ControlPlaneResult | { ok: true }> {
+146:   const base = controlPlaneUrl(env);
+147:   if (!base) throw new LicenseOperationError('CONTROL_PLANE_UNAVAILABLE', 'ยังไม่ได้ตั้งค่า License Control Plane', 503);
+148:   let response: Response;
+149:   try {
+150:     response = await fetch(`${base}${endpoint}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+151:   } catch {
+152:     throw new LicenseOperationError('CONTROL_PLANE_UNAVAILABLE', 'ไม่สามารถเชื่อมต่อ License Control Plane ได้', 503);
+153:   }
+154:   if (endpoint.endsWith('/deactivate')) {
+--- lines 133-156 ---
+133: async function readControlPlaneResponse(response: Response): Promise<ControlPlaneResult> {
+134:   let body: any = null;
+135:   try { body = await response.json(); } catch { /* generic below */ }
+136:   if (!response.ok) {
+137:     const code = String(body?.error?.code || 'LICENSE_REQUEST_FAILED');
+138:     const message = String(body?.error?.message || 'ไม่สามารถตรวจสอบ License ได้');
+139:     throw new LicenseOperationError(code, message, response.status);
+140:   }
+141:   if (!body?.token || !body?.license) throw new LicenseOperationError('INVALID_CONTROL_PLANE_RESPONSE', 'Control Plane ส่งข้อมูล License ไม่ถูกต้อง', 502);
+142:   return { token: String(body.token), license: body.license as LicenseTokenPayload };
+143: }
+144: 
+145: async function postControlPlane(env: LicenseEnv, endpoint: string, body: Record<string, unknown>): Promise<ControlPlaneResult | { ok: true }> {
+146:   const base = controlPlaneUrl(env);
+147:   if (!base) throw new LicenseOperationError('CONTROL_PLANE_UNAVAILABLE', 'ยังไม่ได้ตั้งค่า License Control Plane', 503);
+148:   let response: Response;
+149:   try {
+150:     response = await fetch(`${base}${endpoint}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+151:   } catch {
+152:     throw new LicenseOperationError('CONTROL_PLANE_UNAVAILABLE', 'ไม่สามารถเชื่อมต่อ License Control Plane ได้', 503);
+153:   }
+154:   if (endpoint.endsWith('/deactivate')) {
+155:     if (!response.ok) {
+156:       let result: any = null; try { result = await response.json(); } catch { /* generic below */ }
+--- lines 139-162 ---
+139:     throw new LicenseOperationError(code, message, response.status);
+140:   }
+141:   if (!body?.token || !body?.license) throw new LicenseOperationError('INVALID_CONTROL_PLANE_RESPONSE', 'Control Plane ส่งข้อมูล License ไม่ถูกต้อง', 502);
+142:   return { token: String(body.token), license: body.license as LicenseTokenPayload };
+143: }
+144: 
+145: async function postControlPlane(env: LicenseEnv, endpoint: string, body: Record<string, unknown>): Promise<ControlPlaneResult | { ok: true }> {
+146:   const base = controlPlaneUrl(env);
+147:   if (!base) throw new LicenseOperationError('CONTROL_PLANE_UNAVAILABLE', 'ยังไม่ได้ตั้งค่า License Control Plane', 503);
+148:   let response: Response;
+149:   try {
+150:     response = await fetch(`${base}${endpoint}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+151:   } catch {
+152:     throw new LicenseOperationError('CONTROL_PLANE_UNAVAILABLE', 'ไม่สามารถเชื่อมต่อ License Control Plane ได้', 503);
+153:   }
+154:   if (endpoint.endsWith('/deactivate')) {
+155:     if (!response.ok) {
+156:       let result: any = null; try { result = await response.json(); } catch { /* generic below */ }
+157:       throw new LicenseOperationError(String(result?.error?.code || 'LICENSE_REQUEST_FAILED'), String(result?.error?.message || 'ไม่สามารถยกเลิก License ได้'), response.status);
+158:     }
+159:     return { ok: true };
+160:   }
+161:   return readControlPlaneResponse(response);
+162: }
+--- lines 144-167 ---
+144: 
+145: async function postControlPlane(env: LicenseEnv, endpoint: string, body: Record<string, unknown>): Promise<ControlPlaneResult | { ok: true }> {
+146:   const base = controlPlaneUrl(env);
+147:   if (!base) throw new LicenseOperationError('CONTROL_PLANE_UNAVAILABLE', 'ยังไม่ได้ตั้งค่า License Control Plane', 503);
+148:   let response: Response;
+149:   try {
+150:     response = await fetch(`${base}${endpoint}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+151:   } catch {
+152:     throw new LicenseOperationError('CONTROL_PLANE_UNAVAILABLE', 'ไม่สามารถเชื่อมต่อ License Control Plane ได้', 503);
+153:   }
+154:   if (endpoint.endsWith('/deactivate')) {
+155:     if (!response.ok) {
+156:       let result: any = null; try { result = await response.json(); } catch { /* generic below */ }
+157:       throw new LicenseOperationError(String(result?.error?.code || 'LICENSE_REQUEST_FAILED'), String(result?.error?.message || 'ไม่สามารถยกเลิก License ได้'), response.status);
+158:     }
+159:     return { ok: true };
+160:   }
+161:   return readControlPlaneResponse(response);
+162: }
+163: 
+164: async function persistActiveToken(env: LicenseEnv, installationId: string, result: ControlPlaneResult, nowMs: number): Promise<void> {
+165:   if (!env.DB) throw new LicenseOperationError('DATABASE_ERROR', 'ไม่พบการเชื่อมต่อฐานข้อมูล D1', 500);
+166:   const payload = await verifySignedLicenseToken(result.token, publicKey(env), installationId, Math.floor(nowMs / 1000));
+167:   const checkedAt = new Date(nowMs).toISOString();
+--- lines 149-172 ---
+149:   try {
+150:     response = await fetch(`${base}${endpoint}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+151:   } catch {
+152:     throw new LicenseOperationError('CONTROL_PLANE_UNAVAILABLE', 'ไม่สามารถเชื่อมต่อ License Control Plane ได้', 503);
+153:   }
+154:   if (endpoint.endsWith('/deactivate')) {
+155:     if (!response.ok) {
+156:       let result: any = null; try { result = await response.json(); } catch { /* generic below */ }
+157:       throw new LicenseOperationError(String(result?.error?.code || 'LICENSE_REQUEST_FAILED'), String(result?.error?.message || 'ไม่สามารถยกเลิก License ได้'), response.status);
+158:     }
+159:     return { ok: true };
+160:   }
+161:   return readControlPlaneResponse(response);
+162: }
+163: 
+164: async function persistActiveToken(env: LicenseEnv, installationId: string, result: ControlPlaneResult, nowMs: number): Promise<void> {
+165:   if (!env.DB) throw new LicenseOperationError('DATABASE_ERROR', 'ไม่พบการเชื่อมต่อฐานข้อมูล D1', 500);
+166:   const payload = await verifySignedLicenseToken(result.token, publicKey(env), installationId, Math.floor(nowMs / 1000));
+167:   const checkedAt = new Date(nowMs).toISOString();
+168:   const graceUntil = new Date(nowMs + GRACE_MS).toISOString();
+169:   const expiresAt = new Date(payload.expiresAt * 1000).toISOString();
+170:   await env.DB.prepare(`UPDATE license_state SET signed_token = ?, status = 'active', effective_plan = ?, last_checked_at = ?, grace_until = ?, expires_at = ?, control_plane_url = ?, updated_at = ? WHERE id = 1`)
+171:     .bind(result.token, payload.plan, checkedAt, graceUntil, expiresAt, controlPlaneUrl(env), checkedAt).run();
+172: }
+--- lines 157-180 ---
+157:       throw new LicenseOperationError(String(result?.error?.code || 'LICENSE_REQUEST_FAILED'), String(result?.error?.message || 'ไม่สามารถยกเลิก License ได้'), response.status);
+158:     }
+159:     return { ok: true };
+160:   }
+161:   return readControlPlaneResponse(response);
+162: }
+163: 
+164: async function persistActiveToken(env: LicenseEnv, installationId: string, result: ControlPlaneResult, nowMs: number): Promise<void> {
+165:   if (!env.DB) throw new LicenseOperationError('DATABASE_ERROR', 'ไม่พบการเชื่อมต่อฐานข้อมูล D1', 500);
+166:   const payload = await verifySignedLicenseToken(result.token, publicKey(env), installationId, Math.floor(nowMs / 1000));
+167:   const checkedAt = new Date(nowMs).toISOString();
+168:   const graceUntil = new Date(nowMs + GRACE_MS).toISOString();
+169:   const expiresAt = new Date(payload.expiresAt * 1000).toISOString();
+170:   await env.DB.prepare(`UPDATE license_state SET signed_token = ?, status = 'active', effective_plan = ?, last_checked_at = ?, grace_until = ?, expires_at = ?, control_plane_url = ?, updated_at = ? WHERE id = 1`)
+171:     .bind(result.token, payload.plan, checkedAt, graceUntil, expiresAt, controlPlaneUrl(env), checkedAt).run();
+172: }
+173: 
+174: export async function activateCustomerLicense(env: LicenseEnv, licenseKey: string, metadata: InstallationMetadata = {}, nowMs = Date.now()): Promise<ResolvedLicenseState> {
+175:   const key = licenseKey.trim();
+176:   if (!key) throw new LicenseOperationError('LICENSE_KEY_REQUIRED', 'กรุณากรอก License Key', 400);
+177:   const installationId = await ensureInstallationState(env, nowMs);
+178:   const result = await postControlPlane(env, '/v1/licenses/activate', {
+179:     licenseKey: key, installationId, projectName: metadata.projectName || null, hostname: metadata.hostname || null, appVersion: metadata.appVersion || null,
+180:   });
+--- lines 162-185 ---
+162: }
+163: 
+164: async function persistActiveToken(env: LicenseEnv, installationId: string, result: ControlPlaneResult, nowMs: number): Promise<void> {
+165:   if (!env.DB) throw new LicenseOperationError('DATABASE_ERROR', 'ไม่พบการเชื่อมต่อฐานข้อมูล D1', 500);
+166:   const payload = await verifySignedLicenseToken(result.token, publicKey(env), installationId, Math.floor(nowMs / 1000));
+167:   const checkedAt = new Date(nowMs).toISOString();
+168:   const graceUntil = new Date(nowMs + GRACE_MS).toISOString();
+169:   const expiresAt = new Date(payload.expiresAt * 1000).toISOString();
+170:   await env.DB.prepare(`UPDATE license_state SET signed_token = ?, status = 'active', effective_plan = ?, last_checked_at = ?, grace_until = ?, expires_at = ?, control_plane_url = ?, updated_at = ? WHERE id = 1`)
+171:     .bind(result.token, payload.plan, checkedAt, graceUntil, expiresAt, controlPlaneUrl(env), checkedAt).run();
+172: }
+173: 
+174: export async function activateCustomerLicense(env: LicenseEnv, licenseKey: string, metadata: InstallationMetadata = {}, nowMs = Date.now()): Promise<ResolvedLicenseState> {
+175:   const key = licenseKey.trim();
+176:   if (!key) throw new LicenseOperationError('LICENSE_KEY_REQUIRED', 'กรุณากรอก License Key', 400);
+177:   const installationId = await ensureInstallationState(env, nowMs);
+178:   const result = await postControlPlane(env, '/v1/licenses/activate', {
+179:     licenseKey: key, installationId, projectName: metadata.projectName || null, hostname: metadata.hostname || null, appVersion: metadata.appVersion || null,
+180:   });
+181:   if ('ok' in result) throw new LicenseOperationError('INVALID_CONTROL_PLANE_RESPONSE', 'Control Plane ส่งข้อมูล License ไม่ถูกต้อง', 502);
+182:   await persistActiveToken(env, installationId, result, nowMs);
+183:   return resolveLicenseState(env, 0, nowMs);
+184: }
+185: 
+--- lines 168-191 ---
+168:   const graceUntil = new Date(nowMs + GRACE_MS).toISOString();
+169:   const expiresAt = new Date(payload.expiresAt * 1000).toISOString();
+170:   await env.DB.prepare(`UPDATE license_state SET signed_token = ?, status = 'active', effective_plan = ?, last_checked_at = ?, grace_until = ?, expires_at = ?, control_plane_url = ?, updated_at = ? WHERE id = 1`)
+171:     .bind(result.token, payload.plan, checkedAt, graceUntil, expiresAt, controlPlaneUrl(env), checkedAt).run();
+172: }
+173: 
+174: export async function activateCustomerLicense(env: LicenseEnv, licenseKey: string, metadata: InstallationMetadata = {}, nowMs = Date.now()): Promise<ResolvedLicenseState> {
+175:   const key = licenseKey.trim();
+176:   if (!key) throw new LicenseOperationError('LICENSE_KEY_REQUIRED', 'กรุณากรอก License Key', 400);
+177:   const installationId = await ensureInstallationState(env, nowMs);
+178:   const result = await postControlPlane(env, '/v1/licenses/activate', {
+179:     licenseKey: key, installationId, projectName: metadata.projectName || null, hostname: metadata.hostname || null, appVersion: metadata.appVersion || null,
+180:   });
+181:   if ('ok' in result) throw new LicenseOperationError('INVALID_CONTROL_PLANE_RESPONSE', 'Control Plane ส่งข้อมูล License ไม่ถูกต้อง', 502);
+182:   await persistActiveToken(env, installationId, result, nowMs);
+183:   return resolveLicenseState(env, 0, nowMs);
+184: }
+185: 
+186: export async function refreshCustomerLicense(env: LicenseEnv, metadata: InstallationMetadata = {}, nowMs = Date.now()): Promise<ResolvedLicenseState> {
+187:   if (!env.DB) throw new LicenseOperationError('DATABASE_ERROR', 'ไม่พบการเชื่อมต่อฐานข้อมูล D1', 500);
+188:   const installationId = await ensureInstallationState(env, nowMs);
+189:   const row = await env.DB.prepare('SELECT signed_token, last_checked_at, grace_until FROM license_state WHERE id = 1 LIMIT 1').first<Record<string, unknown>>();
+190:   const token = String(row?.signed_token || '');
+191:   if (!token) throw new LicenseOperationError('LICENSE_REQUIRED', 'ยังไม่ได้ Activate License', 409);
+--- lines 173-196 ---
+173: 
+174: export async function activateCustomerLicense(env: LicenseEnv, licenseKey: string, metadata: InstallationMetadata = {}, nowMs = Date.now()): Promise<ResolvedLicenseState> {
+175:   const key = licenseKey.trim();
+176:   if (!key) throw new LicenseOperationError('LICENSE_KEY_REQUIRED', 'กรุณากรอก License Key', 400);
+177:   const installationId = await ensureInstallationState(env, nowMs);
+178:   const result = await postControlPlane(env, '/v1/licenses/activate', {
+179:     licenseKey: key, installationId, projectName: metadata.projectName || null, hostname: metadata.hostname || null, appVersion: metadata.appVersion || null,
+180:   });
+181:   if ('ok' in result) throw new LicenseOperationError('INVALID_CONTROL_PLANE_RESPONSE', 'Control Plane ส่งข้อมูล License ไม่ถูกต้อง', 502);
+182:   await persistActiveToken(env, installationId, result, nowMs);
+183:   return resolveLicenseState(env, 0, nowMs);
+184: }
+185: 
+186: export async function refreshCustomerLicense(env: LicenseEnv, metadata: InstallationMetadata = {}, nowMs = Date.now()): Promise<ResolvedLicenseState> {
+187:   if (!env.DB) throw new LicenseOperationError('DATABASE_ERROR', 'ไม่พบการเชื่อมต่อฐานข้อมูล D1', 500);
+188:   const installationId = await ensureInstallationState(env, nowMs);
+189:   const row = await env.DB.prepare('SELECT signed_token, last_checked_at, grace_until FROM license_state WHERE id = 1 LIMIT 1').first<Record<string, unknown>>();
+190:   const token = String(row?.signed_token || '');
+191:   if (!token) throw new LicenseOperationError('LICENSE_REQUIRED', 'ยังไม่ได้ Activate License', 409);
+192:   try {
+193:     const result = await postControlPlane(env, '/v1/licenses/refresh', {
+194:       token, installationId, projectName: metadata.projectName || null, hostname: metadata.hostname || null,
+195:     });
+196:     if ('ok' in result) throw new LicenseOperationError('INVALID_CONTROL_PLANE_RESPONSE', 'Control Plane ส่งข้อมูล License ไม่ถูกต้อง', 502);
+--- lines 179-202 ---
+179:     licenseKey: key, installationId, projectName: metadata.projectName || null, hostname: metadata.hostname || null, appVersion: metadata.appVersion || null,
+180:   });
+181:   if ('ok' in result) throw new LicenseOperationError('INVALID_CONTROL_PLANE_RESPONSE', 'Control Plane ส่งข้อมูล License ไม่ถูกต้อง', 502);
+182:   await persistActiveToken(env, installationId, result, nowMs);
+183:   return resolveLicenseState(env, 0, nowMs);
+184: }
+185: 
+186: export async function refreshCustomerLicense(env: LicenseEnv, metadata: InstallationMetadata = {}, nowMs = Date.now()): Promise<ResolvedLicenseState> {
+187:   if (!env.DB) throw new LicenseOperationError('DATABASE_ERROR', 'ไม่พบการเชื่อมต่อฐานข้อมูล D1', 500);
+188:   const installationId = await ensureInstallationState(env, nowMs);
+189:   const row = await env.DB.prepare('SELECT signed_token, last_checked_at, grace_until FROM license_state WHERE id = 1 LIMIT 1').first<Record<string, unknown>>();
+190:   const token = String(row?.signed_token || '');
+191:   if (!token) throw new LicenseOperationError('LICENSE_REQUIRED', 'ยังไม่ได้ Activate License', 409);
+192:   try {
+193:     const result = await postControlPlane(env, '/v1/licenses/refresh', {
+194:       token, installationId, projectName: metadata.projectName || null, hostname: metadata.hostname || null,
+195:     });
+196:     if ('ok' in result) throw new LicenseOperationError('INVALID_CONTROL_PLANE_RESPONSE', 'Control Plane ส่งข้อมูล License ไม่ถูกต้อง', 502);
+197:     await persistActiveToken(env, installationId, result, nowMs);
+198:   } catch (error) {
+199:     if (!(error instanceof LicenseOperationError) || error.code !== 'CONTROL_PLANE_UNAVAILABLE') throw error;
+200:     const lastCheckedMs = row?.last_checked_at ? Date.parse(String(row.last_checked_at)) : NaN;
+201:     const graceUntilMs = Number.isFinite(lastCheckedMs) ? lastCheckedMs + GRACE_MS : (row?.grace_until ? Date.parse(String(row.grace_until)) : NaN);
+202:     const state = await resolveLicenseState(env, 0, nowMs);
+--- lines 183-206 ---
+183:   return resolveLicenseState(env, 0, nowMs);
+184: }
+185: 
+186: export async function refreshCustomerLicense(env: LicenseEnv, metadata: InstallationMetadata = {}, nowMs = Date.now()): Promise<ResolvedLicenseState> {
+187:   if (!env.DB) throw new LicenseOperationError('DATABASE_ERROR', 'ไม่พบการเชื่อมต่อฐานข้อมูล D1', 500);
+188:   const installationId = await ensureInstallationState(env, nowMs);
+189:   const row = await env.DB.prepare('SELECT signed_token, last_checked_at, grace_until FROM license_state WHERE id = 1 LIMIT 1').first<Record<string, unknown>>();
+190:   const token = String(row?.signed_token || '');
+191:   if (!token) throw new LicenseOperationError('LICENSE_REQUIRED', 'ยังไม่ได้ Activate License', 409);
+192:   try {
+193:     const result = await postControlPlane(env, '/v1/licenses/refresh', {
+194:       token, installationId, projectName: metadata.projectName || null, hostname: metadata.hostname || null,
+195:     });
+196:     if ('ok' in result) throw new LicenseOperationError('INVALID_CONTROL_PLANE_RESPONSE', 'Control Plane ส่งข้อมูล License ไม่ถูกต้อง', 502);
+197:     await persistActiveToken(env, installationId, result, nowMs);
+198:   } catch (error) {
+199:     if (!(error instanceof LicenseOperationError) || error.code !== 'CONTROL_PLANE_UNAVAILABLE') throw error;
+200:     const lastCheckedMs = row?.last_checked_at ? Date.parse(String(row.last_checked_at)) : NaN;
+201:     const graceUntilMs = Number.isFinite(lastCheckedMs) ? lastCheckedMs + GRACE_MS : (row?.grace_until ? Date.parse(String(row.grace_until)) : NaN);
+202:     const state = await resolveLicenseState(env, 0, nowMs);
+203:     const usableOffline = Boolean(state.token) && Number.isFinite(graceUntilMs) && nowMs <= graceUntilMs;
+204:     const now = new Date(nowMs).toISOString();
+205:     await env.DB.prepare(`UPDATE license_state SET status = ?, grace_until = ?, effective_plan = ?, updated_at = ? WHERE id = 1`)
+206:       .bind(usableOffline ? 'offline' : 'expired', Number.isFinite(graceUntilMs) ? new Date(graceUntilMs).toISOString() : null, usableOffline ? state.token?.plan || null : null, now).run();
+--- lines 188-211 ---
+188:   const installationId = await ensureInstallationState(env, nowMs);
+189:   const row = await env.DB.prepare('SELECT signed_token, last_checked_at, grace_until FROM license_state WHERE id = 1 LIMIT 1').first<Record<string, unknown>>();
+190:   const token = String(row?.signed_token || '');
+191:   if (!token) throw new LicenseOperationError('LICENSE_REQUIRED', 'ยังไม่ได้ Activate License', 409);
+192:   try {
+193:     const result = await postControlPlane(env, '/v1/licenses/refresh', {
+194:       token, installationId, projectName: metadata.projectName || null, hostname: metadata.hostname || null,
+195:     });
+196:     if ('ok' in result) throw new LicenseOperationError('INVALID_CONTROL_PLANE_RESPONSE', 'Control Plane ส่งข้อมูล License ไม่ถูกต้อง', 502);
+197:     await persistActiveToken(env, installationId, result, nowMs);
+198:   } catch (error) {
+199:     if (!(error instanceof LicenseOperationError) || error.code !== 'CONTROL_PLANE_UNAVAILABLE') throw error;
+200:     const lastCheckedMs = row?.last_checked_at ? Date.parse(String(row.last_checked_at)) : NaN;
+201:     const graceUntilMs = Number.isFinite(lastCheckedMs) ? lastCheckedMs + GRACE_MS : (row?.grace_until ? Date.parse(String(row.grace_until)) : NaN);
+202:     const state = await resolveLicenseState(env, 0, nowMs);
+203:     const usableOffline = Boolean(state.token) && Number.isFinite(graceUntilMs) && nowMs <= graceUntilMs;
+204:     const now = new Date(nowMs).toISOString();
+205:     await env.DB.prepare(`UPDATE license_state SET status = ?, grace_until = ?, effective_plan = ?, updated_at = ? WHERE id = 1`)
+206:       .bind(usableOffline ? 'offline' : 'expired', Number.isFinite(graceUntilMs) ? new Date(graceUntilMs).toISOString() : null, usableOffline ? state.token?.plan || null : null, now).run();
+207:   }
+208:   return resolveLicenseState(env, 0, nowMs);
+209: }
+210: 
+211: export async function deactivateCustomerLicense(env: LicenseEnv, nowMs = Date.now()): Promise<ResolvedLicenseState> {
+--- lines 191-214 ---
+191:   if (!token) throw new LicenseOperationError('LICENSE_REQUIRED', 'ยังไม่ได้ Activate License', 409);
+192:   try {
+193:     const result = await postControlPlane(env, '/v1/licenses/refresh', {
+194:       token, installationId, projectName: metadata.projectName || null, hostname: metadata.hostname || null,
+195:     });
+196:     if ('ok' in result) throw new LicenseOperationError('INVALID_CONTROL_PLANE_RESPONSE', 'Control Plane ส่งข้อมูล License ไม่ถูกต้อง', 502);
+197:     await persistActiveToken(env, installationId, result, nowMs);
+198:   } catch (error) {
+199:     if (!(error instanceof LicenseOperationError) || error.code !== 'CONTROL_PLANE_UNAVAILABLE') throw error;
+200:     const lastCheckedMs = row?.last_checked_at ? Date.parse(String(row.last_checked_at)) : NaN;
+201:     const graceUntilMs = Number.isFinite(lastCheckedMs) ? lastCheckedMs + GRACE_MS : (row?.grace_until ? Date.parse(String(row.grace_until)) : NaN);
+202:     const state = await resolveLicenseState(env, 0, nowMs);
+203:     const usableOffline = Boolean(state.token) && Number.isFinite(graceUntilMs) && nowMs <= graceUntilMs;
+204:     const now = new Date(nowMs).toISOString();
+205:     await env.DB.prepare(`UPDATE license_state SET status = ?, grace_until = ?, effective_plan = ?, updated_at = ? WHERE id = 1`)
+206:       .bind(usableOffline ? 'offline' : 'expired', Number.isFinite(graceUntilMs) ? new Date(graceUntilMs).toISOString() : null, usableOffline ? state.token?.plan || null : null, now).run();
+207:   }
+208:   return resolveLicenseState(env, 0, nowMs);
+209: }
+210: 
+211: export async function deactivateCustomerLicense(env: LicenseEnv, nowMs = Date.now()): Promise<ResolvedLicenseState> {
+212:   if (!env.DB) throw new LicenseOperationError('DATABASE_ERROR', 'ไม่พบการเชื่อมต่อฐานข้อมูล D1', 500);
+213:   const installationId = await ensureInstallationState(env, nowMs);
+214:   const row = await env.DB.prepare('SELECT signed_token FROM license_state WHERE id = 1 LIMIT 1').first<Record<string, unknown>>();
+--- lines 197-220 ---
+197:     await persistActiveToken(env, installationId, result, nowMs);
+198:   } catch (error) {
+199:     if (!(error instanceof LicenseOperationError) || error.code !== 'CONTROL_PLANE_UNAVAILABLE') throw error;
+200:     const lastCheckedMs = row?.last_checked_at ? Date.parse(String(row.last_checked_at)) : NaN;
+201:     const graceUntilMs = Number.isFinite(lastCheckedMs) ? lastCheckedMs + GRACE_MS : (row?.grace_until ? Date.parse(String(row.grace_until)) : NaN);
+202:     const state = await resolveLicenseState(env, 0, nowMs);
+203:     const usableOffline = Boolean(state.token) && Number.isFinite(graceUntilMs) && nowMs <= graceUntilMs;
+204:     const now = new Date(nowMs).toISOString();
+205:     await env.DB.prepare(`UPDATE license_state SET status = ?, grace_until = ?, effective_plan = ?, updated_at = ? WHERE id = 1`)
+206:       .bind(usableOffline ? 'offline' : 'expired', Number.isFinite(graceUntilMs) ? new Date(graceUntilMs).toISOString() : null, usableOffline ? state.token?.plan || null : null, now).run();
+207:   }
+208:   return resolveLicenseState(env, 0, nowMs);
+209: }
+210: 
+211: export async function deactivateCustomerLicense(env: LicenseEnv, nowMs = Date.now()): Promise<ResolvedLicenseState> {
+212:   if (!env.DB) throw new LicenseOperationError('DATABASE_ERROR', 'ไม่พบการเชื่อมต่อฐานข้อมูล D1', 500);
+213:   const installationId = await ensureInstallationState(env, nowMs);
+214:   const row = await env.DB.prepare('SELECT signed_token FROM license_state WHERE id = 1 LIMIT 1').first<Record<string, unknown>>();
+215:   const token = String(row?.signed_token || '');
+216:   if (token) await postControlPlane(env, '/v1/licenses/deactivate', { token, installationId });
+217:   const now = new Date(nowMs).toISOString();
+218:   await env.DB.prepare(`UPDATE license_state SET signed_token = NULL, status = 'unlicensed', effective_plan = NULL, last_checked_at = ?, grace_until = NULL, expires_at = NULL, updated_at = ? WHERE id = 1`).bind(now, now).run();
+219:   return resolveLicenseState(env, 0, nowMs);
+220: }
+--- lines 204-227 ---
+204:     const now = new Date(nowMs).toISOString();
+205:     await env.DB.prepare(`UPDATE license_state SET status = ?, grace_until = ?, effective_plan = ?, updated_at = ? WHERE id = 1`)
+206:       .bind(usableOffline ? 'offline' : 'expired', Number.isFinite(graceUntilMs) ? new Date(graceUntilMs).toISOString() : null, usableOffline ? state.token?.plan || null : null, now).run();
+207:   }
+208:   return resolveLicenseState(env, 0, nowMs);
+209: }
+210: 
+211: export async function deactivateCustomerLicense(env: LicenseEnv, nowMs = Date.now()): Promise<ResolvedLicenseState> {
+212:   if (!env.DB) throw new LicenseOperationError('DATABASE_ERROR', 'ไม่พบการเชื่อมต่อฐานข้อมูล D1', 500);
+213:   const installationId = await ensureInstallationState(env, nowMs);
+214:   const row = await env.DB.prepare('SELECT signed_token FROM license_state WHERE id = 1 LIMIT 1').first<Record<string, unknown>>();
+215:   const token = String(row?.signed_token || '');
+216:   if (token) await postControlPlane(env, '/v1/licenses/deactivate', { token, installationId });
+217:   const now = new Date(nowMs).toISOString();
+218:   await env.DB.prepare(`UPDATE license_state SET signed_token = NULL, status = 'unlicensed', effective_plan = NULL, last_checked_at = ?, grace_until = NULL, expires_at = NULL, updated_at = ? WHERE id = 1`).bind(now, now).run();
+219:   return resolveLicenseState(env, 0, nowMs);
+220: }
+221: 
+222: export async function resolveLicenseState(env: LicenseEnv, _ownerId: number, nowMs = Date.now()): Promise<ResolvedLicenseState> {
+223:   const fallbackUrl = controlPlaneUrl(env);
+224:   if (!env.DB) {
+225:     return { installationId: null, signedToken: null, status: 'unlicensed', effectivePlan: packageFallbackPlan(), lastCheckedAt: null, graceUntil: null, expiresAt: null, controlPlaneUrl: fallbackUrl, token: null };
+226:   }
+227:   let row = await env.DB.prepare('SELECT installation_id, signed_token, status, effective_plan, last_checked_at, grace_until, expires_at, control_plane_url FROM license_state WHERE id = 1 LIMIT 1').first<Record<string, unknown>>();
+--- lines 210-233 ---
+210: 
+211: export async function deactivateCustomerLicense(env: LicenseEnv, nowMs = Date.now()): Promise<ResolvedLicenseState> {
+212:   if (!env.DB) throw new LicenseOperationError('DATABASE_ERROR', 'ไม่พบการเชื่อมต่อฐานข้อมูล D1', 500);
+213:   const installationId = await ensureInstallationState(env, nowMs);
+214:   const row = await env.DB.prepare('SELECT signed_token FROM license_state WHERE id = 1 LIMIT 1').first<Record<string, unknown>>();
+215:   const token = String(row?.signed_token || '');
+216:   if (token) await postControlPlane(env, '/v1/licenses/deactivate', { token, installationId });
+217:   const now = new Date(nowMs).toISOString();
+218:   await env.DB.prepare(`UPDATE license_state SET signed_token = NULL, status = 'unlicensed', effective_plan = NULL, last_checked_at = ?, grace_until = NULL, expires_at = NULL, updated_at = ? WHERE id = 1`).bind(now, now).run();
+219:   return resolveLicenseState(env, 0, nowMs);
+220: }
+221: 
+222: export async function resolveLicenseState(env: LicenseEnv, _ownerId: number, nowMs = Date.now()): Promise<ResolvedLicenseState> {
+223:   const fallbackUrl = controlPlaneUrl(env);
+224:   if (!env.DB) {
+225:     return { installationId: null, signedToken: null, status: 'unlicensed', effectivePlan: packageFallbackPlan(), lastCheckedAt: null, graceUntil: null, expiresAt: null, controlPlaneUrl: fallbackUrl, token: null };
+226:   }
+227:   let row = await env.DB.prepare('SELECT installation_id, signed_token, status, effective_plan, last_checked_at, grace_until, expires_at, control_plane_url FROM license_state WHERE id = 1 LIMIT 1').first<Record<string, unknown>>();
+228:   if (!row) {
+229:     await ensureInstallationState(env, nowMs);
+230:     row = await env.DB.prepare('SELECT installation_id, signed_token, status, effective_plan, last_checked_at, grace_until, expires_at, control_plane_url FROM license_state WHERE id = 1 LIMIT 1').first<Record<string, unknown>>();
+231:   }
+232:   if (!row) {
+233:     return { installationId: null, signedToken: null, status: 'unlicensed', effectivePlan: packageFallbackPlan(), lastCheckedAt: null, graceUntil: null, expiresAt: null, controlPlaneUrl: fallbackUrl, token: null };
+--- lines 217-240 ---
+217:   const now = new Date(nowMs).toISOString();
+218:   await env.DB.prepare(`UPDATE license_state SET signed_token = NULL, status = 'unlicensed', effective_plan = NULL, last_checked_at = ?, grace_until = NULL, expires_at = NULL, updated_at = ? WHERE id = 1`).bind(now, now).run();
+219:   return resolveLicenseState(env, 0, nowMs);
+220: }
+221: 
+222: export async function resolveLicenseState(env: LicenseEnv, _ownerId: number, nowMs = Date.now()): Promise<ResolvedLicenseState> {
+223:   const fallbackUrl = controlPlaneUrl(env);
+224:   if (!env.DB) {
+225:     return { installationId: null, signedToken: null, status: 'unlicensed', effectivePlan: packageFallbackPlan(), lastCheckedAt: null, graceUntil: null, expiresAt: null, controlPlaneUrl: fallbackUrl, token: null };
+226:   }
+227:   let row = await env.DB.prepare('SELECT installation_id, signed_token, status, effective_plan, last_checked_at, grace_until, expires_at, control_plane_url FROM license_state WHERE id = 1 LIMIT 1').first<Record<string, unknown>>();
+228:   if (!row) {
+229:     await ensureInstallationState(env, nowMs);
+230:     row = await env.DB.prepare('SELECT installation_id, signed_token, status, effective_plan, last_checked_at, grace_until, expires_at, control_plane_url FROM license_state WHERE id = 1 LIMIT 1').first<Record<string, unknown>>();
+231:   }
+232:   if (!row) {
+233:     return { installationId: null, signedToken: null, status: 'unlicensed', effectivePlan: packageFallbackPlan(), lastCheckedAt: null, graceUntil: null, expiresAt: null, controlPlaneUrl: fallbackUrl, token: null };
+234:   }
+235: 
+236:   const installationId = String(row.installation_id || '');
+237:   const signedToken = row.signed_token ? String(row.signed_token) : null;
+238:   const storedStatus = String(row.status || 'unlicensed');
+239:   const base = {
+240:     installationId: installationId || null,
+--- lines 225-248 ---
+225:     return { installationId: null, signedToken: null, status: 'unlicensed', effectivePlan: packageFallbackPlan(), lastCheckedAt: null, graceUntil: null, expiresAt: null, controlPlaneUrl: fallbackUrl, token: null };
+226:   }
+227:   let row = await env.DB.prepare('SELECT installation_id, signed_token, status, effective_plan, last_checked_at, grace_until, expires_at, control_plane_url FROM license_state WHERE id = 1 LIMIT 1').first<Record<string, unknown>>();
+228:   if (!row) {
+229:     await ensureInstallationState(env, nowMs);
+230:     row = await env.DB.prepare('SELECT installation_id, signed_token, status, effective_plan, last_checked_at, grace_until, expires_at, control_plane_url FROM license_state WHERE id = 1 LIMIT 1').first<Record<string, unknown>>();
+231:   }
+232:   if (!row) {
+233:     return { installationId: null, signedToken: null, status: 'unlicensed', effectivePlan: packageFallbackPlan(), lastCheckedAt: null, graceUntil: null, expiresAt: null, controlPlaneUrl: fallbackUrl, token: null };
+234:   }
+235: 
+236:   const installationId = String(row.installation_id || '');
+237:   const signedToken = row.signed_token ? String(row.signed_token) : null;
+238:   const storedStatus = String(row.status || 'unlicensed');
+239:   const base = {
+240:     installationId: installationId || null,
+241:     signedToken,
+242:     lastCheckedAt: row.last_checked_at ? String(row.last_checked_at) : null,
+243:     graceUntil: row.grace_until ? String(row.grace_until) : null,
+244:     expiresAt: row.expires_at ? String(row.expires_at) : null,
+245:     controlPlaneUrl: String(row.control_plane_url || fallbackUrl),
+246:   };
+247:   if (!signedToken || !installationId) {
+248:     return { ...base, status: storedStatus, effectivePlan: packageFallbackPlan(), token: null };
+--- lines 240-263 ---
+240:     installationId: installationId || null,
+241:     signedToken,
+242:     lastCheckedAt: row.last_checked_at ? String(row.last_checked_at) : null,
+243:     graceUntil: row.grace_until ? String(row.grace_until) : null,
+244:     expiresAt: row.expires_at ? String(row.expires_at) : null,
+245:     controlPlaneUrl: String(row.control_plane_url || fallbackUrl),
+246:   };
+247:   if (!signedToken || !installationId) {
+248:     return { ...base, status: storedStatus, effectivePlan: packageFallbackPlan(), token: null };
+249:   }
+250: 
+251:   try {
+252:     const payload = await verifySignedLicenseToken(signedToken, publicKey(env), installationId, Math.floor(nowMs / 1000));
+253:     const graceUntilMs = base.graceUntil ? Date.parse(base.graceUntil) : NaN;
+254:     if (storedStatus === 'offline' && (!Number.isFinite(graceUntilMs) || nowMs > graceUntilMs)) {
+255:       return { ...base, status: 'expired', effectivePlan: packageFallbackPlan(), expiresAt: new Date(payload.expiresAt * 1000).toISOString(), token: payload };
+256:     }
+257:     return { ...base, status: storedStatus === 'offline' ? 'offline' : 'active', effectivePlan: payload.plan, expiresAt: new Date(payload.expiresAt * 1000).toISOString(), token: payload };
+258:   } catch {
+259:     const expired = row.expires_at ? Date.parse(String(row.expires_at)) <= nowMs : false;
+260:     return { ...base, status: expired ? 'expired' : (['revoked', 'suspended'].includes(storedStatus) ? storedStatus : 'invalid'), effectivePlan: packageFallbackPlan(), token: null };
+261:   }
+262: }
+263: 
+--- lines 247-270 ---
+247:   if (!signedToken || !installationId) {
+248:     return { ...base, status: storedStatus, effectivePlan: packageFallbackPlan(), token: null };
+249:   }
+250: 
+251:   try {
+252:     const payload = await verifySignedLicenseToken(signedToken, publicKey(env), installationId, Math.floor(nowMs / 1000));
+253:     const graceUntilMs = base.graceUntil ? Date.parse(base.graceUntil) : NaN;
+254:     if (storedStatus === 'offline' && (!Number.isFinite(graceUntilMs) || nowMs > graceUntilMs)) {
+255:       return { ...base, status: 'expired', effectivePlan: packageFallbackPlan(), expiresAt: new Date(payload.expiresAt * 1000).toISOString(), token: payload };
+256:     }
+257:     return { ...base, status: storedStatus === 'offline' ? 'offline' : 'active', effectivePlan: payload.plan, expiresAt: new Date(payload.expiresAt * 1000).toISOString(), token: payload };
+258:   } catch {
+259:     const expired = row.expires_at ? Date.parse(String(row.expires_at)) <= nowMs : false;
+260:     return { ...base, status: expired ? 'expired' : (['revoked', 'suspended'].includes(storedStatus) ? storedStatus : 'invalid'), effectivePlan: packageFallbackPlan(), token: null };
+261:   }
+262: }
+263: 
+264: export async function maybeRefreshCustomerLicense(env: LicenseEnv, metadata: InstallationMetadata = {}, nowMs = Date.now()): Promise<ResolvedLicenseState> {
+265:   const state = await resolveLicenseState(env, 0, nowMs);
+266:   if (!state.token || !PACKAGE_LICENSE_CONFIG.requiresLicense) return state;
+267:   if (state.token.refreshAfter * 1000 > nowMs && state.status !== 'offline') return state;
+268:   try { return await refreshCustomerLicense(env, metadata, nowMs); }
+269:   catch (error) {
+270:     if (error instanceof LicenseOperationError && ['INVALID_TOKEN', 'LICENSE_INVALID', 'LICENSE_INACTIVE', 'LICENSE_EXPIRED', 'ACTIVATION_REVOKED'].includes(error.code)) {
+--- lines 249-272 ---
+249:   }
+250: 
+251:   try {
+252:     const payload = await verifySignedLicenseToken(signedToken, publicKey(env), installationId, Math.floor(nowMs / 1000));
+253:     const graceUntilMs = base.graceUntil ? Date.parse(base.graceUntil) : NaN;
+254:     if (storedStatus === 'offline' && (!Number.isFinite(graceUntilMs) || nowMs > graceUntilMs)) {
+255:       return { ...base, status: 'expired', effectivePlan: packageFallbackPlan(), expiresAt: new Date(payload.expiresAt * 1000).toISOString(), token: payload };
+256:     }
+257:     return { ...base, status: storedStatus === 'offline' ? 'offline' : 'active', effectivePlan: payload.plan, expiresAt: new Date(payload.expiresAt * 1000).toISOString(), token: payload };
+258:   } catch {
+259:     const expired = row.expires_at ? Date.parse(String(row.expires_at)) <= nowMs : false;
+260:     return { ...base, status: expired ? 'expired' : (['revoked', 'suspended'].includes(storedStatus) ? storedStatus : 'invalid'), effectivePlan: packageFallbackPlan(), token: null };
+261:   }
+262: }
+263: 
+264: export async function maybeRefreshCustomerLicense(env: LicenseEnv, metadata: InstallationMetadata = {}, nowMs = Date.now()): Promise<ResolvedLicenseState> {
+265:   const state = await resolveLicenseState(env, 0, nowMs);
+266:   if (!state.token || !PACKAGE_LICENSE_CONFIG.requiresLicense) return state;
+267:   if (state.token.refreshAfter * 1000 > nowMs && state.status !== 'offline') return state;
+268:   try { return await refreshCustomerLicense(env, metadata, nowMs); }
+269:   catch (error) {
+270:     if (error instanceof LicenseOperationError && ['INVALID_TOKEN', 'LICENSE_INVALID', 'LICENSE_INACTIVE', 'LICENSE_EXPIRED', 'ACTIVATION_REVOKED'].includes(error.code)) {
+271:       if (env.DB) {
+272:         const now = new Date(nowMs).toISOString();
+--- lines 252-275 ---
+252:     const payload = await verifySignedLicenseToken(signedToken, publicKey(env), installationId, Math.floor(nowMs / 1000));
+253:     const graceUntilMs = base.graceUntil ? Date.parse(base.graceUntil) : NaN;
+254:     if (storedStatus === 'offline' && (!Number.isFinite(graceUntilMs) || nowMs > graceUntilMs)) {
+255:       return { ...base, status: 'expired', effectivePlan: packageFallbackPlan(), expiresAt: new Date(payload.expiresAt * 1000).toISOString(), token: payload };
+256:     }
+257:     return { ...base, status: storedStatus === 'offline' ? 'offline' : 'active', effectivePlan: payload.plan, expiresAt: new Date(payload.expiresAt * 1000).toISOString(), token: payload };
+258:   } catch {
+259:     const expired = row.expires_at ? Date.parse(String(row.expires_at)) <= nowMs : false;
+260:     return { ...base, status: expired ? 'expired' : (['revoked', 'suspended'].includes(storedStatus) ? storedStatus : 'invalid'), effectivePlan: packageFallbackPlan(), token: null };
+261:   }
+262: }
+263: 
+264: export async function maybeRefreshCustomerLicense(env: LicenseEnv, metadata: InstallationMetadata = {}, nowMs = Date.now()): Promise<ResolvedLicenseState> {
+265:   const state = await resolveLicenseState(env, 0, nowMs);
+266:   if (!state.token || !PACKAGE_LICENSE_CONFIG.requiresLicense) return state;
+267:   if (state.token.refreshAfter * 1000 > nowMs && state.status !== 'offline') return state;
+268:   try { return await refreshCustomerLicense(env, metadata, nowMs); }
+269:   catch (error) {
+270:     if (error instanceof LicenseOperationError && ['INVALID_TOKEN', 'LICENSE_INVALID', 'LICENSE_INACTIVE', 'LICENSE_EXPIRED', 'ACTIVATION_REVOKED'].includes(error.code)) {
+271:       if (env.DB) {
+272:         const now = new Date(nowMs).toISOString();
+273:         const nextStatus = error.code === 'LICENSE_EXPIRED' ? 'expired' : 'revoked';
+274:         await env.DB.prepare(`UPDATE license_state SET status = ?, effective_plan = NULL, updated_at = ? WHERE id = 1`).bind(nextStatus, now).run();
+275:         return resolveLicenseState(env, 0, nowMs);
+--- lines 262-285 ---
+262: }
+263: 
+264: export async function maybeRefreshCustomerLicense(env: LicenseEnv, metadata: InstallationMetadata = {}, nowMs = Date.now()): Promise<ResolvedLicenseState> {
+265:   const state = await resolveLicenseState(env, 0, nowMs);
+266:   if (!state.token || !PACKAGE_LICENSE_CONFIG.requiresLicense) return state;
+267:   if (state.token.refreshAfter * 1000 > nowMs && state.status !== 'offline') return state;
+268:   try { return await refreshCustomerLicense(env, metadata, nowMs); }
+269:   catch (error) {
+270:     if (error instanceof LicenseOperationError && ['INVALID_TOKEN', 'LICENSE_INVALID', 'LICENSE_INACTIVE', 'LICENSE_EXPIRED', 'ACTIVATION_REVOKED'].includes(error.code)) {
+271:       if (env.DB) {
+272:         const now = new Date(nowMs).toISOString();
+273:         const nextStatus = error.code === 'LICENSE_EXPIRED' ? 'expired' : 'revoked';
+274:         await env.DB.prepare(`UPDATE license_state SET status = ?, effective_plan = NULL, updated_at = ? WHERE id = 1`).bind(nextStatus, now).run();
+275:         return resolveLicenseState(env, 0, nowMs);
+276:       }
+277:     }
+278:     throw error;
+279:   }
+280: }
+281: 
+282: export async function resolveEffectivePlan(env: LicenseEnv, ownerId: number, nowMs = Date.now()): Promise<SubscriptionPlan | null> {
+283:   return (await resolveLicenseState(env, ownerId, nowMs)).effectivePlan;
+284: }
+285: 
+--- lines 266-289 ---
+266:   if (!state.token || !PACKAGE_LICENSE_CONFIG.requiresLicense) return state;
+267:   if (state.token.refreshAfter * 1000 > nowMs && state.status !== 'offline') return state;
+268:   try { return await refreshCustomerLicense(env, metadata, nowMs); }
+269:   catch (error) {
+270:     if (error instanceof LicenseOperationError && ['INVALID_TOKEN', 'LICENSE_INVALID', 'LICENSE_INACTIVE', 'LICENSE_EXPIRED', 'ACTIVATION_REVOKED'].includes(error.code)) {
+271:       if (env.DB) {
+272:         const now = new Date(nowMs).toISOString();
+273:         const nextStatus = error.code === 'LICENSE_EXPIRED' ? 'expired' : 'revoked';
+274:         await env.DB.prepare(`UPDATE license_state SET status = ?, effective_plan = NULL, updated_at = ? WHERE id = 1`).bind(nextStatus, now).run();
+275:         return resolveLicenseState(env, 0, nowMs);
+276:       }
+277:     }
+278:     throw error;
+279:   }
+280: }
+281: 
+282: export async function resolveEffectivePlan(env: LicenseEnv, ownerId: number, nowMs = Date.now()): Promise<SubscriptionPlan | null> {
+283:   return (await resolveLicenseState(env, ownerId, nowMs)).effectivePlan;
+284: }
+285: 
+286: export function assertMutationAllowedByLicense(state: ResolvedLicenseState): void {
+287:   if (!PACKAGE_LICENSE_CONFIG.requiresLicense) return;
+288:   if ((state.status === 'active' || state.status === 'offline') && state.effectivePlan) return;
+289:   throw new LicenseOperationError('LICENSE_READ_ONLY', 'License ไม่พร้อมใช้งาน ระบบอยู่ในโหมดอ่านอย่างเดียว', 403);
+--- lines 280-290 ---
+280: }
+281: 
+282: export async function resolveEffectivePlan(env: LicenseEnv, ownerId: number, nowMs = Date.now()): Promise<SubscriptionPlan | null> {
+283:   return (await resolveLicenseState(env, ownerId, nowMs)).effectivePlan;
+284: }
+285: 
+286: export function assertMutationAllowedByLicense(state: ResolvedLicenseState): void {
+287:   if (!PACKAGE_LICENSE_CONFIG.requiresLicense) return;
+288:   if ((state.status === 'active' || state.status === 'offline') && state.effectivePlan) return;
+289:   throw new LicenseOperationError('LICENSE_READ_ONLY', 'License ไม่พร้อมใช้งาน ระบบอยู่ในโหมดอ่านอย่างเดียว', 403);
+290: }
+--- lines 281-290 ---
+281: 
+282: export async function resolveEffectivePlan(env: LicenseEnv, ownerId: number, nowMs = Date.now()): Promise<SubscriptionPlan | null> {
+283:   return (await resolveLicenseState(env, ownerId, nowMs)).effectivePlan;
+284: }
+285: 
+286: export function assertMutationAllowedByLicense(state: ResolvedLicenseState): void {
+287:   if (!PACKAGE_LICENSE_CONFIG.requiresLicense) return;
+288:   if ((state.status === 'active' || state.status === 'offline') && state.effectivePlan) return;
+289:   throw new LicenseOperationError('LICENSE_READ_ONLY', 'License ไม่พร้อมใช้งาน ระบบอยู่ในโหมดอ่านอย่างเดียว', 403);
+290: }
