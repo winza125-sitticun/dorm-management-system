@@ -1,0 +1,9 @@
+run_id=32335025263
+source_sha=e4b730b7fb59ac783e22fa2060ce0e878910899e
+job_status=success
+exact_artifact=success
+update_http_status=200
+runtime_error={"updateAvailable":true,"licensePlan":"demo","manifest":{"schemaVersion":1,"product":"dorm-management-system","version":"1.2.0","channel":"stable","plan":"demo","packageSha256":"b8eb6684760cdd8d68b5789b5ec323a36498161508355559ab95059fb1f5c8d9","packageSize":4142445,"migrationCeiling":"0008_add_update_state.sql","minimumSupportedVersion":"1.1.0","releaseNotes":"V17 Auto Update signed plan-aware staged update with backup and rollback","downloadUrl":"https://dorm-management-updates.pages.dev/v17/1.
+diagnostic_worker_cleanup=success
+canonical_control_plane_touched=false
+existing_customer_d1_touched=false
