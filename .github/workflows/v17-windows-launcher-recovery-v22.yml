@@ -1,0 +1,58 @@
+name: V17 Windows Launcher Recovery V22
+on:
+  push:
+    branches: [agent/v16-production-gate]
+    paths: ['.github/workflows/v17-windows-launcher-recovery-v22.yml']
+permissions: { contents: write, actions: read }
+env:
+  V17_ARTIFACT_ID: '9394092671'
+  V17_ARTIFACT_SHA256: '0503ec400e7e52e7e9a23723155aa2eebbc3e64f8ead898cc49b9a9968f63ad3'
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: agent/v16-production-gate }
+      - name: Exact artifact and launcher execution
+        shell: pwsh
+        env: { GH_TOKEN: '${{ github.token }}' }
+        run: |
+          $ErrorActionPreference='Stop'
+          Invoke-WebRequest -Headers @{Authorization="Bearer $env:GH_TOKEN"} -Uri "https://api.github.com/repos/$env:GITHUB_REPOSITORY/actions/artifacts/$env:V17_ARTIFACT_ID/zip" -OutFile "$env:RUNNER_TEMP\v17.zip"
+          if((Get-FileHash "$env:RUNNER_TEMP\v17.zip" -Algorithm SHA256).Hash.ToLower() -ne $env:V17_ARTIFACT_SHA256){throw 'outer sha mismatch'}
+          $root="$env:RUNNER_TEMP\v17";New-Item -ItemType Directory -Force $root|Out-Null;Expand-Archive "$env:RUNNER_TEMP\v17.zip" $root;$sum=Get-ChildItem $root -Recurse -Filter SHA256SUMS.txt|Select-Object -First 1;$base=$sum.Directory.FullName
+          foreach($line in Get-Content $sum.FullName){if($line -match '^([0-9a-f]{64})\s+(.+)$'){$f=Join-Path $base $matches[2].Replace('/','\');if((Get-FileHash $f -Algorithm SHA256).Hash.ToLower() -ne $matches[1]){throw "inner sha $f"}}}
+          $p="$env:RUNNER_TEMP\pro";Expand-Archive (Join-Path $base 'customer-packages\dorm-management-system-pro-v17-CUSTOMER-READY-CANDIDATE.zip') $p;Copy-Item (Join-Path $base 'BOOTSTRAP-V16-TO-V17.mjs') $p;Copy-Item (Join-Path $base 'BOOTSTRAP-V16-TO-V17-WINDOWS.cmd') $p
+          $shim="$env:RUNNER_TEMP\shim";New-Item -ItemType Directory -Force $shim|Out-Null;@'
+          @echo off
+          echo %*>>"%RUNNER_TEMP%\node-calls-v22.txt"
+          exit /b 37
+          '@|Set-Content -Encoding ascii "$shim\node.cmd";$env:PATH="$shim;$env:PATH"
+          $boot=Join-Path $p 'BOOTSTRAP-V16-TO-V17-WINDOWS.cmd';$upd=Join-Path $p 'UPDATE-WINDOWS.cmd'
+          cmd /d /c "echo.|`"$boot`"";$b=$LASTEXITCODE;cmd /d /c "echo.|`"$upd`"";$u=$LASTEXITCODE
+          if($b -ne 37 -or $u -ne 37){throw "exit propagation boot=$b update=$u"};$calls=Get-Content "$env:RUNNER_TEMP\node-calls-v22.txt" -Raw;if($calls -notmatch 'BOOTSTRAP-V16-TO-V17\.mjs' -or $calls -notmatch 'UPDATE-PACKAGE\.mjs'){throw 'node target mismatch'}
+          foreach($f in @($boot,$upd)){$t=Get-Content $f -Raw;if($t -notmatch 'cd /d "%~dp0"' -or $t -notmatch 'exit /b %EXIT_CODE%'){throw "guard missing $f"}}
+          New-Item "$env:RUNNER_TEMP\v22.ok" -ItemType File|Out-Null
+          $global:LASTEXITCODE=0
+          exit 0
+      - name: Persist evidence
+        if: always()
+        shell: pwsh
+        env: { JOB_STATUS: '${{ job.status }}' }
+        run: |
+          $v=if(Test-Path "$env:RUNNER_TEMP\v22.ok"){'success'}else{'failure'};New-Item -ItemType Directory -Force v17-production-evidence|Out-Null;@"
+          run_id=$env:GITHUB_RUN_ID
+          source_sha=$env:GITHUB_SHA
+          job_status=$env:JOB_STATUS
+          v17_artifact_id=$env:V17_ARTIFACT_ID
+          v17_artifact_sha256=$env:V17_ARTIFACT_SHA256
+          exact_artifact_windows=$v
+          bootstrap_windows_runtime=$v
+          update_windows_runtime=$v
+          working_directory_guard=$v
+          exit_code_propagation=$v
+          cloudflare_touched=false
+          existing_customer_d1_touched=false
+          v17_customer_ready=false
+          "@.Trim()|Set-Content v17-production-evidence/windows-launcher-v22-latest.txt;git config user.name 'github-actions[bot]';git config user.email '41898282+github-actions[bot]@users.noreply.github.com';git add v17-production-evidence/windows-launcher-v22-latest.txt;git commit -m 'ci(v17): record Windows launcher recovery v22';if($LASTEXITCODE -eq 0){git fetch origin agent/v16-production-gate;git rebase origin/agent/v16-production-gate;git push origin HEAD:agent/v16-production-gate};$global:LASTEXITCODE=0;exit 0
