@@ -1,0 +1,38 @@
+name: V17 Pages Stable Hostname Recovery V26
+on:
+  push:
+    branches: [agent/v16-production-gate]
+    paths: ['.github/workflows/v17-pages-stable-hostname-recovery-v26.yml']
+permissions: { contents: write }
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: agent/v16-production-gate }
+      - name: Normalize live gates to stable Pages hostname
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          paths=[
+            Path('.github/workflows/v17-live-upgrade-v20.yml'),
+            Path('.github/workflows/v17-failed-migration-rollback-v24.yml'),
+            Path('.github/workflows/v17-network-retry-idempotency-v25.yml'),
+          ]
+          old='URL="$(grep -Eo \'https://[^[:space:]]+\\.pages\\.dev\' /tmp/pages|tail -n1)";test -n "$URL";'
+          new='URL="https://${PAGES}.pages.dev";'
+          for p in paths:
+            s=p.read_text()
+            if old not in s:
+              raise SystemExit(f'hostname anchor missing: {p}')
+            p.write_text(s.replace(old,new,1))
+          PY
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add .github/workflows/v17-live-upgrade-v20.yml .github/workflows/v17-failed-migration-rollback-v24.yml .github/workflows/v17-network-retry-idempotency-v25.yml
+          git commit -m 'ci(v17): use stable Pages hostnames in live gates'
+          git fetch origin agent/v16-production-gate
+          git rebase origin/agent/v16-production-gate
+          git push origin HEAD:agent/v16-production-gate
