@@ -1,0 +1,17 @@
+run_id=32325460810
+run_attempt=1
+source_sha=c52a9aa55b65ef03f5c34182eedd2afe9d87e904
+job_status=success
+source_artifact_id=9391068149
+source_artifact_sha256=14e094a00c75bf0b538df4b0d396264c3af28f53b96a95d379e01390005e72ff
+pro_zip_sha256=75945096ec0346dc31ab0b3c20ca25ee0828e2c0f4efd1fe0150ab6dd91a5182
+prerequisites=success
+exact_artifact=success
+fresh_d1_owned=success
+fresh_pages_owned=success
+pages_deployed=success
+auth_license_contract=success
+expected_contract=LICENSE_READ_ONLY:403
+fresh_d1_uuid=00be5cfd-a6f6-4a42-88a6-d74c4417fe44
+existing_d1_touched=false
+customer_ready=false
