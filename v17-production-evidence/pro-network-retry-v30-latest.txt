@@ -1,12 +1,12 @@
-run_id=32345983299
+run_id=32346360962
 run_attempt=1
-source_sha=8bb8cbc863d28be422842dad6105271ccc6d1a69
-job_status=failure
+source_sha=19fcca8578a6dbbc89555ca1cfa67aff25a1d94c
+job_status=success
 exact_artifacts=success
 licensed_disposable_v16_pro=success
 permanent_package_failure_non_mutating=success
-transient_package_retry_fifth_attempt=failure
-repeated_failure_idempotent=failure
+transient_package_retry_fifth_attempt=success
+repeated_failure_idempotent=success
 package_attempts=5
 login_attempts=5
 backup_created=false
