@@ -15,7 +15,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with: { ref: agent/v16-production-gate }
-      - name: Download exact V10 Pro package and inspect login token field
+      - name: Download exact V10 Pro package and inspect Pages JWT contract
         env: { GH_TOKEN: '${{ github.token }}' }
         shell: bash
         run: |
@@ -30,18 +30,19 @@ jobs:
           from pathlib import Path
           out=[]
           targets=[
-            (Path('/tmp/pro/functions/api/[[path]].ts'), 1860, 1940),
-            (Path('/tmp/pro/src/context/AuthContext.tsx'), 50, 90),
-            (Path('/tmp/pro/src/middleware/auth.ts'), 108, 130),
+            (Path('/tmp/pro/functions/api/[[path]].ts'), 1, 90),
+            (Path('/tmp/pro/functions/api/[[path]].ts'), 1375, 1445),
+            (Path('/tmp/pro/functions/api/[[path]].ts'), 1930, 1970),
+            (Path('/tmp/pro/src/context/AuthContext.tsx'), 88, 120),
           ]
           for p,start,end in targets:
             lines=p.read_text(errors='ignore').splitlines()
             out.append(f'--- {p.relative_to("/tmp/pro")}:{start}-{end} ---')
             for i in range(start,min(end,len(lines))+1):
               s=lines[i-1]
-              if len(s)>320: s=s[:320]
+              if len(s)>360: s=s[:360]
               out.append(f'{i}:{s}')
-          Path('/tmp/auth-contract-v2.txt').write_text('\n'.join(out)+'\n')
+          Path('/tmp/auth-contract-v3.txt').write_text('\n'.join(out)+'\n')
           PY
           mkdir -p v16-production-evidence
           {
@@ -50,10 +51,10 @@ jobs:
             echo "pro_zip_sha256=${PRO_ZIP_SHA256}"
             echo "cloudflare_touched=false"
             echo "existing_d1_touched=false"
-            cat /tmp/auth-contract-v2.txt
-          } > v16-production-evidence/auth-contract-diagnostic-v2-latest.txt
+            cat /tmp/auth-contract-v3.txt
+          } > v16-production-evidence/auth-contract-diagnostic-v3-latest.txt
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add v16-production-evidence/auth-contract-diagnostic-v2-latest.txt
-          git commit -m 'ci(v16): record exact login token contract' || exit 0
+          git add v16-production-evidence/auth-contract-diagnostic-v3-latest.txt
+          git commit -m 'ci(v16): record exact Pages JWT contract' || exit 0
           git push origin HEAD:agent/v16-production-gate
