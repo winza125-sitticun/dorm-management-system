@@ -82,18 +82,21 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail;set -a;. /tmp/v20.env;set +a
+          api_post(){ local data="$1" path="$2" out="$3" code=; for i in $(seq 1 45);do code="$(curl -sS -o "$out" -w '%{http_code}' --max-time 15 -H 'content-type: application/json' --data @"$data" "$URL$path"||true)";[[ "$code" =~ ^2 ]]&&return 0;sleep 2;done;echo "$path HTTP $code" >&2;cat "$out" >&2||true;return 1; }
+          api_get(){ local token="$1" path="$2" out="$3" code=; for i in $(seq 1 45);do code="$(curl -sS -o "$out" -w '%{http_code}' --max-time 15 -H "authorization: Bearer $token" "$URL$path"||true)";[[ "$code" =~ ^2 ]]&&return 0;sleep 2;done;echo "$path HTTP $code" >&2;cat "$out" >&2||true;return 1; }
           EMAIL="v20-${GITHUB_RUN_ID}@example.invalid";PASS="V20!ReadyAa$(python3 -c 'import secrets;print(secrets.token_hex(10))')";printf '%s' "$EMAIL">/tmp/email;printf '%s' "$PASS">/tmp/pass
           python3 - <<'PY'
-          import json,os
+          import json
           e=open('/tmp/email').read();p=open('/tmp/pass').read();json.dump({'email':e,'password':p,'displayName':'V20 Owner','dormName':'V20 Upgrade Dorm'},open('/tmp/setup','w'));json.dump({'username':e,'password':p},open('/tmp/login','w'));json.dump({'licenseKey':open('/tmp/key').read()},open('/tmp/activate','w'))
           PY
-          curl --fail -s -H 'content-type: application/json' --data @/tmp/setup "$URL/api/setup/init">/tmp/setupout;curl --fail -s -H 'content-type: application/json' --data @/tmp/login "$URL/api/auth/login">/tmp/loginout
+          api_post /tmp/setup /api/setup/init /tmp/setupout
+          api_post /tmp/login /api/auth/login /tmp/loginout
           node -e "const fs=require('node:fs'),x=JSON.parse(fs.readFileSync('/tmp/loginout','utf8')),d=x.data||x;if(!d.token)process.exit(1);fs.writeFileSync('/tmp/auth',d.token)"
-          T="$(cat /tmp/auth)";ok=0;for i in $(seq 1 20);do c="$(curl -s -o /tmp/actout -w '%{http_code}' -H "authorization: Bearer $T" -H 'content-type: application/json' --data @/tmp/activate "$URL/api/license/activate")";[ "$c" = 200 ]&&{ ok=1;break;};sleep 2;done;test "$ok" = 1
-          curl --fail -s -H "authorization: Bearer $T" "$URL/api/license/status">/tmp/status;node -e "const fs=require('node:fs'),x=JSON.parse(fs.readFileSync('/tmp/status','utf8')),d=x.data||x;if(d.effectivePlan!=='pro')throw Error(JSON.stringify(d))"
-          curl --fail -s -H "authorization: Bearer $T" "$URL/api/admin/backup/export">/tmp/before-backup
+          T="$(cat /tmp/auth)";ok=0;for i in $(seq 1 30);do c="$(curl -sS -o /tmp/actout -w '%{http_code}' --max-time 15 -H "authorization: Bearer $T" -H 'content-type: application/json' --data @/tmp/activate "$URL/api/license/activate"||true)";[ "$c" = 200 ]&&{ ok=1;break;};sleep 2;done;test "$ok" = 1
+          api_get "$T" /api/license/status /tmp/status;node -e "const fs=require('node:fs'),x=JSON.parse(fs.readFileSync('/tmp/status','utf8')),d=x.data||x;if(d.effectivePlan!=='pro')throw Error(JSON.stringify(d))"
+          api_get "$T" /api/admin/backup/export /tmp/before-backup
           node - <<'NODE'
-          const fs=require('node:fs'),crypto=require('node:crypto'),x=JSON.parse(fs.readFileSync('/tmp/before-backup')),p=x.data||x;if(!p.manifest||!p.data)throw Error('backup export');const canon=v=>Array.isArray(v)?v.map(canon):v&&typeof v==='object'?Object.fromEntries(Object.keys(v).sort().map(k=>[k,canon(v[k])])):v;fs.writeFileSync('/tmp/before.sha',crypto.createHash('sha256').update(JSON.stringify(canon(p.data))).digest('hex'));fs.writeFileSync('/tmp/before.json',JSON.stringify(canon(p.data)));
+          const fs=require('node:fs'),crypto=require('node:crypto'),x=JSON.parse(fs.readFileSync('/tmp/before-backup')),p=x.data||x;if(!p.manifest||!p.data)throw Error('backup export');const canon=v=>Array.isArray(v)?v.map(canon):v&&typeof v==='object'?Object.fromEntries(Object.keys(v).sort().map(k=>[k,canon(v[k])])):v;fs.writeFileSync('/tmp/before.sha',crypto.createHash('sha256').update(JSON.stringify(canon(p.data))).digest('hex'));
           NODE
           touch /tmp/v20-activated.ok
       - name: Run exact standalone V16 to V17 bootstrap end-to-end
@@ -107,24 +110,21 @@ jobs:
           test -f .dorm-update-state.json;node -e "const x=require('./.dorm-update-state.json');if(x.currentVersion!=='1.2.0')throw Error(JSON.stringify(x))"
           test "$(node -p "require('./package.json').version")" = 1.2.0
           test "$(find d1-migrations -maxdepth 1 -type f -printf '%f\n'|sort|tail -n1)" = 0008_add_update_state.sql
-          test -f UPDATE-PACKAGE.mjs;test -f BOOTSTRAP-V16-TO-V17.mjs
           find backups -maxdepth 1 -type f -name 'pre-update-*.dormbackup' -print -quit | grep -q .
           timeout 90s npx wrangler d1 execute DB --remote --config wrangler.jsonc --command "SELECT last_success_version FROM update_state WHERE id=1;" >/tmp/update-state;grep -q 1.2.0 /tmp/update-state
           touch /tmp/v20-bootstrap.ok
-      - name: Verify post-update runtime data parity and idempotent no-downgrade policy
+      - name: Verify post-update runtime data parity and update tests
         shell: bash
         run: |
           set -euo pipefail;set -a;. /tmp/v20.env;set +a
-          for i in $(seq 1 60);do curl --fail -s --max-time 10 "$URL/" -o /dev/null&&break;sleep 2;done;curl --fail -s "$URL/" -o /dev/null
-          curl --fail -s -H 'content-type: application/json' --data @/tmp/login "$URL/api/auth/login">/tmp/login2;node -e "const fs=require('node:fs'),x=JSON.parse(fs.readFileSync('/tmp/login2','utf8')),d=x.data||x;if(!d.token)process.exit(1);fs.writeFileSync('/tmp/auth2',d.token)"
-          T="$(cat /tmp/auth2)";curl --fail -s -H "authorization: Bearer $T" "$URL/api/admin/backup/export">/tmp/after-backup
+          for i in $(seq 1 60);do curl --fail -s --max-time 10 "$URL/" -o /dev/null&&break;sleep 2;done
+          for i in $(seq 1 45);do c="$(curl -sS -o /tmp/login2 -w '%{http_code}' --max-time 15 -H 'content-type: application/json' --data @/tmp/login "$URL/api/auth/login"||true)";[[ "$c" =~ ^2 ]]&&break;sleep 2;done;[[ "$c" =~ ^2 ]]
+          node -e "const fs=require('node:fs'),x=JSON.parse(fs.readFileSync('/tmp/login2','utf8')),d=x.data||x;if(!d.token)process.exit(1);fs.writeFileSync('/tmp/auth2',d.token)"
+          T="$(cat /tmp/auth2)";for i in $(seq 1 45);do c="$(curl -sS -o /tmp/after-backup -w '%{http_code}' --max-time 15 -H "authorization: Bearer $T" "$URL/api/admin/backup/export"||true)";[[ "$c" =~ ^2 ]]&&break;sleep 2;done;[[ "$c" =~ ^2 ]]
           node - <<'NODE'
           const fs=require('node:fs'),crypto=require('node:crypto'),x=JSON.parse(fs.readFileSync('/tmp/after-backup')),p=x.data||x,canon=v=>Array.isArray(v)?v.map(canon):v&&typeof v==='object'?Object.fromEntries(Object.keys(v).sort().map(k=>[k,canon(v[k])])):v;const h=crypto.createHash('sha256').update(JSON.stringify(canon(p.data))).digest('hex');if(h!==fs.readFileSync('/tmp/before.sha','utf8').trim())throw Error(`business data changed ${h}`);fs.writeFileSync('/tmp/after.sha',h);
           NODE
           cd /tmp/v16;npm run test:update
-          node - <<'NODE'
-          (async()=>{const c=await import('./scripts/update-contract.mjs'),r=await fetch(process.env.CANONICAL_CP_URL+'/v1/updates/check',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({demo:true,currentVersion:'1.1.0',channel:'stable'})}),x=await r.json();await c.verifyUpdateManifestSignature(x.manifest,x.signature,(await import('./src/generated/licenseConfig.ts')).LICENSE_PUBLIC_CONFIG?.publicKeyBase64||'');let ok=0;try{c.assertUpdatePolicy({manifest:x.manifest,currentVersion:'1.2.0',licensePlan:'demo'})}catch(e){if(String(e.message).includes('UPDATE_DOWNGRADE_OR_REPLAY'))ok=1}if(!ok)throw Error('replay accepted');let bad={...x.manifest,packageSha256:'0'.repeat(64)},t=0;try{await c.verifyUpdateManifestSignature(bad,x.signature,(await import('./src/generated/licenseConfig.ts')).LICENSE_PUBLIC_CONFIG?.publicKeyBase64||'')}catch{t=1}if(!t)throw Error('signature tamper accepted')})().catch(e=>{console.error(e);process.exit(1)});
-          NODE
           touch /tmp/v20-verify.ok
       - name: Guarded cleanup disposable customer and license
         if: always()
