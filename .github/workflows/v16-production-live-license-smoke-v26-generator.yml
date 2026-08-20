@@ -1,0 +1,66 @@
+name: V16 Generate Live License Acceptance V26
+on:
+  push:
+    branches: [agent/v16-production-gate]
+    paths: ['.github/workflows/v16-production-live-license-smoke-v26-generator.yml']
+permissions: { contents: write }
+concurrency: { group: v16-generate-live-v26, cancel-in-progress: true }
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/v16-production-gate
+          fetch-depth: 1
+      - name: Derive V26 from V15 baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p v16-production-evidence
+          trap 'printf "generator_status=failure\nsource_sha=%s\ncloudflare_touched=false\nexisting_d1_touched=false\n" "$GITHUB_SHA" > v16-production-evidence/live-v26-generator-latest.txt' ERR
+          python3 - <<'PY'
+          from pathlib import Path
+          src=Path('.github/workflows/v16-production-live-license-smoke-v15.yml')
+          out=Path('.github/workflows/v16-production-live-license-smoke-v26.yml')
+          s=src.read_text()
+          replacements=[
+            ('V16 Production Live License Acceptance V15','V16 Production Live License Acceptance V26'),
+            ('v16-production-live-license-smoke-v15','v16-production-live-license-smoke-v26'),
+            ("SOURCE_ARTIFACT_ID: '9391068149'","SOURCE_ARTIFACT_ID: '9391746526'"),
+            ("SOURCE_ARTIFACT_SHA256: '14e094a00c75bf0b538df4b0d396264c3af28f53b96a95d379e01390005e72ff'","SOURCE_ARTIFACT_SHA256: 'b42d10b2adf546eb2b9f44648ce6216c24551f9067d18b4e9586c0b150bb7d92'"),
+            ("CP_ZIP_SHA256: 'c4d510dad09ccc9d237319236bba9e54a0ac1d9091a906dc3d9fe81475fa7abc'","CP_ZIP_SHA256: 'e6083af6ae82f53549ace3d26c1f1728023db920ab57358a5bd6e3332b64e916'"),
+            ("PRO_ZIP_SHA256: '75945096ec0346dc31ab0b3c20ca25ee0828e2c0f4efd1fe0150ab6dd91a5182'","PRO_ZIP_SHA256: 'e6d1c98f494af981a001c91fc7dc38316cd1e78c3beb72b9f53916b43c068d2e'"),
+            ('Download exact V13 candidate','Download exact V23 candidate'),
+            ('dorm-management-system-pro-v16-SOURCE-GATE-V13.zip','dorm-management-system-pro-v16-SOURCE-GATE-V23.zip'),
+            ('/tmp/v16-v15-','/tmp/v16-v26-'),
+            ('live-license-smoke-v15-latest.txt','live-license-smoke-v26-latest.txt'),
+            ('record full live license acceptance v15','record full live license acceptance v26'),
+          ]
+          for a,b in replacements:
+            if a not in s:
+              raise SystemExit(f'missing expected baseline string: {a}')
+            s=s.replace(a,b)
+          required=['9391746526','b42d10b2adf546eb2b9f44648ce6216c24551f9067d18b4e9586c0b150bb7d92','e6083af6ae82f53549ace3d26c1f1728023db920ab57358a5bd6e3332b64e916','e6d1c98f494af981a001c91fc7dc38316cd1e78c3beb72b9f53916b43c068d2e','central_suspension_fail_closed=$(val suspension)']
+          for x in required: assert x in s, x
+          assert '9391068149' not in s
+          assert 'SOURCE-GATE-V13.zip' not in s
+          assert '/tmp/v16-v15-' not in s
+          assert 'live-license-smoke-v15-latest.txt' not in s
+          out.write_text(s)
+          PY
+          git diff --check -- .github/workflows/v16-production-live-license-smoke-v26.yml
+          printf 'generator_status=success\nsource_sha=%s\ncloudflare_touched=false\nexisting_d1_touched=false\n' "$GITHUB_SHA" > v16-production-evidence/live-v26-generator-latest.txt
+      - name: Commit generated workflow and evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          if [ -f .github/workflows/v16-production-live-license-smoke-v26.yml ]; then git add .github/workflows/v16-production-live-license-smoke-v26.yml; fi
+          if [ -f v16-production-evidence/live-v26-generator-latest.txt ]; then git add v16-production-evidence/live-v26-generator-latest.txt; fi
+          git commit -m 'ci(v16): materialize V26 live acceptance for V23 candidate' || exit 0
+          git fetch origin agent/v16-production-gate
+          git rebase origin/agent/v16-production-gate
+          git push origin HEAD:agent/v16-production-gate
