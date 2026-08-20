@@ -1,0 +1,17 @@
+run_id=32329397083
+run_attempt=1
+source_sha=ba7a3e89274b75d3250999806f2949ca042245c1
+job_status=success
+source_artifact_id=9392071166
+source_artifact_sha256=cb498eed4580589794480e4aa0a9d42fc2814fde0e64ad6620c16e6d220d2cf8
+pro_zip_sha256=c2f46f8e6ca251b7476a8e1bc510e9fedd1f17e516c9ad5a17338f8504933e04
+exact_artifact=success
+offline_grace_runtime=success
+terminal_state_priority=success
+grace_days=7
+inside_grace=offline_mutation_allowed
+after_grace=expired_LICENSE_READ_ONLY_403
+terminal_revoked=LICENSE_READ_ONLY_403
+cloudflare_touched=false
+existing_d1_touched=false
+customer_ready=false
